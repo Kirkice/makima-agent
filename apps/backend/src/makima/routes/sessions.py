@@ -8,8 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from makima.deps import get_current_user, get_db
-from makima.models import Session, User
+from makima.auth.models import User
+from makima.core.deps import get_current_user, get_db
+from makima.sessions.models import Session
 from makima_schemas.api import SessionCreate, SessionList, SessionResponse
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])

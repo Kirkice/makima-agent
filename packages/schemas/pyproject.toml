@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "makima-schemas"
 version = "0.1.0"
 description = "Event protocol and DTO definitions for Makima Agent Backend"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "pydantic>=2.0.0",
 ]

@@ -1,0 +1,1 @@
+"""Authentication module — user management, JWT, password utilities."""

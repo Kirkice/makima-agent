@@ -9,7 +9,7 @@ from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from makima.db import Base
+from makima.core.models import Base
 
 
 def _utcnow() -> datetime:

@@ -1,7 +1,7 @@
 # Makima Agent Backend Roadmap
 
 > **最后更新**: 2025-06-15  
-> **当前状态**: Phase 0-3 已完成 ✅
+> **当前状态**: Phase 0-4 已完成 ✅
 
 ## 1. 目标
 
@@ -238,26 +238,28 @@ Storage / Queue / Observability / Safety
 - ✅ Agent 能基于文档回答问题（通过 RAG）
 - ✅ 多轮对话上下文更稳定（记忆自动注入 system prompt）
 
-### Phase 4: 产品化能力 🔲
+### Phase 4: 产品化能力 ✅
 
 目标：
 
 - 把系统从"能用"推进到"可长期使用"
 
-补齐内容：
+产出：
 
-- 🔲 权限体系
-- 🔲 审计与回放
-- 🔲 任务队列
-- 🔲 重试和超时
-- 🔲 指标与告警
-- 🔲 配置中心
+- ✅ RBAC 权限体系 (`security/rbac.py`) — 角色分级、权限声明式校验
+- ✅ 审计日志系统 (`audit/models.py`, `audit/service.py`, `routes/audit.py`)
+- ✅ Celery 任务队列 (`queue/celery_app.py`, `queue/tasks.py`) — 文档处理、记忆提取、Agent 异步执行
+- ✅ 中间件层 (`middleware.py`) — RequestID 追踪、请求超时、异步重试
+- ✅ Prometheus 指标 (`observability/metrics.py`, `routes/metrics.py`) — HTTP/Agent/Tool/Queue 全链路埋点
+- ✅ OpenTelemetry 分布式追踪 (`observability/tracing.py`) — FastAPI + SQLAlchemy 自动 instrumentation
+- ✅ 配置中心 (`config_center/service.py`, `routes/admin.py`) — Redis 后端、本地缓存、动态热更新
+- ✅ 管理路由 (`routes/admin.py`) — 配置管理、系统健康检查
 
 验收标准：
 
-- 🔲 失败可定位
-- 🔲 高风险操作可追溯
-- 🔲 长任务可恢复
+- ✅ 失败可定位（RequestID + 审计日志 + OpenTelemetry 链路追踪）
+- ✅ 高风险操作可追溯（全量审计日志，含用户/资源/时间/IP 信息）
+- ✅ 长任务可恢复（Celery 异步执行 + 自动重试 + 指数退避）
 
 ### Phase 5: 客户端接入 🔲
 
@@ -328,7 +330,7 @@ external/*                   # 外部依赖源码
 3. ~~接入最小工具执行层~~ ✅
 4. ~~引入 Mem0 作为记忆层~~ ✅
 5. ~~加入文档检索服务~~ ✅
-6. 再补权限、队列、日志、回放
+6. ~~补权限、队列、日志、回放~~ ✅
 
 ## 9. 这套路线的判断标准
 

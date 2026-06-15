@@ -1,0 +1,1 @@
+"""Task queue system using Celery for background processing."""

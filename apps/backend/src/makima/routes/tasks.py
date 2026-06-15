@@ -10,9 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from makima.deps import get_current_user, get_db
-from makima.models import Message, Session, Task, User
+from makima.auth.models import User
+from makima.core.deps import get_current_user, get_db
 from makima.orchestrator.runner import run_agent
+from makima.sessions.models import Message, Session
+from makima.tasks.models import Task
 from makima_schemas.api import TaskCreate, TaskResponse
 from makima_schemas.events import AgentEvent, AgentEventType
 

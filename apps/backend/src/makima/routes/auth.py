@@ -6,9 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from makima.auth import create_access_token, hash_password, verify_password
-from makima.deps import get_db
-from makima.models import User
+from makima.auth.models import User
+from makima.auth.service import create_access_token, hash_password, verify_password
+from makima.core.deps import get_db
 from makima_schemas.api import TokenResponse, UserCreate, UserLogin
 
 router = APIRouter(prefix="/auth", tags=["auth"])

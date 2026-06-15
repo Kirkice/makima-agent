@@ -10,11 +10,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from makima.deps import get_current_user, get_db
+from makima.auth.models import User
+from makima.core.deps import get_current_user, get_db
 from makima.knowledge.ingest import ingest_document, delete_document_chunks
 from makima.knowledge.models import Document
 from makima.knowledge.retriever import retrieve, RetrievalResult
-from makima.models import User
 from makima_common.logging import get_logger
 
 logger = get_logger(__name__)

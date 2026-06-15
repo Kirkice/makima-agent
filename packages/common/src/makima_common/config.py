@@ -62,6 +62,19 @@ class Settings(BaseSettings):
     rag_chunk_overlap: int = 100
     rag_top_k: int = 5
 
+    # ── Celery Task Queue ─────────────────────────────────────────────
+    celery_broker_url: str = "redis://localhost:6379/1"
+    celery_result_backend: str = "redis://localhost:6379/2"
+
+    # ── Middleware ────────────────────────────────────────────────────
+    api_timeout: float = 30.0
+
+    # ── Observability ────────────────────────────────────────────────
+    otel_enabled: bool = False
+    otel_service_name: str = "makima-agent"
+    otel_exporter_endpoint: str = "http://localhost:4317"
+    prometheus_enabled: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

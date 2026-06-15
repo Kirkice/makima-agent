@@ -7,9 +7,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from makima.deps import get_current_user
+from makima.auth.models import User
+from makima.core.deps import get_current_user
 from makima.memory.service import MemoryService
-from makima.models import User
 from makima_common.logging import get_logger
 
 logger = get_logger(__name__)
