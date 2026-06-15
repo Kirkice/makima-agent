@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from makima import __version__
-from makima.routes import auth, health, sessions, tasks
+from makima.routes import auth, health, knowledge, memory, sessions, tasks
 from makima_common.config import get_settings
 from makima_common.logging import setup_logging
 
@@ -41,6 +41,8 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(sessions.router)
     app.include_router(tasks.router)
+    app.include_router(memory.router)
+    app.include_router(knowledge.router)
     return app
 
 

@@ -51,6 +51,17 @@ class Settings(BaseSettings):
     tool_timeout: int = 60
     tool_working_dir: str = "/tmp/makima-sandbox"
 
+    # ── Memory Service (Mem0) ──────────────────────────────────────────
+    memory_enabled: bool = True
+    mem0_embedding_model: str = "text-embedding-3-small"
+    mem0_vector_store: str = "pgvector"
+
+    # ── Knowledge Service (RAG) ────────────────────────────────────────
+    knowledge_enabled: bool = True
+    rag_chunk_size: int = 1000
+    rag_chunk_overlap: int = 100
+    rag_top_k: int = 5
+
 
 @lru_cache
 def get_settings() -> Settings:

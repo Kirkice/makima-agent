@@ -29,6 +29,8 @@ dependencies = [
     # Auth
     "python-jose[cryptography]>=3.3.0",
     "passlib[bcrypt]>=1.7.4",
+    # File upload
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]

@@ -45,7 +45,8 @@ async def create_task(
             async for event in run_agent(
                 input_text=body.input_text,
                 session_id=str(body.session_id),
-                task_id=task_id,
+                user_id=str(user.id),
+                db=db,
             ):
                 yield {"event": event.type.value, "data": event.model_dump_json()}
             yield {

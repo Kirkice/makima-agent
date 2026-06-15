@@ -1,4 +1,4 @@
-"""Agent runner — executes the LangGraph workflow."""
+"""Agent runner — executes the LangGraph workflow with memory and knowledge."""
 
 from __future__ import annotations
 
@@ -8,9 +8,11 @@ from uuid import UUID
 
 from langchain_core.messages import HumanMessage
 
-from makima.models import Session
 from makima.orchestrator.graph import build_graph
+from makima.memory.service import MemoryService
+from makima.knowledge.retriever import retrieve, format_context_for_prompt
 from makima_schemas.events import AgentEvent, AgentEventType
+from makima_common.config import get_settings
 from makima_common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -19,20 +21,21 @@ logger = get_logger(__name__)
 async def run_agent(
     input_text: str,
     session_id: str,
+    user_id: str,
+    db: object | None = None,
 ) -> AsyncGenerator[AgentEvent, None]:
-    """
-    Run the agent with the given input.
+    """Run the agent with the given input, integrating memory and knowledge.
 
     Args:
-        input_text: User input text
-        session_id: Session ID for checkpointing
+        input_text: User input text.
+        session_id: Session ID for checkpointing.
+        user_id: User ID for memory and knowledge scoping.
+        db: Optional database session for knowledge retrieval.
 
     Yields:
-        AgentEvent instances representing agent execution events
+        AgentEvent instances representing agent execution events.
     """
-    graph = build_graph()
-    config = {"configurable": {"thread_id": session_id}}
-
+    settings = get_settings()
     step = 0
     start_time = time.time()
 
@@ -44,9 +47,72 @@ async def run_agent(
         step=step,
     )
 
+    # ── Recall memories ────────────────────────────────────────────────
+    memory_context = ""
+    if settings.memory_enabled:
+        try:
+            memory_service = MemoryService()
+            if memory_service.available:
+                memories = memory_service.recall(
+                    query=input_text, user_id=user_id, limit=5
+                )
+                memory_context = memory_service.format_memories_for_prompt(memories)
+                if memories:
+                    step += 1
+                    yield AgentEvent(
+                        type=AgentEventType.THINKING,
+                        data={
+                            "phase": "memory_recall",
+                            "count": len(memories),
+                        },
+                        timestamp=time.time(),
+                        step=step,
+                    )
+        except Exception as e:
+            logger.warning("Memory recall failed", error=str(e))
+
+    # ── Retrieve knowledge ─────────────────────────────────────────────
+    knowledge_context = ""
+    if settings.knowledge_enabled and db is not None:
+        try:
+            results = await retrieve(
+                db=db,
+                query=input_text,
+                user_id=UUID(user_id),
+                top_k=settings.rag_top_k,
+            )
+            knowledge_context = format_context_for_prompt(results)
+            if results:
+                step += 1
+                yield AgentEvent(
+                    type=AgentEventType.THINKING,
+                    data={
+                        "phase": "knowledge_retrieval",
+                        "count": len(results),
+                    },
+                    timestamp=time.time(),
+                    step=step,
+                )
+        except Exception as e:
+            logger.warning("Knowledge retrieval failed", error=str(e))
+
+    # ── Build and run graph ────────────────────────────────────────────
+    graph = build_graph(
+        memory_context=memory_context,
+        knowledge_context=knowledge_context,
+    )
+    config = {"configurable": {"thread_id": session_id}}
+
+    initial_state = {
+        "messages": [HumanMessage(content=input_text)],
+        "user_id": user_id,
+        "session_id": session_id,
+        "context": {},
+    }
+
     try:
         async for event in graph.astream_events(
-            {"messages": [HumanMessage(content=input_text)]},
+            initial_state,
             config=config,
             version="v2",
         ):
@@ -54,7 +120,6 @@ async def run_agent(
             event_kind = event.get("event")
 
             if event_kind == "on_chat_model_stream":
-                # LLM streaming output
                 chunk = event.get("data", {}).get("chunk")
                 if chunk and chunk.content:
                     yield AgentEvent(
@@ -65,7 +130,6 @@ async def run_agent(
                     )
 
             elif event_kind == "on_tool_start":
-                # Tool invocation
                 tool_name = event.get("name", "unknown")
                 tool_input = event.get("data", {}).get("input", {})
                 yield AgentEvent(
@@ -76,7 +140,6 @@ async def run_agent(
                 )
 
             elif event_kind == "on_tool_end":
-                # Tool result
                 tool_name = event.get("name", "unknown")
                 tool_output = event.get("data", {}).get("output", "")
                 yield AgentEvent(
@@ -95,3 +158,19 @@ async def run_agent(
             step=step,
         )
         raise
+
+    # ── Store conversation to memory ───────────────────────────────────
+    if settings.memory_enabled:
+        try:
+            memory_service = MemoryService()
+            if memory_service.available:
+                messages = [
+                    {"role": "user", "content": input_text},
+                ]
+                memory_service.store_conversation(
+                    messages=messages,
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+        except Exception as e:
+            logger.warning("Memory store failed", error=str(e))

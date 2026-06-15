@@ -1,7 +1,7 @@
 # Makima Agent Backend Roadmap
 
 > **最后更新**: 2025-06-15  
-> **当前状态**: Phase 0-2 已完成 ✅
+> **当前状态**: Phase 0-3 已完成 ✅
 
 ## 1. 目标
 
@@ -214,7 +214,7 @@ Storage / Queue / Observability / Safety
 - ✅ 工具结果可回传编排层
 - ✅ 风险操作可拦截或要求确认
 
-### Phase 3: 记忆与知识库 🔲
+### Phase 3: 记忆与知识库 ✅
 
 目标：
 
@@ -223,15 +223,20 @@ Storage / Queue / Observability / Safety
 
 产出：
 
-- 🔲 `memory-service`
-- 🔲 `knowledge-service`
-- 🔲 文档索引与向量检索
+- ✅ Mem0 客户端封装 (`clients/memory.py`)
+- ✅ Memory Service 层 (`memory/service.py`)
+- ✅ Memory API 路由 (`routes/memory.py`)
+- ✅ Knowledge 数据模型 (`knowledge/models.py`)
+- ✅ 文档摄取管道 (`knowledge/ingest.py`)
+- ✅ RAG 检索 (`knowledge/retriever.py`)
+- ✅ Knowledge API 路由 (`routes/knowledge.py`)
+- ✅ 编排层集成记忆和知识 (`orchestrator/graph.py`, `orchestrator/runner.py`)
 
 验收标准：
 
-- 🔲 Agent 能记住用户偏好
-- 🔲 Agent 能基于文档回答问题
-- 🔲 多轮对话上下文更稳定
+- ✅ Agent 能记住用户偏好（通过 Mem0）
+- ✅ Agent 能基于文档回答问题（通过 RAG）
+- ✅ 多轮对话上下文更稳定（记忆自动注入 system prompt）
 
 ### Phase 4: 产品化能力 🔲
 
@@ -321,8 +326,8 @@ external/*                   # 外部依赖源码
 1. ~~完成 `apps/backend` 的最小 API~~ ✅
 2. ~~把 LangGraph 作为编排骨架接起来~~ ✅
 3. ~~接入最小工具执行层~~ ✅
-4. 引入 Mem0 作为记忆层
-5. 加入文档检索服务
+4. ~~引入 Mem0 作为记忆层~~ ✅
+5. ~~加入文档检索服务~~ ✅
 6. 再补权限、队列、日志、回放
 
 ## 9. 这套路线的判断标准
