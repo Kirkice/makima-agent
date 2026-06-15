@@ -38,19 +38,19 @@
 - `packages/schemas/`：事件协议、DTO、接口 schema
 - `packages/clients/`：模型与外部系统客户端封装
 
-### 3.2 参考子仓库
+### 3.2 外部依赖
 
-参考代码统一放在 `integrations/` 下：
+外部依赖源码统一放在 `external/` 下：
 
-- `integrations/langgraph/`
-- `integrations/openhands/`
-- `integrations/mem0/`
+- `external/langgraph/`
+- `external/openhands/`
+- `external/mem0/`
 
 它们的作用是：
 
-- 作为实现模式参考
-- 作为代码对照物
-- 作为必要时的局部实验场
+- 作为源码参考和调试
+- 实际开发通过 pip install 直接依赖
+- 必要时可本地联调或 fork 修改
 
 ## 4. 目标架构
 
@@ -294,7 +294,7 @@ services/knowledge-service/  # RAG 与检索
 packages/common/             # 通用代码
 packages/schemas/            # 协议与结构定义
 packages/clients/            # 外部依赖客户端
-integrations/*               # 参考仓库
+external/*                   # 外部依赖源码
 ```
 
 ## 8. 近期执行顺序

@@ -1,6 +1,6 @@
 # Makima Agent
 
-Makima Agent 是一个面向“成熟 Agent 能力 + 拟人化表现层”方向的后端工程起点。
+Makima Agent 是一个面向"成熟 Agent 能力 + 拟人化表现层"方向的后端工程起点。
 
 当前项目的核心思路是：
 
@@ -25,7 +25,7 @@ AgentProject/
 │  ├─ common/
 │  ├─ schemas/
 │  └─ clients/
-├─ integrations/
+├─ external/
 │  ├─ langgraph/
 │  ├─ openhands/
 │  └─ mem0/
@@ -37,13 +37,15 @@ AgentProject/
 └─ README.md
 ```
 
-## 参考仓库
+## 外部依赖
 
-这三个目录用于放外部参考仓库，方便对照实现：
+`external/` 目录下放置了三个核心外部依赖的源码，作为本地参考和开发联调使用：
 
-- `integrations/langgraph/`
-- `integrations/openhands/`
-- `integrations/mem0/`
+- `external/langgraph/` — LangGraph 编排引擎源码
+- `external/openhands/` — OpenHands Agent Runtime 源码
+- `external/mem0/` — Mem0 记忆层源码
+
+实际开发中通过 `pip install langgraph mem0ai openhands-ai` 等方式安装使用，`external/` 目录主要用于源码参考和必要时的本地调试。
 
 ## 实现路线
 
@@ -62,5 +64,6 @@ AgentProject/
 ## 当前状态
 
 - 项目骨架已建立
-- 参考仓库目录已预留
+- 外部依赖源码已拉取
+- 基础设施配置已完成（docker-compose.yml、Makefile、.env.example）
 - 路线文档已创建
