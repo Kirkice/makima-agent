@@ -1,0 +1,88 @@
+version: "3.9"
+
+services:
+  # ── 基础设施 ──────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: makima-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-makima}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-makima}
+      POSTGRES_DB: ${POSTGRES_DB:-makima}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-makima}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: makima-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── 应用服务 ──────────────────────────────────
+  api-gateway:
+    build:
+      context: .
+      dockerfile: infra/docker/api-gateway.Dockerfile
+    container_name: makima-api-gateway
+    restart: unless-stopped
+    ports:
+      - "${API_GATEWAY_PORT:-8000}:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-makima}:${POSTGRES_PASSWORD:-makima}@postgres:5432/${POSTGRES_DB:-makima}
+      - REDIS_URL=redis://redis:6379/0
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_API_BASE=${LLM_API_BASE:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  agent-orchestrator:
+    build:
+      context: .
+      dockerfile: infra/docker/agent-orchestrator.Dockerfile
+    container_name: makima-orchestrator
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-makima}:${POSTGRES_PASSWORD:-makima}@postgres:5432/${POSTGRES_DB:-makima}
+      - REDIS_URL=redis://redis:6379/0
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_API_BASE=${LLM_API_BASE:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  tool-runtime:
+    build:
+      context: .
+      dockerfile: infra/docker/tool-runtime.Dockerfile
+    container_name: makima-tool-runtime
+    restart: unless-stopped
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
