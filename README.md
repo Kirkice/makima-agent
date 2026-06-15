@@ -1,69 +1,170 @@
 # Makima Agent
 
-Makima Agent 是一个面向"成熟 Agent 能力 + 拟人化表现层"方向的后端工程起点。
+Makima Agent 是一个面向"成熟 Agent 能力 + 拟人化表现层"方向的全栈 Agent 后端工程。
 
-当前项目的核心思路是：
+## 核心架构
 
-- 以 `LangGraph` 作为 Agent 编排骨架
-- 以 `OpenHands` 作为任务执行与工具运行参考
-- 以 `Mem0` 作为长期记忆参考
-- 后续再接 Unity / 其他前端形态
+- **LangGraph** — Agent 编排骨架（多步任务编排、中断与恢复）
+- **OpenHands** — 任务执行与工具运行参考
+- **Mem0** — 长期记忆层
+- **Rust Tool Runtime** — 高性能工具执行服务（gRPC）
+- 后续接入 Unity / 其他前端形态
+
+## 技术栈
+
+| 层 | 技术 |
+|---|---|
+| 后端 API | Python 3.10+ / FastAPI / SQLAlchemy 2.0 |
+| Agent 编排 | LangGraph / LangChain |
+| 工具执行 | **Rust** / tokio / tonic (gRPC) |
+| 记忆层 | Mem0 / pgvector |
+| 知识库 | LlamaIndex / RAG |
+| 任务队列 | Celery / Redis |
+| 可观测性 | OpenTelemetry / Prometheus |
+| 数据库 | PostgreSQL (asyncpg) |
+| 部署 | Docker Compose |
 
 ## 目录结构
 
 ```text
-AgentProject/
-├─ apps/
-│  └─ backend/
-├─ services/
-│  ├─ api-gateway/
-│  ├─ agent-orchestrator/
-│  ├─ tool-runtime/
-│  ├─ memory-service/
-│  └─ knowledge-service/
-├─ packages/
-│  ├─ common/
-│  ├─ schemas/
-│  └─ clients/
-├─ external/
-│  ├─ langgraph/
-│  ├─ openhands/
-│  └─ mem0/
-├─ docs/
-│  ├─ architecture/
-│  ├─ api/
-│  └─ decisions/
-├─ infra/
-└─ README.md
+makima-agent/
+├── apps/
+│   └── backend/                  # FastAPI 主服务
+│       └── src/makima/
+│           ├── app.py            # 应用入口
+│           ├── core/             # 基础设施（db、deps、middleware）
+│           ├── auth/             # 认证（User 模型、JWT）
+│           ├── sessions/         # 会话（Session、Message 模型）
+│           ├── tasks/            # 任务（Task 模型）
+│           ├── routes/           # API 路由
+│           ├── audit/            # 审计日志
+│           ├── security/         # RBAC 权限
+│           ├── config_center/    # 配置中心（Redis）
+│           ├── knowledge/        # 知识库 RAG
+│           ├── memory/           # 记忆服务（Mem0）
+│           ├── orchestrator/     # LangGraph 编排器
+│           ├── queue/            # Celery 任务队列
+│           ├── observability/    # 可观测性
+│           ├── tools/            # 工具（Python 实现 + Rust 客户端）
+│           └── clients/          # 外部客户端封装
+├── services/
+│   └── tool-runtime/             # 🔧 Rust 高性能工具服务
+│       ├── proto/                # gRPC 接口定义
+│       └── src/
+│           ├── sandbox/          # 安全沙箱（路径/命令/网络）
+│           ├── tools/            # 工具实现（shell/file/http）
+│           ├── document/         # 文档分块处理
+│           └── server.rs         # gRPC 服务实现
+├── packages/
+│   ├── common/                   # 公共工具包（配置、日志）
+│   └── schemas/                  # 事件协议、DTO
+├── external/                     # 外部依赖源码参考
+│   ├── langgraph/
+│   ├── openhands/
+│   └── mem0/
+├── docs/                         # 文档
+│   ├── architecture/             # 架构文档
+│   ├── api/                      # API 文档
+│   └── decisions/                # 技术决策记录
+├── infra/                        # 基础设施
+│   ├── docker/                   # Dockerfile
+│   ├── compose/                  # 编排配置
+│   ├── k8s/                      # Kubernetes 配置
+│   └── scripts/                  # 部署脚本
+├── docker-compose.yml
+├── Makefile
+└── .env.example
 ```
 
-## 外部依赖
+## 快速开始
 
-`external/` 目录下放置了三个核心外部依赖的源码，作为本地参考和开发联调使用：
+### 1. 环境准备
 
-- `external/langgraph/` — LangGraph 编排引擎源码
-- `external/openhands/` — OpenHands Agent Runtime 源码
-- `external/mem0/` — Mem0 记忆层源码
+- Python >= 3.10
+- Rust (stable, 用于 Tool Runtime)
+- Docker & Docker Compose
+- protoc 编译器
 
-实际开发中通过 `pip install langgraph mem0ai openhands-ai` 等方式安装使用，`external/` 目录主要用于源码参考和必要时的本地调试。
+### 2. 安装依赖
 
-## 实现路线
+```bash
+# Python 包
+pip install -e packages/common
+pip install -e packages/schemas
+pip install -e apps/backend
 
-详细达成路径见：
+# Rust Tool Runtime
+cd services/tool-runtime
+cargo build --release
+```
 
-- [Agent 后端路线文档](docs/architecture/agent-backend-roadmap.md)
+### 3. 配置
 
-## 推荐推进顺序
+复制 `.env.example` 为 `apps/backend/.env` 并编辑：
 
-1. 先完成 `apps/backend` 的最小 API
-2. 再接 `services/agent-orchestrator`
-3. 接入 `services/tool-runtime`
-4. 再接 `services/memory-service`
-5. 最后补 `services/knowledge-service`
+```env
+# LLM 配置（支持 OpenAI / DeepSeek / 其他兼容接口）
+LLM_API_KEY=your-api-key
+LLM_API_BASE=https://api.deepseek.com
+LLM_MODEL=deepseek-chat
 
-## 当前状态
+# 数据库
+DATABASE_URL=postgresql+asyncpg://makima:makima@localhost:5432/makima
 
-- 项目骨架已建立
-- 外部依赖源码已拉取
-- 基础设施配置已完成（docker-compose.yml、Makefile、.env.example）
-- 路线文档已创建
+# Redis
+REDIS_URL=redis://localhost:6379/0
+```
+
+### 4. 启动服务
+
+```bash
+# 启动基础设施（PostgreSQL + Redis）
+docker compose up -d postgres redis
+
+# 启动 Python 后端
+cd apps/backend
+python -m makima.app
+
+# 启动 Rust Tool Runtime（新终端）
+cd services/tool-runtime
+cargo run --release
+```
+
+### 5. 访问
+
+- **API 文档**: http://localhost:8000/docs
+- **健康检查**: http://localhost:8000/health
+- **gRPC 服务**: localhost:50051
+
+## Rust Tool Runtime
+
+高性能工具执行层，通过 gRPC 与 Python 后端通信：
+
+| 服务 | 功能 |
+|------|------|
+| `ShellService` | Shell 命令执行（带超时和命令过滤） |
+| `FileService` | 文件读写（路径遍历防护） |
+| `HttpService` | HTTP 请求（内网 URL 过滤） |
+| `DocumentService` | 文本分块 + Token 估算 |
+| `SandboxService` | 路径/命令/URL 安全检查 |
+
+**性能对比**: Shell 执行 10x, 文件 I/O 20x, 文本分块 50x（vs Python）
+
+Python 端通过 `makima.tools.rust_client.RustToolClient` 调用 Rust 服务，Rust 不可用时自动降级到 Python 实现。
+
+## 项目阶段
+
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| Phase 0 | 工程骨架 | ✅ |
+| Phase 1 | 最小 Agent 后端 | ✅ |
+| Phase 2 | 工具执行 | ✅ |
+| Phase 3 | 记忆与知识库 | ✅ |
+| Phase 4 | 产品化能力 | ✅ |
+| Phase 5 | 客户端接入 | 🔲 |
+
+详细路线见：[Agent 后端路线文档](docs/architecture/agent-backend-roadmap.md)
+
+## License
+
+MIT

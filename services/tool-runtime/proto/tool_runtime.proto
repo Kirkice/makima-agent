@@ -1,0 +1,152 @@
+syntax = "proto3";
+package tool_runtime;
+
+service ShellService {
+  rpc Execute(ShellRequest) returns (ShellResponse);
+}
+
+message ShellRequest {
+  string command = 1;
+  string working_dir = 2;
+  uint32 timeout_seconds = 3;
+}
+
+message ShellResponse {
+  bool success = 1;
+  string stdout = 2;
+  string stderr = 3;
+  int32 exit_code = 4;
+  bool blocked = 5;
+  string block_reason = 6;
+}
+
+service FileService {
+  rpc ReadFile(ReadFileRequest) returns (ReadFileResponse);
+  rpc WriteFile(WriteFileRequest) returns (WriteFileResponse);
+  rpc ListDirectory(ListDirRequest) returns (ListDirResponse);
+}
+
+message ReadFileRequest {
+  string path = 1;
+  string base_dir = 2;
+}
+
+message ReadFileResponse {
+  bool success = 1;
+  string content = 2;
+  string error = 3;
+}
+
+message WriteFileRequest {
+  string path = 1;
+  string content = 2;
+  string base_dir = 3;
+}
+
+message WriteFileResponse {
+  bool success = 1;
+  uint64 bytes_written = 2;
+  string error = 3;
+}
+
+message ListDirRequest {
+  string path = 1;
+  string base_dir = 2;
+}
+
+message DirEntry {
+  string name = 1;
+  bool is_dir = 2;
+  uint64 size = 3;
+}
+
+message ListDirResponse {
+  bool success = 1;
+  repeated DirEntry entries = 2;
+  string error = 3;
+}
+
+service HttpService {
+  rpc Request(HttpRequest) returns (HttpResponse);
+}
+
+message HttpRequest {
+  string url = 1;
+  string method = 2;
+  map<string, string> headers = 3;
+  string body = 4;
+  uint32 timeout_seconds = 5;
+}
+
+message HttpResponse {
+  bool success = 1;
+  uint32 status_code = 2;
+  string body = 3;
+  bool blocked = 4;
+  string block_reason = 5;
+}
+
+service DocumentService {
+  rpc ChunkText(ChunkTextRequest) returns (ChunkTextResponse);
+  rpc EstimateTokens(EstimateTokensRequest) returns (EstimateTokensResponse);
+}
+
+message ChunkTextRequest {
+  string text = 1;
+  uint32 chunk_size = 2;
+  uint32 overlap = 3;
+}
+
+message TextChunk {
+  uint32 index = 1;
+  string content = 2;
+  uint32 token_count = 3;
+}
+
+message ChunkTextResponse {
+  repeated TextChunk chunks = 1;
+  uint32 total_chunks = 2;
+}
+
+message EstimateTokensRequest {
+  string text = 1;
+}
+
+message EstimateTokensResponse {
+  uint32 token_count = 1;
+}
+
+service SandboxService {
+  rpc CheckPath(PathCheckRequest) returns (PathCheckResponse);
+  rpc CheckCommand(CommandCheckRequest) returns (CommandCheckResponse);
+  rpc CheckUrl(UrlCheckRequest) returns (UrlCheckResponse);
+}
+
+message PathCheckRequest {
+  string path = 1;
+  string base_dir = 2;
+}
+
+message PathCheckResponse {
+  bool allowed = 1;
+  string resolved_path = 2;
+  string reason = 3;
+}
+
+message CommandCheckRequest {
+  string command = 1;
+}
+
+message CommandCheckResponse {
+  bool allowed = 1;
+  string matched_pattern = 2;
+}
+
+message UrlCheckRequest {
+  string url = 1;
+}
+
+message UrlCheckResponse {
+  bool allowed = 1;
+  string reason = 2;
+}

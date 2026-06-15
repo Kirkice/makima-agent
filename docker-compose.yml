@@ -77,11 +77,12 @@ services:
       dockerfile: infra/docker/tool-runtime.Dockerfile
     container_name: makima-tool-runtime
     restart: unless-stopped
+    ports:
+      - "50051:50051"
     environment:
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      redis:
-        condition: service_healthy
+      - RUST_LOG=info
+    volumes:
+      - /tmp/makima-sandbox:/tmp/makima-sandbox
 
 volumes:
   postgres_data:
