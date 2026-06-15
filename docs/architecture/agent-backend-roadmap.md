@@ -1,5 +1,8 @@
 # Makima Agent Backend Roadmap
 
+> **最后更新**: 2025-06-15  
+> **当前状态**: Phase 0-2 已完成 ✅
+
 ## 1. 目标
 
 这个项目的目标不是单纯做一个聊天机器人，而是做一个可持续扩展的 Agent 后端：
@@ -132,7 +135,7 @@ Storage / Queue / Observability / Safety
 
 ## 5. 实现阶段
 
-### Phase 0: 工程骨架
+### Phase 0: 工程骨架 ✅
 
 目标：
 
@@ -142,19 +145,20 @@ Storage / Queue / Observability / Safety
 
 产出：
 
-- `README.md`
-- `.env.example`
-- `docker-compose.yml`
-- `Makefile`
-- 目录结构完整
+- `README.md` ✅
+- `.env.example` ✅
+- `docker-compose.yml` ✅
+- `Makefile` ✅
+- `.gitmodules` ✅
+- 目录结构完整 ✅
 
 验收标准：
 
-- 仓库结构清晰
-- 参考代码可单独打开
-- 主工程没有和参考仓库强耦合
+- ✅ 仓库结构清晰
+- ✅ 参考代码可单独打开
+- ✅ 主工程没有和参考仓库强耦合
 
-### Phase 1: 最小 Agent 后端
+### Phase 1: 最小 Agent 后端 ✅
 
 目标：
 
@@ -164,18 +168,26 @@ Storage / Queue / Observability / Safety
 
 产出：
 
-- API 网关
-- 会话模型
-- Agent 任务模型
-- 最小编排链路
+- ✅ FastAPI 应用 (`apps/backend/src/makima/app.py`)
+- ✅ JWT 认证系统 (`auth.py`)
+- ✅ 会话模型与 API (`routes/sessions.py`)
+- ✅ 用户认证 API (`routes/auth.py`)
+- ✅ Agent 任务模型 (`models.py`)
+- ✅ SSE 流式输出 (`routes/tasks.py`)
+- ✅ LangGraph 编排 (`orchestrator/graph.py`)
+- ✅ 事件协议 (`packages/schemas/src/makima_schemas/events.py`)
+- ✅ API DTO (`packages/schemas/src/makima_schemas/api.py`)
+- ✅ 配置管理 (`packages/common/src/makima_common/config.py`)
+- ✅ 结构化日志 (`packages/common/src/makima_common/logging.py`)
+- ✅ LLM 客户端封装 (`clients/llm.py`)
 
 验收标准：
 
-- 用户发消息后可以进入 Agent 流程
-- Agent 至少能完成一个简单任务
-- 过程日志可追踪
+- ✅ 用户发消息后可以进入 Agent 流程
+- ✅ Agent 至少能完成一个简单任务
+- ✅ 过程日志可追踪
 
-### Phase 2: 工具执行
+### Phase 2: 工具执行 ✅
 
 目标：
 
@@ -184,18 +196,25 @@ Storage / Queue / Observability / Safety
 
 优先工具：
 
-- 文件系统读写
-- Git 仓库操作
-- HTTP 请求
-- Shell 命令
+- ✅ 文件系统读写 (`tools/file_tool.py`)
+- ✅ HTTP 请求 (`tools/http_tool.py`)
+- ✅ Shell 命令 (`tools/shell_tool.py`)
+- ✅ 工具注册表 (`tools/registry.py`)
+
+安全特性：
+
+- ✅ 路径遍历防护
+- ✅ 危险命令黑名单
+- ✅ 内网地址请求拦截
+- ✅ 命令执行超时控制
 
 验收标准：
 
-- 工具调用有统一协议
-- 工具结果可回传编排层
-- 风险操作可拦截或要求确认
+- ✅ 工具调用有统一协议
+- ✅ 工具结果可回传编排层
+- ✅ 风险操作可拦截或要求确认
 
-### Phase 3: 记忆与知识库
+### Phase 3: 记忆与知识库 🔲
 
 目标：
 
@@ -204,38 +223,38 @@ Storage / Queue / Observability / Safety
 
 产出：
 
-- `memory-service`
-- `knowledge-service`
-- 文档索引与向量检索
+- 🔲 `memory-service`
+- 🔲 `knowledge-service`
+- 🔲 文档索引与向量检索
 
 验收标准：
 
-- Agent 能记住用户偏好
-- Agent 能基于文档回答问题
-- 多轮对话上下文更稳定
+- 🔲 Agent 能记住用户偏好
+- 🔲 Agent 能基于文档回答问题
+- 🔲 多轮对话上下文更稳定
 
-### Phase 4: 产品化能力
+### Phase 4: 产品化能力 🔲
 
 目标：
 
-- 把系统从“能用”推进到“可长期使用”
+- 把系统从"能用"推进到"可长期使用"
 
 补齐内容：
 
-- 权限体系
-- 审计与回放
-- 任务队列
-- 重试和超时
-- 指标与告警
-- 配置中心
+- 🔲 权限体系
+- 🔲 审计与回放
+- 🔲 任务队列
+- 🔲 重试和超时
+- 🔲 指标与告警
+- 🔲 配置中心
 
 验收标准：
 
-- 失败可定位
-- 高风险操作可追溯
-- 长任务可恢复
+- 🔲 失败可定位
+- 🔲 高风险操作可追溯
+- 🔲 长任务可恢复
 
-### Phase 5: 客户端接入
+### Phase 5: 客户端接入 🔲
 
 目标：
 
@@ -243,20 +262,20 @@ Storage / Queue / Observability / Safety
 
 产出：
 
-- 事件协议
-- 流式状态协议
-- 语音与动作事件协议
+- 🔲 事件协议
+- 🔲 流式状态协议
+- 🔲 语音与动作事件协议
 
 验收标准：
 
-- 客户端只负责展示与输入输出
-- 业务逻辑不耦合到前端
+- 🔲 客户端只负责展示与输入输出
+- 🔲 业务逻辑不耦合到前端
 
 ## 6. 推荐技术选型
 
 ### 6.1 后端主栈
 
-- Python
+- Python 3.12
 - FastAPI
 - LangGraph
 - PostgreSQL
@@ -285,23 +304,23 @@ Storage / Queue / Observability / Safety
 ## 7. 目录与职责对应
 
 ```text
-apps/backend/                # 对外服务入口
+apps/backend/                # 对外服务入口 ✅
 services/api-gateway/        # API 和会话层
 services/agent-orchestrator/ # LangGraph 编排
 services/tool-runtime/       # 工具执行
 services/memory-service/     # 记忆封装
 services/knowledge-service/  # RAG 与检索
-packages/common/             # 通用代码
-packages/schemas/            # 协议与结构定义
+packages/common/             # 通用代码 ✅
+packages/schemas/            # 协议与结构定义 ✅
 packages/clients/            # 外部依赖客户端
 external/*                   # 外部依赖源码
 ```
 
 ## 8. 近期执行顺序
 
-1. 完成 `apps/backend` 的最小 API
-2. 把 LangGraph 作为编排骨架接起来
-3. 接入最小工具执行层
+1. ~~完成 `apps/backend` 的最小 API~~ ✅
+2. ~~把 LangGraph 作为编排骨架接起来~~ ✅
+3. ~~接入最小工具执行层~~ ✅
 4. 引入 Mem0 作为记忆层
 5. 加入文档检索服务
 6. 再补权限、队列、日志、回放
@@ -315,4 +334,3 @@ external/*                   # 外部依赖源码
 - 记忆和知识是可扩展的
 - 前端可以随时替换，不影响后端核心
 - 后续接 Unity 只需要对接协议，不需要重写后端
-

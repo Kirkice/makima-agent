@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "makima-common"
+version = "0.1.0"
+description = "Shared utilities for Makima Agent Backend"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "structlog>=24.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/makima_common"]
