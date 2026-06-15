@@ -105,6 +105,32 @@ def has_role_level(user_role: Role, min_role: Role) -> bool:
     return user_role.level >= min_role.level
 
 
+def check_permission(user: User, required_permission: Permission) -> bool:
+    """Check if a user has a specific permission.
+    
+    Args:
+        user: The user to check
+        required_permission: The permission to check for
+        
+    Returns:
+        True if the user has the permission, False otherwise
+    """
+    # Get user's role, default to USER if not set
+    role_str = getattr(user, "role", "user")
+    try:
+        user_role = Role(role_str)
+    except ValueError:
+        user_role = Role.USER
+    
+    return has_permission(user_role, required_permission)
+
+
+def get_current_user() -> User:
+    """Placeholder for current user dependency."""
+    # This will be implemented with proper JWT auth
+    pass
+
+
 async def get_current_user_role(
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
@@ -116,12 +142,6 @@ async def get_current_user_role(
         return Role(role_str)
     except ValueError:
         return Role.USER
-
-
-def get_current_user() -> User:
-    """Placeholder for current user dependency."""
-    # This will be implemented with proper JWT auth
-    pass
 
 
 def require_permission(permission: Permission) -> Callable:

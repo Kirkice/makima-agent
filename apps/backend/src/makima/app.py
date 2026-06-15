@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Initialize config center
     from makima.config_center.service import config_center
-    await config_center.initialize(settings.redis_url)
+    await config_center.initialize()
 
     yield
 
