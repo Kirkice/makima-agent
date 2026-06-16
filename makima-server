@@ -1,0 +1,71 @@
+@echo off
+chcp 65001 >nul 2>nul
+title Makima Agent
+cd /d "%~dp0"
+
+echo.
+echo ========================================
+echo   Makima Agent Launcher
+echo ========================================
+echo.
+
+:: Check dependencies
+echo   Checking dependencies...
+
+python -c "import rich" 2>nul
+if errorlevel 1 (
+    echo   Installing rich...
+    pip install rich -q 2>nul
+)
+
+python -c "import prompt_toolkit" 2>nul
+if errorlevel 1 (
+    echo   Installing prompt_toolkit...
+    pip install prompt_toolkit -q 2>nul
+)
+
+python -c "import httpx" 2>nul
+if errorlevel 1 (
+    echo   Installing httpx...
+    pip install httpx -q 2>nul
+)
+
+:: Start server in background (minimized window)
+echo   Starting server...
+start "Makima Server" /min cmd /c "cd /d %~dp0apps\backend && python -m uvicorn makima.app:app --host 0.0.0.0 --port 8000 --reload"
+
+:: Wait for server to be ready
+echo   Waiting for server to be ready...
+set /a attempts=0
+:wait_loop
+set /a attempts+=1
+if %attempts% gtr 30 (
+    echo.
+    echo   [ERROR] Server failed to start within 30 seconds
+    echo   Check apps\backend\.env for configuration
+    echo.
+    taskkill /FI "WINDOWTITLE eq Makima Server" /F 2>nul
+    pause
+    exit /b 1
+)
+python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" 2>nul
+if errorlevel 1 (
+    timeout /t 1 /nobreak >nul
+    goto wait_loop
+)
+
+echo   [OK] Server ready on http://localhost:8000
+echo.
+echo ========================================
+echo.
+
+:: Run the chat CLI
+python cli.py --server http://localhost:8000
+
+:: When chat exits, stop the server
+echo.
+echo   Stopping server...
+taskkill /FI "WINDOWTITLE eq Makima Server" /F 2>nul
+taskkill /F /IM uvicorn.exe 2>nul
+echo   [OK] Server stopped
+echo.

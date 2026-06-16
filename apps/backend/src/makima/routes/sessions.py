@@ -12,6 +12,7 @@ from makima.auth.models import User
 from makima.core.deps import get_current_user, get_db
 from makima.sessions.models import Session
 from makima_schemas.api import SessionCreate, SessionList, SessionResponse
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -73,6 +74,40 @@ async def get_session(
     session = result.scalar_one_or_none()
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    return SessionResponse(
+        id=session.id,
+        user_id=session.user_id,
+        title=session.title,
+        status=session.status,
+        created_at=session.created_at,
+        updated_at=session.updated_at,
+    )
+
+
+class SessionUpdate(BaseModel):
+    """Request body for updating a session."""
+    title: str | None = None
+
+
+@router.patch("/{session_id}", response_model=SessionResponse)
+async def update_session(
+    session_id: UUID,
+    body: SessionUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> SessionResponse:
+    """Update session title."""
+    result = await db.execute(
+        select(Session).where(Session.id == session_id, Session.user_id == user.id)
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    if body.title is not None:
+        session.title = body.title
+    
+    await db.flush()
     return SessionResponse(
         id=session.id,
         user_id=session.user_id,
