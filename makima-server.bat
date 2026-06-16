@@ -6,5 +6,7 @@ cd /d "%~dp0"
 :: Launch the Python launcher which manages server + chat
 python launcher.py
 
-:: If launcher fails, pause to show any error
-if errorlevel 1 pause
+:: Pause to show any output or error before closing
+echo.
+echo Press any key to exit...
+pause >nul

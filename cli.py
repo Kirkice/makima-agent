@@ -25,7 +25,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-DEFAULT_SERVER = "http://localhost:8000"
+DEFAULT_SERVER = "http://127.0.0.1:8000"
 
 COLORS = {
     "border": "#b24a56",
@@ -67,20 +67,23 @@ PROMPT_STYLE = Style.from_dict(
     }
 )
 
-# Exact 12x12 pixels sampled from t.png. Near-black background is treated as transparent.
+# 14x15 pixels loaded from LOGO.png. Transparent pixels are treated as empty space.
 PIXEL_COLORS = [
-    [None, None, None, None, None, None, None, None, None, None, None, None],
-    [None, None, None, "#a43249", "#c75265", "#c95268", "#cb5166", "#cc5165", "#9d3b4a", None, None, None],
-    [None, None, "#824250", "#ce5065", "#cf5166", "#cc5364", "#cd5362", "#cd5362", "#cd5362", "#a73946", None, None],
-    [None, "#952f44", "#e2727e", "#da7682", "#e37786", "#cd5266", "#cf5264", "#ce5163", "#e07682", "#dd7e86", "#9a343f", None],
-    [None, "#c75167", "#d15466", "#ce5568", "#cc5163", "#a43142", "#d15466", "#aa3545", "#d05166", "#cc5366", "#cc5364", "#933c4c"],
-    [None, "#ce526a", "#c2495c", "#c44d60", "#cd5868", "#a33947", "#ae384e", "#9c3f47", "#c85366", "#a43b49", "#ce5065", "#9e3947"],
-    ["#a3384a", "#a43845", "#c2495c", "#912f3c", "#973244", "#fcddd8", "#a73d51", "#a23344", "#8a2d38", "#a33a48", "#be4558", "#ce5368"],
-    ["#a8374b", "#842e3b", "#bc4c5a", "#fde1d5", "#f6e3d2", "#f5e7da", "#9d4754", "#fbe8d9", "#fee7d9", "#9e3845", "#a93f4d", "#cd4f65"],
-    ["#943847", "#8c3140", "#b55058", "#fdfaf5", "#ffefcb", "#f5e6e1", "#faebe4", "#fef9f6", "#ad7a29", "#6e3a3c", "#d99c9b", "#c94e62"],
-    [None, "#872f3d", "#bb4f5c", "#f4ede5", "#f8edd7", "#f8e9e2", "#f5e6df", "#f3e8e2", "#ffebca", "#83313f", "#ae4853", None],
-    [None, "#882a3a", "#b35b67", "#f9ece6", "#fdebdf", "#f9eddf", "#f7e5e1", "#f9eae5", "#f7eee7", None, "#712b36", None],
-    [None, None, "#8b3a4b", None, None, None, None, None, None, None, "#5e192b", None],
+    [None, None, None, '#b94d58', '#bc4f5a', '#d05966', '#d15966', '#d15966', '#d05966', '#bc4f5a', '#b94d58', None, None, None],
+    [None, None, '#d25864', '#ce5964', '#d15966', '#d25a67', '#d15a67', '#d15a67', '#d25a67', '#d15966', '#ce5964', '#d25864', None, None],
+    [None, '#c1515a', '#cf5865', '#d15966', '#d25b67', '#d05966', '#d15b67', '#d15b67', '#d05966', '#d25b67', '#d15966', '#cf5865', '#c1515a', None],
+    [None, '#c45862', '#d05863', '#d05964', '#d15663', '#d15966', '#d15a67', '#d15a67', '#d15966', '#d15663', '#d05964', '#d05863', '#c45862', None],
+    [None, '#d15965', '#d05965', '#d05966', '#d85f6a', '#a13e4a', '#d25b68', '#d25b68', '#a13e4a', '#d85f6a', '#d05966', '#d05965', '#d15965', None],
+    ['#ae4350', '#d15a66', '#a53f4c', '#cf5865', '#ca4d5d', '#a33e4b', '#d25a67', '#d25a67', '#a33e4b', '#ca4d5d', '#cf5865', '#a53f4c', '#d15a66', '#ae4350'],
+    ['#b74957', '#b14552', '#a33d4a', '#ae4654', '#ab3b48', '#e0afa3', '#bf4c59', '#bf4c59', '#e0afa3', '#ab3b48', '#ae4654', '#a33d4a', '#b14552', '#b74957'],
+    ['#b64856', '#ba4d58', '#8f554e', '#fcebdd', '#fcebdd', '#fcecde', '#fdebde', '#fdebde', '#fcecde', '#fcebdd', '#fcebdd', '#8f554e', '#ba4d58', '#b64856'],
+    ['#b64956', '#b44b56', '#4e2a15', '#45210e', '#42200e', '#975d52', '#fceadc', '#fceadc', '#975d52', '#42200e', '#45210e', '#4e2a15', '#b44b56', '#b64956'],
+    ['#b74b58', '#b54b56', '#814d43', '#fefbfc', '#f8c819', '#fdf7f0', '#fdeadd', '#fdeadd', '#fdf7f0', '#f8c819', '#fefbfc', '#814d43', '#b54b56', '#b74b58'],
+    ['#b54b56', '#b14953', '#b74b58', '#fceade', '#fde9d7', '#fceadd', '#fceadc', '#fceadc', '#fceadd', '#fde9d7', '#fceade', '#b74b58', '#b14953', '#b54b56'],
+    [None, '#a7424f', '#a4424e', '#fbeadd', '#fbebdd', '#fdebdd', '#af6f6a', '#af6f6a', '#fdebdd', '#fbebdd', '#fbeadd', '#a4424e', '#a7424f', None],
+    [None, '#a7414d', None, '#834e66', '#f8ded4', '#f9e4d9', '#ecc7ba', '#ecc7ba', '#f9e4d9', '#f8ded4', '#834e66', None, '#a7414d', None],
+    [None, '#b34858', None, None, '#bcbab4', '#f6f2e8', '#f7f3eb', '#f7f3eb', '#f6f2e8', '#bcbab4', None, None, '#b34858', None],
+    [None, '#9b4d62', None, '#969394', '#f8f3ea', '#bbb9b2', '#3e393b', '#3e393b', '#bbb9b2', '#f8f3ea', '#969394', None, '#9b4d62', None],
 ]
 
 
@@ -121,7 +124,7 @@ def load_env_credentials() -> tuple[str, str]:
 class MakimaCLI:
     def __init__(self, server_url: str = DEFAULT_SERVER):
         self.server_url = server_url.rstrip("/")
-        self.client = httpx.Client(timeout=120.0)
+        self.client = httpx.Client(timeout=120.0, trust_env=False)
         self.token: Optional[str] = None
         self.user_id: Optional[str] = None
         self.session_id: Optional[str] = None
