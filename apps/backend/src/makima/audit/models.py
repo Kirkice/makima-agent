@@ -8,7 +8,6 @@ from enum import Enum
 from typing import Any
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, Index
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from makima.core.models import Base
@@ -102,7 +101,7 @@ class AuditLog(Base):
     request_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     
     # Additional metadata
-    details: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    details: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_stack: Mapped[str | None] = mapped_column(Text, nullable=True)
     

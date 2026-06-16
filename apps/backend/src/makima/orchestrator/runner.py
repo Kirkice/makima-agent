@@ -111,43 +111,39 @@ async def run_agent(
     }
 
     try:
-        async for event in graph.astream_events(
-            initial_state,
-            config=config,
-            version="v2",
-        ):
+        # Use astream to capture state updates including tool calls/results
+        async for chunk in graph.astream(initial_state, config=config, stream_mode="updates"):
             step += 1
-            event_kind = event.get("event")
-
-            if event_kind == "on_chat_model_stream":
-                chunk = event.get("data", {}).get("chunk")
-                if chunk and chunk.content:
-                    yield AgentEvent(
-                        type=AgentEventType.MESSAGE,
-                        data={"content": chunk.content, "partial": True},
-                        timestamp=time.time(),
-                        step=step,
-                    )
-
-            elif event_kind == "on_tool_start":
-                tool_name = event.get("name", "unknown")
-                tool_input = event.get("data", {}).get("input", {})
-                yield AgentEvent(
-                    type=AgentEventType.TOOL_CALL,
-                    data={"tool": tool_name, "input": tool_input},
-                    timestamp=time.time(),
-                    step=step,
-                )
-
-            elif event_kind == "on_tool_end":
-                tool_name = event.get("name", "unknown")
-                tool_output = event.get("data", {}).get("output", "")
-                yield AgentEvent(
-                    type=AgentEventType.TOOL_RESULT,
-                    data={"tool": tool_name, "output": str(tool_output)},
-                    timestamp=time.time(),
-                    step=step,
-                )
+            # chunk is a dict of {node_name: state_update}
+            for node_name, state_update in chunk.items():
+                messages = state_update.get("messages", [])
+                for msg in messages:
+                    # Tool calls from agent node
+                    if hasattr(msg, "tool_calls") and msg.tool_calls:
+                        for tc in msg.tool_calls:
+                            yield AgentEvent(
+                                type=AgentEventType.TOOL_CALL,
+                                data={"tool": tc.get("name", "unknown"), "input": tc.get("args", {})},
+                                timestamp=time.time(),
+                                step=step,
+                            )
+                    # Tool results from tools node
+                    elif hasattr(msg, "name") and node_name == "tools":
+                        yield AgentEvent(
+                            type=AgentEventType.TOOL_RESULT,
+                            data={"tool": msg.name or "unknown", "output": str(msg.content)},
+                            timestamp=time.time(),
+                            step=step,
+                        )
+                    # Final AI message (no tool calls)
+                    elif hasattr(msg, "content") and msg.content and node_name == "agent":
+                        if not (hasattr(msg, "tool_calls") and msg.tool_calls):
+                            yield AgentEvent(
+                                type=AgentEventType.MESSAGE,
+                                data={"content": str(msg.content)},
+                                timestamp=time.time(),
+                                step=step,
+                            )
 
     except Exception as e:
         logger.error("Agent execution failed", error=str(e), session_id=session_id)

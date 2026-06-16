@@ -58,7 +58,7 @@ class MakimaCLI:
             headers=headers
         )
         
-        if resp.status_code == 200:
+        if resp.status_code in (200, 201):
             data = resp.json()
             self.session_id = data["id"]
             print(f"✅ 会话已创建: {title} (ID: {self.session_id[:8]}...)")
@@ -99,20 +99,25 @@ class MakimaCLI:
                         try:
                             data = json.loads(data_str)
                             
-                            if event_type == "thought":
-                                print(f"\n💭 思考: {data.get('data', '')}", flush=True)
+                            if event_type == "thinking":
+                                phase = data.get('data', {}).get('phase', '')
+                                print(f"\n💭 思考: {phase}" if phase else "\n💭 思考中...", flush=True)
                             elif event_type == "tool_call":
-                                tool_name = data.get('data', {}).get('name', 'unknown')
-                                print(f"\n🔧 工具: {tool_name}", flush=True)
+                                tool_name = data.get('data', {}).get('tool', 'unknown')
+                                print(f"\n🔧 工具调用: {tool_name}", flush=True)
                             elif event_type == "tool_result":
-                                result = data.get('data', {}).get('result', '')
-                                print(f"\n📝 结果: {result[:100]}..." if len(result) > 100 else f"\n📝 结果: {result}", flush=True)
+                                tool_name = data.get('data', {}).get('tool', 'unknown')
+                                output = data.get('data', {}).get('output', '')
+                                print(f"\n📝 {tool_name} 结果: {output[:100]}..." if len(output) > 100 else f"\n📝 {tool_name} 结果: {output}", flush=True)
                             elif event_type == "message":
-                                print(data.get('data', ''), end="", flush=True)
+                                content = data.get('data', {}).get('content', '')
+                                if content:
+                                    print(content, end="", flush=True)
                             elif event_type == "done":
                                 print("\n", flush=True)
                             elif event_type == "error":
-                                print(f"\n❌ 错误: {data.get('data', '')}", flush=True)
+                                error_msg = data.get('data', {}).get('error', '')
+                                print(f"\n❌ 错误: {error_msg}", flush=True)
                         except json.JSONDecodeError:
                             pass
         

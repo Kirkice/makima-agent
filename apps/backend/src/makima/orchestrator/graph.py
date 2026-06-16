@@ -78,7 +78,14 @@ def build_graph(
         # Prepend system message
         full_messages = [SystemMessage(content=system_content)] + messages
 
-        response = await llm_with_tools.ainvoke(full_messages)
+        # Use astream to enable on_chat_model_stream events in astream_events
+        response = None
+        async for chunk in llm_with_tools.astream(full_messages):
+            if response is None:
+                response = chunk
+            else:
+                response += chunk  # accumulate chunks
+
         return {"messages": [response]}
 
     def should_continue(state: AgentState) -> str:

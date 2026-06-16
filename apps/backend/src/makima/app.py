@@ -23,6 +23,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings = get_settings()
     setup_logging(debug=settings.debug)
 
+    # Auto-create database tables (for SQLite development mode)
+    from makima.core.db import engine
+    from makima.core.models import Base
+    import makima.auth.models  # noqa: F401
+    import makima.sessions.models  # noqa: F401
+    import makima.tasks.models  # noqa: F401
+    import makima.audit.models  # noqa: F401
+    import makima.knowledge.models  # noqa: F401
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
     # Initialize config center
     from makima.config_center.service import config_center
     await config_center.initialize()
