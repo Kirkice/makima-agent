@@ -29,14 +29,14 @@ DEFAULT_SERVER = "http://127.0.0.1:8000"
 
 COLORS = {
     "border": "#b24a56",
-    "border_soft": "#6d2b35",
+    "border_soft": "#5e2630",
     "rose": "#f1a0a7",
     "crimson": "#da6570",
     "gold": "#d7b46a",
     "amber": "#e8c27a",
     "ivory": "#f6f0e8",
     "ink": "#101018",
-    "muted": "#8c7f83",
+    "muted": "#9f8e93",
     "shadow": "#09080d",
 }
 
@@ -64,6 +64,8 @@ PROMPT_STYLE = Style.from_dict(
     {
         "prompt": f"bold {COLORS['ivory']}",
         "arrow": f"bold {COLORS['gold']}",
+        "label": f"bold {COLORS['rose']}",
+        "meta": COLORS["muted"],
     }
 )
 
@@ -97,6 +99,21 @@ def render_pixel_avatar() -> Text:
                 art.append("  ", style=f"on {cell}")
         art.append("\n")
     return art
+
+
+def render_status_bar(items: list[tuple[str, str]]) -> Panel:
+    content = Text()
+    for index, (label, value) in enumerate(items):
+        if index:
+            content.append("  //  ", style="dim")
+        content.append(f"{label} ", style="dim")
+        content.append(value, style="bold")
+    return Panel(
+        Align.center(content),
+        border_style="border_soft",
+        box=box.ROUNDED,
+        padding=(0, 1),
+    )
 
 
 def load_env_credentials() -> tuple[str, str]:
@@ -134,30 +151,56 @@ class MakimaCLI:
         self._title_generated = False
 
     def print_banner(self) -> None:
-        title = Text()
-        title.append("Makima", style=f"bold {COLORS['ivory']}")
-        title.append("  ", style="dim")
-        title.append("Personal Agent", style=f"bold {COLORS['gold']}")
+        eyebrow = Text("MAKIMA CONTROL CONSOLE", style=f"bold {COLORS['rose']}")
+        title = Text("Personal Devil of the Terminal", style=f"bold {COLORS['ivory']}")
+        subtitle = Text(
+            "Precision. Memory. Obedience.",
+            style="accent",
+        )
+        notes = Text()
+        notes.append("Private assistant for chat, code, tools, and context.", style="dim")
+        tips = Text()
+        tips.append("/help", style=f"bold {COLORS['gold']}")
+        tips.append(" for commands", style="dim")
+        tips.append("   ", style="dim")
+        tips.append("/exit", style=f"bold {COLORS['gold']}")
+        tips.append(" to disengage", style="dim")
 
-        content = Group(
-            Align.center(render_pixel_avatar()),
-            Text(""),
-            Align.center(title),
-            Align.center(Text("Precision. Memory. Control.", style="accent")),
-            Text(""),
-            Text("  Private assistant for chat, code, tools, and context.", style="dim"),
-            Text("  Type /help for commands.", style="dim"),
-            Text("  Press Ctrl+C or type /exit to quit.", style="dim"),
+        content = Table.grid(expand=True, padding=(0, 2))
+        content.add_column(width=32)
+        content.add_column(ratio=1)
+        content.add_row(
+            render_pixel_avatar(),
+            Group(
+                Text(""),
+                eyebrow,
+                Text(""),
+                title,
+                subtitle,
+                Text(""),
+                notes,
+                Text(""),
+                tips,
+            ),
         )
 
         console.print(
             Panel(
                 content,
-                title="[title]Makima[/title]",
-                subtitle="[dim]personal assistant cockpit[/dim]",
                 border_style="border",
                 box=box.DOUBLE,
+                title="[title]Makima[/title]",
+                subtitle="[dim]control node[/dim]",
                 padding=(1, 2),
+            )
+        )
+        console.print(
+            render_status_bar(
+                [
+                    ("mode", "dominion"),
+                    ("transport", "local api"),
+                    ("persona", "makima"),
+                ]
             )
         )
         console.print()
@@ -173,7 +216,53 @@ class MakimaCLI:
         console.print(f"  [error]ERROR[/error] {message}")
 
     def print_divider(self) -> None:
-        console.print(Panel.fit("", border_style="border_soft", box=box.SQUARE))
+        console.rule("[dim]red channel open[/dim]", style=COLORS["border_soft"])
+
+    def print_session_header(self, username: str) -> None:
+        info = Table.grid(expand=True)
+        info.add_column(ratio=1)
+        info.add_column(ratio=1)
+        info.add_column(ratio=1)
+        info.add_row(
+            f"[dim]user[/dim] [bold]{username}[/bold]",
+            f"[dim]session[/dim] [bold]{self.session_title}[/bold]",
+            f"[dim]server[/dim] [bold]{self.server_url}[/bold]",
+        )
+        console.print(
+            Panel(
+                info,
+                border_style="border_soft",
+                box=box.ROUNDED,
+                title="[title]Console Ready[/title]",
+                padding=(0, 1),
+            )
+        )
+
+    def print_session_details(self, username: str) -> None:
+        details = Table.grid(expand=True, padding=(0, 1))
+        details.add_column(ratio=1)
+        details.add_column(ratio=1)
+        details.add_column(ratio=1)
+        details.add_row(
+            f"[dim]user[/dim] [bold]{username}[/bold]",
+            f"[dim]session[/dim] [bold]{self.session_title}[/bold]",
+            f"[dim]id[/dim] [bold]{self.session_id}[/bold]",
+        )
+        details.add_row(
+            f"[dim]server[/dim] [bold]{self.server_url}[/bold]",
+            f"[dim]title lock[/dim] [bold]{'armed' if self._title_generated else 'idle'}[/bold]",
+            f"[dim]status[/dim] [bold]{'online' if self.token else 'offline'}[/bold]",
+        )
+        console.print(
+            Panel(
+                details,
+                title="[title]Session Telemetry[/title]",
+                subtitle="[dim]live console state[/dim]",
+                border_style="border",
+                box=box.DOUBLE,
+                padding=(1, 2),
+            )
+        )
 
     def login(self, username: str, password: str) -> bool:
         try:
@@ -330,7 +419,7 @@ class MakimaCLI:
                     border_style="border",
                     box=box.ROUNDED,
                     title="[agent]Makima[/agent]",
-                    title_align="left",
+                    subtitle="[dim]processing[/dim]",
                     padding=(0, 1),
                 ),
                 console=console,
@@ -379,7 +468,7 @@ class MakimaCLI:
                                     border_style="border",
                                     box=box.ROUNDED,
                                     title="[agent]Makima[/agent]",
-                                    title_align="left",
+                                    subtitle="[dim]thinking[/dim]",
                                     padding=(0, 1),
                                 )
                             )
@@ -399,7 +488,7 @@ class MakimaCLI:
                                     border_style="tool",
                                     box=box.ROUNDED,
                                     title="[agent]Makima[/agent]",
-                                    title_align="left",
+                                    subtitle="[dim]tool dispatch[/dim]",
                                     padding=(0, 1),
                                 )
                             )
@@ -416,7 +505,7 @@ class MakimaCLI:
                                     border_style="tool",
                                     box=box.ROUNDED,
                                     title="[agent]Makima[/agent]",
-                                    title_align="left",
+                                    subtitle="[dim]tool result[/dim]",
                                     padding=(0, 1),
                                 )
                             )
@@ -439,20 +528,20 @@ class MakimaCLI:
         if tool_calls:
             for tool_name, tool_input in tool_calls:
                 line = Text()
-                line.append("• ", style="tool")
+                line.append("COMMAND ", style="tool")
                 line.append(tool_name, style="bold")
                 if tool_input:
                     line.append("  ", style="dim")
                     input_str = json.dumps(tool_input, ensure_ascii=False)
                     if len(input_str) > 100:
                         input_str = input_str[:100] + "..."
-                    line.append(input_str, style="dim")
+                    line.append(f"  {input_str}", style="dim")
                 panel_parts.append(line)
 
         if tool_results:
             for tool_name, output in tool_results:
                 line = Text()
-                line.append("• ", style="dim")
+                line.append("RESULT ", style="dim")
                 line.append(tool_name, style="dim italic")
                 panel_parts.append(line)
                 if len(output) > 200:
@@ -477,7 +566,7 @@ class MakimaCLI:
                 border_style="border",
                 box=box.ROUNDED,
                 title="[agent]Makima[/agent]",
-                title_align="left",
+                subtitle="[dim]response[/dim]",
                 padding=(1, 2),
             )
         )
@@ -489,6 +578,7 @@ class MakimaCLI:
             show_header=True,
             header_style=f"bold {COLORS['gold']}",
             border_style="border_soft",
+            box=box.SIMPLE_HEAVY,
             padding=(0, 2),
         )
         table.add_column("Command", style="bold", width=20)
@@ -504,10 +594,14 @@ class MakimaCLI:
         console.print()
         console.print(
             Panel(
-                table,
-                title="[title]Commands[/title]",
+                Group(
+                    table,
+                    Text(""),
+                    Text("Tip: use /session to inspect the active chat context.", style="dim"),
+                ),
+                title="[title]Command Index[/title]",
                 border_style="border_soft",
-                box=box.SQUARE,
+                box=box.ROUNDED,
                 padding=(0, 1),
             )
         )
@@ -540,6 +634,7 @@ class MakimaCLI:
         if not self.create_session("New Chat"):
             sys.exit(1)
 
+        self.print_session_header(username)
         self.print_divider()
         console.print()
 
@@ -552,7 +647,12 @@ class MakimaCLI:
 
         while True:
             try:
-                message = self.prompt_session.prompt(HTML("  <b>></b> ")).strip()
+                message = self.prompt_session.prompt(
+                    HTML(
+                        "  <label>makima</label> <meta>binds</meta> "
+                        f"<prompt>{username}</prompt> <arrow>&gt;</arrow> "
+                    )
+                ).strip()
                 if not message:
                     continue
 
@@ -565,14 +665,13 @@ class MakimaCLI:
                 if message == "/clear":
                     console.clear()
                     self.print_banner()
+                    self.print_session_header(username)
                     self.print_divider()
                     console.print()
                     continue
                 if message == "/session":
                     console.print()
-                    console.print(f"  [bold]User:[/bold]    {username}")
-                    console.print(f"  [bold]Session:[/bold] {self.session_title}")
-                    console.print(f"  [bold]ID:[/bold]      {self.session_id}")
+                    self.print_session_details(username)
                     console.print()
                     continue
 

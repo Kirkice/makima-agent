@@ -113,18 +113,40 @@ def check_dependencies() -> None:
 
 
 def cleanup_port() -> None:
-    """Kill any existing process on port 8000 before starting."""
+    """Kill any existing Makima backend process before starting."""
     try:
-        import subprocess as sp
-        out = sp.run(
-            ["powershell", "-Command",
-             'netstat -ano | findstr ":8000" | findstr LISTENING | %%{$_.ToString().Trim().Split()[-1]}'],
-            capture_output=True, text=True, timeout=5, shell=True,
+        script = r"""
+$pids = @()
+
+try {
+    $pids += Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess
+} catch {}
+
+try {
+    $pids += Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.CommandLine -match 'uvicorn\s+makima\.app:app' -or
+            $_.CommandLine -match 'makima\.app:app' -or
+            $_.CommandLine -match '--app-dir\s+apps/backend/src'
+        } |
+        Select-Object -ExpandProperty ProcessId
+} catch {}
+
+foreach ($pid in ($pids | Where-Object { $_ } | Sort-Object -Unique)) {
+    try {
+        taskkill /F /T /PID $pid | Out-Null
+    } catch {}
+}
+"""
+        subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
         )
-        pid = out.stdout.strip()
-        if pid:
-            sp.run(["taskkill", "/F", "/PID", pid], capture_output=True, timeout=5)
-            time.sleep(1)
+        time.sleep(1)
     except Exception:
         pass
 
@@ -181,6 +203,7 @@ def main() -> None:
     if not wait_for_server(timeout=30):
         print("\n  [ERROR] Server failed to start within 30 seconds")
         print("  Check apps/backend/.env for configuration")
+        cleanup_port()
         server_proc.terminate()
         input("\n  Press Enter to exit...")
         sys.exit(1)
