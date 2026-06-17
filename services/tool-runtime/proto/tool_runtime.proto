@@ -150,3 +150,184 @@ message UrlCheckResponse {
   bool allowed = 1;
   string reason = 2;
 }
+
+// ============================================================================
+// Checkpoint Service - File snapshot and rollback
+// ============================================================================
+
+service CheckpointService {
+  rpc Save(SaveCheckpointRequest) returns (SaveCheckpointResponse);
+  rpc Restore(RestoreCheckpointRequest) returns (RestoreCheckpointResponse);
+  rpc List(ListCheckpointsRequest) returns (ListCheckpointsResponse);
+  rpc Delete(DeleteCheckpointRequest) returns (DeleteCheckpointResponse);
+}
+
+message SaveCheckpointRequest {
+  string directory = 1;
+  string base_dir = 2;
+  string label = 3;
+}
+
+message CheckpointInfo {
+  string checkpoint_id = 1;
+  string label = 2;
+  string created_at = 3;
+  uint64 file_count = 4;
+  uint64 total_bytes = 5;
+}
+
+message SaveCheckpointResponse {
+  bool success = 1;
+  CheckpointInfo checkpoint = 2;
+  string error = 3;
+}
+
+message RestoreCheckpointRequest {
+  string checkpoint_id = 1;
+  string base_dir = 2;
+}
+
+message RestoreCheckpointResponse {
+  bool success = 1;
+  uint64 restored_files = 2;
+  string error = 3;
+}
+
+message ListCheckpointsRequest {
+  string base_dir = 1;
+}
+
+message ListCheckpointsResponse {
+  bool success = 1;
+  repeated CheckpointInfo checkpoints = 2;
+  string error = 3;
+}
+
+message DeleteCheckpointRequest {
+  string checkpoint_id = 1;
+  string base_dir = 2;
+}
+
+message DeleteCheckpointResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// ============================================================================
+// File Tracker Service - Track file changes and detect external modifications
+// ============================================================================
+
+service FileTrackerService {
+  rpc Snapshot(SnapshotRequest) returns (SnapshotResponse);
+  rpc CheckDiff(CheckDiffRequest) returns (CheckDiffResponse);
+  rpc GetHistory(GetHistoryRequest) returns (GetHistoryResponse);
+  rpc ClearHistory(ClearHistoryRequest) returns (ClearHistoryResponse);
+}
+
+message SnapshotRequest {
+  string path = 1;
+  string base_dir = 2;
+}
+
+message FileHash {
+  string path = 1;
+  string sha256 = 2;
+  uint64 size = 3;
+  string modified_at = 4;
+}
+
+message SnapshotResponse {
+  bool success = 1;
+  FileHash file_hash = 2;
+  string error = 3;
+}
+
+message CheckDiffRequest {
+  string path = 1;
+  string base_dir = 2;
+}
+
+message CheckDiffResponse {
+  bool exists = 1;
+  bool modified = 2;
+  bool deleted = 3;
+  string current_sha256 = 4;
+  string tracked_sha256 = 5;
+  string error = 6;
+}
+
+message GetHistoryRequest {
+  string path = 1;
+  string base_dir = 2;
+}
+
+message FileHistoryEntry {
+  string action = 1;  // "read", "write", "user_edited"
+  string timestamp = 2;
+  string sha256 = 3;
+}
+
+message GetHistoryResponse {
+  bool success = 1;
+  repeated FileHistoryEntry history = 2;
+  string error = 3;
+}
+
+message ClearHistoryRequest {
+  string path = 1;
+  string base_dir = 2;
+}
+
+message ClearHistoryResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// ============================================================================
+// Token Counter Service - Count and truncate tokens
+// ============================================================================
+
+service TokenCounterService {
+  rpc Count(CountTokensRequest) returns (CountTokensResponse);
+  rpc Truncate(TruncateTokensRequest) returns (TruncateTokensResponse);
+  rpc BatchCount(BatchCountRequest) returns (BatchCountResponse);
+}
+
+message CountTokensRequest {
+  string text = 1;
+  string model = 2;  // e.g., "gpt-4", "claude-3"
+}
+
+message CountTokensResponse {
+  bool success = 1;
+  uint32 token_count = 2;
+  string error = 3;
+}
+
+message TruncateTokensRequest {
+  string text = 1;
+  uint32 max_tokens = 2;
+  string model = 3;
+  bool preserve_start = 4;  // If true, keep beginning; if false, keep end
+}
+
+message TruncateTokensResponse {
+  bool success = 1;
+  string truncated_text = 2;
+  uint32 original_tokens = 3;
+  uint32 truncated_tokens = 4;
+  bool was_truncated = 5;
+  string error = 6;
+}
+
+message BatchCountRequest {
+  repeated string texts = 1;
+  string model = 2;
+}
+
+message BatchCountResponse {
+  bool success = 1;
+  repeated uint32 token_counts = 2;
+  uint32 total_tokens = 3;
+  string error = 4;
+}

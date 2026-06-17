@@ -1,0 +1,253 @@
+//! File tracker service - track file changes and detect external modifications
+//!
+//! Monitors files for changes using SHA256 hashing, allowing detection of
+//! external modifications that occurred outside the Agent's operations.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use sha2::{Digest, Sha256};
+use tokio::fs;
+use tracing::{debug, info};
+
+/// A file history entry
+#[derive(Clone, Debug)]
+pub struct FileHistoryEntry {
+    pub action: String,
+    pub timestamp: String,
+    pub sha256: String,
+}
+
+/// Tracked file state
+#[derive(Clone, Debug)]
+pub struct TrackedFile {
+    pub path: PathBuf,
+    pub sha256: String,
+    pub size: u64,
+    pub modified_at: String,
+    pub history: Vec<FileHistoryEntry>,
+}
+
+/// File tracker manager
+pub struct FileTrackerManager {
+    tracked_files: Mutex<HashMap<String, TrackedFile>>,
+}
+
+impl FileTrackerManager {
+    pub fn new() -> Self {
+        Self {
+            tracked_files: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Calculate SHA256 hash of bytes
+    fn sha256_hash(data: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        format!("{:x}", hasher.finalize())
+    }
+
+    /// Generate a unique key for a file path
+    fn make_key(path: &Path, base_dir: &Path) -> String {
+        let resolved = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            base_dir.join(path)
+        };
+        resolved.to_string_lossy().to_string()
+    }
+
+    /// Snapshot a file - record its current hash and size
+    pub async fn snapshot(
+        &self,
+        path: &str,
+        base_dir: &Path,
+    ) -> Result<TrackedFile, String> {
+        let file_path = if Path::new(path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            base_dir.join(path)
+        };
+
+        if !file_path.exists() {
+            return Err(format!("File does not exist: {}", file_path.display()));
+        }
+
+        let content = fs::read(&file_path)
+            .await
+            .map_err(|e| format!("Failed to read file: {}", e))?;
+
+        let sha256 = Self::sha256_hash(&content);
+        let size = content.len() as u64;
+        let modified_at = chrono::Utc::now().to_rfc3339();
+
+        let tracked = TrackedFile {
+            path: file_path.clone(),
+            sha256: sha256.clone(),
+            size,
+            modified_at: modified_at.clone(),
+            history: vec![FileHistoryEntry {
+                action: "snapshot".to_string(),
+                timestamp: modified_at,
+                sha256: sha256.clone(),
+            }],
+        };
+
+        let key = Self::make_key(&file_path, base_dir);
+        self.tracked_files
+            .lock()
+            .unwrap()
+            .insert(key, tracked.clone());
+
+        info!("File snapshot: path={}, sha256={}", file_path.display(), sha256);
+        Ok(tracked)
+    }
+
+    /// Check if a file has been modified since last snapshot
+    pub async fn check_diff(
+        &self,
+        path: &str,
+        base_dir: &Path,
+    ) -> Result<(bool, bool, bool, String, String), String> {
+        let file_path = if Path::new(path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            base_dir.join(path)
+        };
+
+        let key = Self::make_key(&file_path, base_dir);
+
+        let tracked = {
+            let files = self.tracked_files.lock().unwrap();
+            files.get(&key).cloned()
+        };
+
+        let tracked_sha256 = tracked
+            .as_ref()
+            .map(|t| t.sha256.clone())
+            .unwrap_or_default();
+
+        if !file_path.exists() {
+            return Ok((false, false, true, String::new(), tracked_sha256));
+        }
+
+        let content = fs::read(&file_path)
+            .await
+            .map_err(|e| format!("Failed to read file: {}", e))?;
+
+        let current_sha256 = Self::sha256_hash(&content);
+        let modified = tracked.as_ref().map(|t| t.sha256 != current_sha256).unwrap_or(true);
+
+        debug!(
+            "File diff check: path={}, tracked={}, current={}, modified={}",
+            file_path.display(),
+            tracked_sha256,
+            current_sha256,
+            modified
+        );
+
+        Ok((true, modified, false, current_sha256, tracked_sha256))
+    }
+
+    /// Get the history of a tracked file
+    pub fn get_history(
+        &self,
+        path: &str,
+        base_dir: &Path,
+    ) -> Result<Vec<FileHistoryEntry>, String> {
+        let file_path = if Path::new(path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            base_dir.join(path)
+        };
+
+        let key = Self::make_key(&file_path, base_dir);
+
+        let files = self.tracked_files.lock().unwrap();
+        match files.get(&key) {
+            Some(tracked) => Ok(tracked.history.clone()),
+            None => Err(format!("File not tracked: {}", file_path.display())),
+        }
+    }
+
+    /// Record an action on a tracked file
+    pub async fn record_action(
+        &self,
+        path: &str,
+        base_dir: &Path,
+        action: &str,
+    ) -> Result<(), String> {
+        let file_path = if Path::new(path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            base_dir.join(path)
+        };
+
+        let key = Self::make_key(&file_path, base_dir);
+
+        let content = fs::read(&file_path)
+            .await
+            .map_err(|e| format!("Failed to read file: {}", e))?;
+
+        let sha256 = Self::sha256_hash(&content);
+        let timestamp = chrono::Utc::now().to_rfc3339();
+
+        let mut files = self.tracked_files.lock().unwrap();
+        if let Some(tracked) = files.get_mut(&key) {
+            tracked.sha256 = sha256.clone();
+            tracked.size = content.len() as u64;
+            tracked.modified_at = timestamp.clone();
+            tracked.history.push(FileHistoryEntry {
+                action: action.to_string(),
+                timestamp,
+                sha256,
+            });
+        } else {
+            // Auto-track the file
+            let tracked = TrackedFile {
+                path: file_path,
+                sha256: sha256.clone(),
+                size: content.len() as u64,
+                modified_at: timestamp.clone(),
+                history: vec![FileHistoryEntry {
+                    action: action.to_string(),
+                    timestamp,
+                    sha256,
+                }],
+            };
+            files.insert(key, tracked);
+        }
+
+        Ok(())
+    }
+
+    /// Clear history for a file
+    pub fn clear_history(
+        &self,
+        path: &str,
+        base_dir: &Path,
+    ) -> Result<(), String> {
+        let file_path = if Path::new(path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            base_dir.join(path)
+        };
+
+        let key = Self::make_key(&file_path, base_dir);
+
+        let mut files = self.tracked_files.lock().unwrap();
+        if files.remove(&key).is_some() {
+            info!("File history cleared: {}", file_path.display());
+            Ok(())
+        } else {
+            Err(format!("File not tracked: {}", file_path.display()))
+        }
+    }
+}
+
+impl Default for FileTrackerManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}

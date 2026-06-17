@@ -1,4 +1,6 @@
-﻿use std::collections::HashMap;
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use crate::proto::{
@@ -7,11 +9,17 @@ use crate::proto::{
     http_service_server::HttpService,
     document_service_server::DocumentService,
     sandbox_service_server::SandboxService,
+    checkpoint_service_server::CheckpointService,
+    file_tracker_service_server::FileTrackerService,
+    token_counter_service_server::TokenCounterService,
     *,
 };
 use crate::tools::{ShellExecutor, FileOperations, HttpClient};
 use crate::document::TextChunker;
 use crate::sandbox::{PathSecurity, CommandFilter, NetworkPolicy};
+use crate::checkpoint::CheckpointManager;
+use crate::tracker::FileTrackerManager;
+use crate::tokens::TokenCounter;
 
 // Shell Service
 pub struct ShellServiceImpl { executor: ShellExecutor }
@@ -154,6 +162,287 @@ impl SandboxService for SandboxServiceImpl {
         match policy.validate_url(&req.url) {
             Ok(()) => Ok(Response::new(UrlCheckResponse { allowed: true, reason: String::new() })),
             Err(e) => Ok(Response::new(UrlCheckResponse { allowed: false, reason: e.to_string() })),
+        }
+    }
+}
+
+// Checkpoint Service
+pub struct CheckpointServiceImpl {
+    manager: Arc<CheckpointManager>,
+}
+
+impl CheckpointServiceImpl {
+    pub fn new(manager: Arc<CheckpointManager>) -> Self {
+        Self { manager }
+    }
+}
+
+#[tonic::async_trait]
+impl CheckpointService for CheckpointServiceImpl {
+    async fn save(&self, request: Request<SaveCheckpointRequest>) -> Result<Response<SaveCheckpointResponse>, Status> {
+        let req = request.into_inner();
+        let base_dir = Path::new(&req.base_dir);
+        let dir = Path::new(&req.directory);
+
+        match self.manager.save(dir, base_dir, &req.label).await {
+            Ok(checkpoint) => Ok(Response::new(SaveCheckpointResponse {
+                success: true,
+                checkpoint: Some(CheckpointInfo {
+                    checkpoint_id: checkpoint.id,
+                    label: checkpoint.label,
+                    created_at: checkpoint.created_at,
+                    file_count: checkpoint.file_count(),
+                    total_bytes: checkpoint.total_bytes(),
+                }),
+                error: String::new(),
+            })),
+            Err(e) => Ok(Response::new(SaveCheckpointResponse {
+                success: false,
+                checkpoint: None,
+                error: e,
+            })),
+        }
+    }
+
+    async fn restore(&self, request: Request<RestoreCheckpointRequest>) -> Result<Response<RestoreCheckpointResponse>, Status> {
+        let req = request.into_inner();
+        let base_dir = Path::new(&req.base_dir);
+
+        match self.manager.restore(&req.checkpoint_id, base_dir).await {
+            Ok(restored_files) => Ok(Response::new(RestoreCheckpointResponse {
+                success: true,
+                restored_files,
+                error: String::new(),
+            })),
+            Err(e) => Ok(Response::new(RestoreCheckpointResponse {
+                success: false,
+                restored_files: 0,
+                error: e,
+            })),
+        }
+    }
+
+    async fn list(&self, request: Request<ListCheckpointsRequest>) -> Result<Response<ListCheckpointsResponse>, Status> {
+        let req = request.into_inner();
+        let base_dir = Path::new(&req.base_dir);
+        let checkpoints = self.manager.list(base_dir);
+
+        let infos: Vec<CheckpointInfo> = checkpoints
+            .into_iter()
+            .map(|c| CheckpointInfo {
+                checkpoint_id: c.id,
+                label: c.label,
+                created_at: c.created_at,
+                file_count: c.file_count(),
+                total_bytes: c.total_bytes(),
+            })
+            .collect();
+
+        Ok(Response::new(ListCheckpointsResponse {
+            success: true,
+            checkpoints: infos,
+            error: String::new(),
+        }))
+    }
+
+    async fn delete(&self, request: Request<DeleteCheckpointRequest>) -> Result<Response<DeleteCheckpointResponse>, Status> {
+        let req = request.into_inner();
+        let base_dir = Path::new(&req.base_dir);
+
+        match self.manager.delete(&req.checkpoint_id, base_dir) {
+            Ok(()) => Ok(Response::new(DeleteCheckpointResponse {
+                success: true,
+                error: String::new(),
+            })),
+            Err(e) => Ok(Response::new(DeleteCheckpointResponse {
+                success: false,
+                error: e,
+            })),
+        }
+    }
+}
+
+// File Tracker Service
+pub struct FileTrackerServiceImpl {
+    manager: Arc<FileTrackerManager>,
+}
+
+impl FileTrackerServiceImpl {
+    pub fn new(manager: Arc<FileTrackerManager>) -> Self {
+        Self { manager }
+    }
+}
+
+#[tonic::async_trait]
+impl FileTrackerService for FileTrackerServiceImpl {
+    async fn snapshot(&self, request: Request<SnapshotRequest>) -> Result<Response<SnapshotResponse>, Status> {
+        let req = request.into_inner();
+        let base_dir = Path::new(&req.base_dir);
+
+        match self.manager.snapshot(&req.path, base_dir).await {
+            Ok(tracked) => Ok(Response::new(SnapshotResponse {
+                success: true,
+                file_hash: Some(FileHash {
+                    path: req.path,
+                    sha256: tracked.sha256,
+                    size: tracked.size,
+                    modified_at: tracked.modified_at,
+                }),
+                error: String::new(),
+            })),
+            Err(e) => Ok(Response::new(SnapshotResponse {
+                success: false,
+                file_hash: None,
+                error: e,
+            })),
+        }
+    }
+
+    async fn check_diff(&self, request: Request<CheckDiffRequest>) -> Result<Response<CheckDiffResponse>, Status> {
+        let req = request.into_inner();
+        let base_dir = Path::new(&req.base_dir);
+
+        match self.manager.check_diff(&req.path, base_dir).await {
+            Ok((exists, modified, deleted, current_sha256, tracked_sha256)) => {
+                Ok(Response::new(CheckDiffResponse {
+                    exists,
+                    modified,
+                    deleted,
+                    current_sha256,
+                    tracked_sha256,
+                    error: String::new(),
+                }))
+            }
+            Err(e) => Ok(Response::new(CheckDiffResponse {
+                exists: false,
+                modified: false,
+                deleted: false,
+                current_sha256: String::new(),
+                tracked_sha256: String::new(),
+                error: e,
+            })),
+        }
+    }
+
+    async fn get_history(&self, request: Request<GetHistoryRequest>) -> Result<Response<GetHistoryResponse>, Status> {
+        let req = request.into_inner();
+        let base_dir = Path::new(&req.base_dir);
+
+        match self.manager.get_history(&req.path, base_dir) {
+            Ok(history) => {
+                let entries: Vec<FileHistoryEntry> = history
+                    .into_iter()
+                    .map(|h| FileHistoryEntry {
+                        action: h.action,
+                        timestamp: h.timestamp,
+                        sha256: h.sha256,
+                    })
+                    .collect();
+                Ok(Response::new(GetHistoryResponse {
+                    success: true,
+                    history: entries,
+                    error: String::new(),
+                }))
+            }
+            Err(e) => Ok(Response::new(GetHistoryResponse {
+                success: false,
+                history: vec![],
+                error: e,
+            })),
+        }
+    }
+
+    async fn clear_history(&self, request: Request<ClearHistoryRequest>) -> Result<Response<ClearHistoryResponse>, Status> {
+        let req = request.into_inner();
+        let base_dir = Path::new(&req.base_dir);
+
+        match self.manager.clear_history(&req.path, base_dir) {
+            Ok(()) => Ok(Response::new(ClearHistoryResponse {
+                success: true,
+                error: String::new(),
+            })),
+            Err(e) => Ok(Response::new(ClearHistoryResponse {
+                success: false,
+                error: e,
+            })),
+        }
+    }
+}
+
+// Token Counter Service
+pub struct TokenCounterServiceImpl {
+    counter: Arc<TokenCounter>,
+}
+
+impl TokenCounterServiceImpl {
+    pub fn new(counter: Arc<TokenCounter>) -> Self {
+        Self { counter }
+    }
+}
+
+#[tonic::async_trait]
+impl TokenCounterService for TokenCounterServiceImpl {
+    async fn count(&self, request: Request<CountTokensRequest>) -> Result<Response<CountTokensResponse>, Status> {
+        let req = request.into_inner();
+        let model = if req.model.is_empty() { "gpt-4" } else { &req.model };
+
+        match self.counter.count(&req.text, model) {
+            Ok(token_count) => Ok(Response::new(CountTokensResponse {
+                success: true,
+                token_count,
+                error: String::new(),
+            })),
+            Err(e) => Ok(Response::new(CountTokensResponse {
+                success: false,
+                token_count: 0,
+                error: e,
+            })),
+        }
+    }
+
+    async fn truncate(&self, request: Request<TruncateTokensRequest>) -> Result<Response<TruncateTokensResponse>, Status> {
+        let req = request.into_inner();
+        let model = if req.model.is_empty() { "gpt-4" } else { &req.model };
+
+        match self.counter.truncate(&req.text, req.max_tokens, model, req.preserve_start) {
+            Ok((truncated_text, original_tokens, truncated_tokens, was_truncated)) => {
+                Ok(Response::new(TruncateTokensResponse {
+                    success: true,
+                    truncated_text,
+                    original_tokens,
+                    truncated_tokens,
+                    was_truncated,
+                    error: String::new(),
+                }))
+            }
+            Err(e) => Ok(Response::new(TruncateTokensResponse {
+                success: false,
+                truncated_text: String::new(),
+                original_tokens: 0,
+                truncated_tokens: 0,
+                was_truncated: false,
+                error: e,
+            })),
+        }
+    }
+
+    async fn batch_count(&self, request: Request<BatchCountRequest>) -> Result<Response<BatchCountResponse>, Status> {
+        let req = request.into_inner();
+        let model = if req.model.is_empty() { "gpt-4" } else { &req.model };
+
+        match self.counter.batch_count(&req.texts, model) {
+            Ok((token_counts, total_tokens)) => Ok(Response::new(BatchCountResponse {
+                success: true,
+                token_counts,
+                total_tokens,
+                error: String::new(),
+            })),
+            Err(e) => Ok(Response::new(BatchCountResponse {
+                success: false,
+                token_counts: vec![],
+                total_tokens: 0,
+                error: e,
+            })),
         }
     }
 }

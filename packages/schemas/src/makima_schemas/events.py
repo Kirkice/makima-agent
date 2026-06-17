@@ -18,6 +18,12 @@ class AgentEventType(str, Enum):
     ERROR = "error"
     DONE = "done"
     MODE_SWITCH = "mode_switch"
+    CHECKPOINT_SAVED = "checkpoint_saved"
+    CHECKPOINT_RESTORED = "checkpoint_restored"
+    APPROVAL_REQUESTED = "approval_requested"
+    APPROVAL_RESPONDED = "approval_responded"
+    CONTEXT_COMPRESSED = "context_compressed"
+    RETRY_DELAYED = "retry_delayed"
 
 
 class AgentEvent(BaseModel):
