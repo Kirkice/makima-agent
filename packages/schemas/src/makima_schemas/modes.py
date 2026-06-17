@@ -54,6 +54,16 @@ class ModeConfig(BaseModel):
     source: Literal["builtin", "project", "custom"] = Field(
         default="builtin", description="Mode source"
     )
+    # Mode-specific LLM configuration (optional, falls back to global config if None)
+    model: str | None = Field(
+        default=None, description="Mode-specific model name, None uses global default"
+    )
+    api_base: str | None = Field(
+        default=None, description="Mode-specific API base URL, None uses global default"
+    )
+    api_key: str | None = Field(
+        default=None, description="Mode-specific API key, None uses global default"
+    )
 
 
 class ModeSwitchRequest(BaseModel):

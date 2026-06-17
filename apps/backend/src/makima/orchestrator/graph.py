@@ -9,7 +9,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
-from makima.clients.llm import get_chat_model_with_temperature
+from makima.clients.llm import get_chat_model_for_mode
 from makima.modes.registry import get_default_mode, get_mode
 from makima.modes.tool_groups import get_tools_for_configs
 from makima.prompts.engine import PromptEngine
@@ -63,8 +63,9 @@ def build_graph(
     if mode is None:
         mode = get_mode("code") or get_default_mode()
 
-    # Get LLM with mode-specific temperature
-    llm = get_chat_model_with_temperature(mode.temperature)
+    # Get LLM with mode-specific configuration (model, temperature, api_base, api_key)
+    llm = get_chat_model_for_mode(mode)
+    logger.debug("Using model for mode", mode=mode.slug, model=llm.model_name)
 
     # Get tools filtered by mode
     tools = _get_tools_for_mode(mode)

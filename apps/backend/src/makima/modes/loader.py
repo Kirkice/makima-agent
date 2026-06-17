@@ -60,18 +60,29 @@ def _parse_mode(raw: dict, source: str = "project") -> ModeConfig | None:
             tg = _parse_tool_group(group_raw)
             tool_groups.append(tg)
 
-        return ModeConfig(
-            slug=slug,
-            name=raw.get("name", slug),
-            role_definition=raw.get("role_definition", ""),
-            when_to_use=raw.get("when_to_use"),
-            description=raw.get("description"),
-            custom_instructions=raw.get("custom_instructions"),
-            tool_groups=tool_groups,
-            max_steps=raw.get("max_steps", 30),
-            temperature=raw.get("temperature", 0.0),
-            source=source,
-        )
+        # Build kwargs, only including optional LLM fields if they exist
+        kwargs = {
+            "slug": slug,
+            "name": raw.get("name", slug),
+            "role_definition": raw.get("role_definition", ""),
+            "when_to_use": raw.get("when_to_use"),
+            "description": raw.get("description"),
+            "custom_instructions": raw.get("custom_instructions"),
+            "tool_groups": tool_groups,
+            "max_steps": raw.get("max_steps", 30),
+            "temperature": raw.get("temperature", 0.0),
+            "source": source,
+        }
+
+        # Optional LLM configuration (only add if present in YAML)
+        if "model" in raw and raw["model"] is not None:
+            kwargs["model"] = raw["model"]
+        if "api_base" in raw and raw["api_base"] is not None:
+            kwargs["api_base"] = raw["api_base"]
+        if "api_key" in raw and raw["api_key"] is not None:
+            kwargs["api_key"] = raw["api_key"]
+
+        return ModeConfig(**kwargs)
     except Exception as e:
         logger.error("Failed to parse mode", error=str(e), raw=raw)
         return None
