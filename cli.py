@@ -4,9 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import io
 import json
 import os
 import sys
+import threading
+import tempfile
+import time
+import wave
 from typing import Optional
 
 import httpx
@@ -138,6 +144,52 @@ def load_env_credentials() -> tuple[str, str]:
     return username, password
 
 
+def _speak_text(text: str) -> None:
+    """Use edge-tts to speak text aloud. Runs synchronously in a thread."""
+    try:
+        import edge_tts
+        import pygame
+
+        # Xiaoxiao: natural Chinese female voice, fits Makima persona
+        voice = "zh-CN-XiaoxiaoNeural"
+        # Rate and pitch for calm, controlled delivery
+        rate = "-5%"
+        pitch = "-2Hz"
+
+        tmp_path = os.path.join(tempfile.gettempdir(), "makima_tts.mp3")
+
+        async def _generate():
+            communicate = edge_tts.Communicate(
+                text=text, voice=voice, rate=rate, pitch=pitch
+            )
+            await communicate.save(tmp_path)
+
+        asyncio.run(_generate())
+
+        # Play the audio file using pygame (cross-platform, reliable)
+        if os.path.exists(tmp_path):
+            # Initialize pygame mixer if not already done
+            if not pygame.mixer.get_init():
+                pygame.mixer.init(frequency=24000)
+            
+            pygame.mixer.music.load(tmp_path)
+            pygame.mixer.music.play()
+            
+            # Wait for playback to finish
+            while pygame.mixer.music.get_busy():
+                time.sleep(0.1)
+            
+            pygame.mixer.music.unload()
+
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+    except Exception:
+        # Silently ignore TTS failures — text is always displayed
+        pass
+
+
 class MakimaCLI:
     def __init__(self, server_url: str = DEFAULT_SERVER):
         self.server_url = server_url.rstrip("/")
@@ -149,6 +201,8 @@ class MakimaCLI:
         self.history = InMemoryHistory()
         self.prompt_session: Optional[PromptSession] = None
         self._title_generated = False
+        self._tts_enabled = True
+        self._tts_thread: Optional[threading.Thread] = None
 
     def print_banner(self) -> None:
         eyebrow = Text("MAKIMA CONTROL CONSOLE", style=f"bold {COLORS['rose']}")
@@ -405,6 +459,112 @@ class MakimaCLI:
 
         return user_msg[:30]
 
+    def voice_input(self) -> str:
+        """Record audio from microphone and transcribe using Whisper API.
+        
+        Returns:
+            Transcribed text string, or empty string on failure.
+        """
+        try:
+            import speech_recognition as sr
+        except ImportError:
+            self.print_error("SpeechRecognition not installed. Run: pip install SpeechRecognition")
+            return ""
+        
+        recognizer = sr.Recognizer()
+        
+        console.print("  [dim]🎙️ Listening... (speak now, silence to stop)[/dim]")
+        
+        try:
+            with sr.Microphone() as source:
+                # Adjust for ambient noise
+                recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                # Listen for speech (timeout after 10 seconds of silence)
+                audio = recognizer.listen(source, timeout=10, phrase_time_limit=30)
+        except sr.WaitTimeoutError:
+            console.print("  [dim]⏱️ No speech detected, timeout.[/dim]")
+            return ""
+        except Exception as exc:
+            self.print_error(f"Microphone error: {exc}")
+            return ""
+        
+        console.print("  [dim]🔄 Transcribing...[/dim]")
+        
+        # Get audio data as WAV bytes
+        wav_data = audio.get_wav_data()
+        
+        # Read API config from .env
+        env_file = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "apps", "backend", ".env"
+        )
+        api_key = ""
+        api_base = "https://api.openai.com/v1"
+        if os.path.exists(env_file):
+            with open(env_file, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip()
+                    if key == "MAKIMA_LLM_API_KEY":
+                        api_key = value
+                    elif key == "MAKIMA_LLM_API_BASE":
+                        api_base = value
+        
+        if not api_key:
+            # Fallback to Google free API
+            try:
+                text = recognizer.recognize_google(audio, language="zh-CN")
+                return text
+            except Exception:
+                self.print_error("No API key configured and Google STT failed")
+                return ""
+        
+        # Use Whisper API via HTTP
+        try:
+            whisper_url = api_base.rstrip("/") + "/audio/transcriptions"
+            response = self.client.post(
+                whisper_url,
+                files={"file": ("audio.wav", wav_data, "audio/wav")},
+                data={
+                    "model": "whisper-1",
+                    "language": "zh",
+                    "response_format": "json",
+                },
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=30.0,
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                text = result.get("text", "")
+                if text:
+                    console.print(f"  [dim]📝 Heard:[/dim] [bold]{text}[/bold]")
+                    return text
+                else:
+                    console.print("  [dim]⚠️ Could not transcribe audio.[/dim]")
+                    return ""
+            else:
+                # Fallback to Google
+                try:
+                    text = recognizer.recognize_google(audio, language="zh-CN")
+                    console.print(f"  [dim]📝 Heard:[/dim] [bold]{text}[/bold]")
+                    return text
+                except Exception:
+                    self.print_error(f"Whisper API error: HTTP {response.status_code}")
+                    return ""
+        except Exception as exc:
+            # Fallback to Google
+            try:
+                text = recognizer.recognize_google(audio, language="zh-CN")
+                console.print(f"  [dim]📝 Heard:[/dim] [bold]{text}[/bold]")
+                return text
+            except Exception:
+                self.print_error(f"Transcription failed: {exc}")
+                return ""
+
     def send_message(self, message: str) -> str:
         headers = {"Authorization": f"Bearer {self.token}"}
         agent_content = ""
@@ -571,6 +731,21 @@ class MakimaCLI:
             )
         )
         console.print()
+
+        # TTS: speak the response in a background thread
+        if self._tts_enabled and agent_content:
+            # Strip markdown/code blocks for cleaner speech
+            import re
+            speak_text = re.sub(r"```[\s\S]*?```", "", agent_content)
+            speak_text = re.sub(r"`[^`]+`", "", speak_text)
+            speak_text = re.sub(r"[#*_\[\]()>|~-]", "", speak_text)
+            speak_text = speak_text.strip()
+            if speak_text:
+                self._tts_thread = threading.Thread(
+                    target=_speak_text, args=(speak_text,), daemon=True
+                )
+                self._tts_thread.start()
+
         return agent_content
 
     def print_help(self) -> None:
@@ -583,10 +758,13 @@ class MakimaCLI:
         )
         table.add_column("Command", style="bold", width=20)
         table.add_column("Description", style="dim")
+        tts_status = "[bold green]ON[/bold green]" if self._tts_enabled else "[bold red]OFF[/bold red]"
         for cmd, desc in [
             ("/help", "Show this help message"),
             ("/clear", "Clear the screen"),
             ("/session", "Show current session info"),
+            ("/speak", "🎙️ Speak to Makima (voice input)"),
+            (f"/voice  ({tts_status})", "Toggle voice output (TTS)"),
             ("/exit, /quit", "Exit the CLI"),
         ]:
             table.add_row(cmd, desc)
@@ -674,6 +852,32 @@ class MakimaCLI:
                     self.print_session_details(username)
                     console.print()
                     continue
+                if message == "/voice":
+                    self._tts_enabled = not self._tts_enabled
+                    status = "[bold green]ON[/bold green]" if self._tts_enabled else "[bold red]OFF[/bold red]"
+                    console.print(f"  [dim]Voice output (TTS):[/dim] {status}")
+                    console.print()
+                    continue
+                if message == "/speak":
+                    # Voice input mode
+                    voice_text = self.voice_input()
+                    if voice_text:
+                        # Wait for previous TTS to finish
+                        if self._tts_thread and self._tts_thread.is_alive():
+                            self._tts_thread.join(timeout=30)
+                        # Send the transcribed text as a message
+                        agent_reply = self.send_message(voice_text)
+                        if not self._title_generated and agent_reply:
+                            self._title_generated = True
+                            new_title = self.generate_title(voice_text, agent_reply)
+                            if self.update_session_title(new_title):
+                                console.print(f"  [dim]Title updated: {new_title}[/dim]")
+                                console.print()
+                    continue
+
+                # Wait for previous TTS to finish before sending new message
+                if self._tts_thread and self._tts_thread.is_alive():
+                    self._tts_thread.join(timeout=30)
 
                 agent_reply = self.send_message(message)
                 if not self._title_generated and agent_reply:
