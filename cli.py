@@ -145,48 +145,78 @@ def load_env_credentials() -> tuple[str, str]:
 
 
 def _speak_text(text: str) -> None:
-    """Use edge-tts to speak text aloud. Runs synchronously in a thread."""
+    """Use OpenAI TTS or edge-tts to speak text aloud. Runs synchronously."""
+    tmp_path = os.path.join(tempfile.gettempdir(), "makima_tts.mp3")
+    success = False
+
+    # ── Try OpenAI TTS first (requires MAKIMA_LLM_API_KEY) ──
     try:
-        import edge_tts
+        from openai import OpenAI
         import pygame
 
-        # Xiaoxiao: natural Chinese female voice, fits Makima persona
-        voice = "zh-CN-XiaoxiaoNeural"
-        # Rate and pitch for calm, controlled delivery
-        rate = "-5%"
-        pitch = "-2Hz"
+        api_key = os.getenv("MAKIMA_LLM_API_KEY", "")
+        api_base = os.getenv("MAKIMA_LLM_API_BASE", "https://api.openai.com/v1")
 
-        tmp_path = os.path.join(tempfile.gettempdir(), "makima_tts.mp3")
+        # Available voices: alloy, echo, fable, onyx, nova, shimmer
+        tts_voice = os.getenv("MAKIMA_TTS_VOICE", "nova")
+        tts_model = os.getenv("MAKIMA_TTS_MODEL", "tts-1")  # or tts-1-hd
 
-        async def _generate():
-            communicate = edge_tts.Communicate(
-                text=text, voice=voice, rate=rate, pitch=pitch
+        if api_key:
+            client = OpenAI(api_key=api_key, base_url=api_base)
+            response = client.audio.speech.create(
+                model=tts_model,
+                voice=tts_voice,
+                input=text,
+                response_format="mp3",
             )
-            await communicate.save(tmp_path)
+            response.stream_to_file(tmp_path)
 
-        asyncio.run(_generate())
-
-        # Play the audio file using pygame (cross-platform, reliable)
-        if os.path.exists(tmp_path):
-            # Initialize pygame mixer if not already done
-            if not pygame.mixer.get_init():
-                pygame.mixer.init(frequency=24000)
-            
-            pygame.mixer.music.load(tmp_path)
-            pygame.mixer.music.play()
-            
-            # Wait for playback to finish
-            while pygame.mixer.music.get_busy():
-                time.sleep(0.1)
-            
-            pygame.mixer.music.unload()
-
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+            if os.path.exists(tmp_path):
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init(frequency=24000)
+                pygame.mixer.music.load(tmp_path)
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy():
+                    time.sleep(0.1)
+                pygame.mixer.music.unload()
+                success = True
     except Exception:
-        # Silently ignore TTS failures — text is always displayed
+        pass
+
+    # ── Fallback to edge-tts (free, no API key needed) ──
+    if not success:
+        try:
+            import edge_tts
+            import pygame
+
+            voice = "zh-CN-XiaoxiaoNeural"
+            rate = "-5%"
+            pitch = "-2Hz"
+
+            async def _generate():
+                communicate = edge_tts.Communicate(
+                    text=text, voice=voice, rate=rate, pitch=pitch
+                )
+                await communicate.save(tmp_path)
+
+            asyncio.run(_generate())
+
+            if os.path.exists(tmp_path):
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init(frequency=24000)
+                pygame.mixer.music.load(tmp_path)
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy():
+                    time.sleep(0.1)
+                pygame.mixer.music.unload()
+        except Exception:
+            pass
+
+    # Cleanup temp file
+    try:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+    except OSError:
         pass
 
 
