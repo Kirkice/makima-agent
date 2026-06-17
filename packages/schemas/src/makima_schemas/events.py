@@ -17,6 +17,7 @@ class AgentEventType(str, Enum):
     MESSAGE = "message"
     ERROR = "error"
     DONE = "done"
+    MODE_SWITCH = "mode_switch"
 
 
 class AgentEvent(BaseModel):

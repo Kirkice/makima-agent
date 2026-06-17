@@ -35,31 +35,14 @@ services:
       retries: 5
 
   # ── 应用服务 ──────────────────────────────────
-  api-gateway:
+  backend:
     build:
       context: .
-      dockerfile: infra/docker/api-gateway.Dockerfile
-    container_name: makima-api-gateway
+      dockerfile: infra/docker/backend.Dockerfile
+    container_name: makima-backend
     restart: unless-stopped
     ports:
-      - "${API_GATEWAY_PORT:-8000}:8000"
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-makima}:${POSTGRES_PASSWORD:-makima}@postgres:5432/${POSTGRES_DB:-makima}
-      - REDIS_URL=redis://redis:6379/0
-      - LLM_API_KEY=${LLM_API_KEY}
-      - LLM_API_BASE=${LLM_API_BASE:-}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  agent-orchestrator:
-    build:
-      context: .
-      dockerfile: infra/docker/agent-orchestrator.Dockerfile
-    container_name: makima-orchestrator
-    restart: unless-stopped
+      - "${BACKEND_PORT:-8000}:8000"
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-makima}:${POSTGRES_PASSWORD:-makima}@postgres:5432/${POSTGRES_DB:-makima}
       - REDIS_URL=redis://redis:6379/0

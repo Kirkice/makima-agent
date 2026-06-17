@@ -9,7 +9,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from makima import __version__
-from makima.routes import admin, audit, auth, health, knowledge, memory, sessions, tasks
+from makima.modes import load_all_custom_modes
+from makima.routes import admin, audit, auth, health, knowledge, memory, modes, persona, sessions, tasks
 from makima.core.middleware import setup_middleware
 from makima.observability.metrics import setup_metrics
 from makima.observability.tracing import setup_tracing
@@ -37,6 +38,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize config center
     from makima.config_center.service import config_center
     await config_center.initialize()
+
+    # Load custom modes from .makima/modes.yaml
+    try:
+        custom_modes = load_all_custom_modes()
+        if custom_modes:
+            from makima_common.logging import get_logger
+            logger = get_logger(__name__)
+            logger.info(f"Loaded {len(custom_modes)} custom modes")
+    except Exception as e:
+        from makima_common.logging import get_logger
+        logger = get_logger(__name__)
+        logger.warning(f"Failed to load custom modes: {e}")
 
     yield
 
@@ -74,6 +87,8 @@ def create_app() -> FastAPI:
     app.include_router(tasks.router)
     app.include_router(memory.router)
     app.include_router(knowledge.router)
+    app.include_router(modes.router)
+    app.include_router(persona.router)
     app.include_router(audit.router)
     app.include_router(admin.router)
 

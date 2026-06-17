@@ -1,4 +1,4 @@
-"""LangGraph agent graph definition with memory and knowledge integration."""
+"""LangGraph agent graph definition with mode system and prompt engine integration."""
 
 from __future__ import annotations
 
@@ -9,25 +9,19 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
-from makima.clients.llm import get_chat_model
+from makima.clients.llm import get_chat_model_with_temperature
+from makima.modes.registry import get_default_mode, get_mode
+from makima.modes.tool_groups import get_tools_for_configs
+from makima.prompts.engine import PromptEngine
+from makima.tools.registry import get_tools, get_tools_by_names
+from makima_schemas import ModeConfig, Persona
 from makima_common.config import get_settings
 from makima_common.logging import get_logger
-from makima.memory.service import MemoryService
-from makima.tools.registry import get_tools
 
 logger = get_logger(__name__)
 
-SYSTEM_PROMPT = """You are Makima, a helpful AI assistant with access to various tools.
-
-You can:
-- Read, write, and list files in the workspace
-- Execute shell commands
-- Make HTTP requests
-- Search your knowledge base and memory for relevant information
-
-When using tools, be precise and efficient. Always explain what you're doing.
-If you encounter an error, try to diagnose and fix it.
-"""
+# Global prompt engine instance
+_prompt_engine = PromptEngine()
 
 
 class AgentState(TypedDict):
@@ -39,31 +33,56 @@ class AgentState(TypedDict):
     context: dict[str, Any]
 
 
+def _get_tools_for_mode(mode: ModeConfig) -> list:
+    """Get tools filtered by mode's tool groups."""
+    allowed_tool_names = get_tools_for_configs(mode.tool_groups)
+    if allowed_tool_names:
+        return get_tools_by_names(allowed_tool_names)
+    # If mode has no tool groups (e.g., chat mode), return empty list
+    return []
+
+
 def build_graph(
-    memory_service: MemoryService | None = None,
-    knowledge_context: str = "",
+    mode: ModeConfig | None = None,
+    persona: Persona | None = None,
     memory_context: str = "",
+    knowledge_context: str = "",
 ) -> Any:
     """Build and compile the agent graph.
 
     Args:
-        memory_service: Optional memory service for recall/storage.
-        knowledge_context: Pre-retrieved knowledge context to inject.
+        mode: Optional mode configuration. Uses default mode if not provided.
+        persona: Optional persona configuration for personality injection.
         memory_context: Pre-retrieved memory context to inject.
+        knowledge_context: Pre-retrieved knowledge context to inject.
 
     Returns:
         Compiled LangGraph graph.
     """
-    settings = get_settings()
-    llm = get_chat_model()
-    tools = get_tools()
+    # Get mode (default to 'code' if not specified)
+    if mode is None:
+        mode = get_mode("code") or get_default_mode()
 
-    # Build system prompt with context
-    system_content = SYSTEM_PROMPT
-    if memory_context:
-        system_content += f"\n\n{memory_context}"
-    if knowledge_context:
-        system_content += f"\n\n{knowledge_context}"
+    # Get LLM with mode-specific temperature
+    llm = get_chat_model_with_temperature(mode.temperature)
+
+    # Get tools filtered by mode
+    tools = _get_tools_for_mode(mode)
+
+    # Build system prompt using PromptEngine
+    system_content = _prompt_engine.build_system_prompt_simple(
+        mode=mode,
+        memory_context=memory_context if memory_context else None,
+        knowledge_context=knowledge_context if knowledge_context else None,
+        persona=persona,
+    )
+
+    logger.debug(
+        "Building graph",
+        mode=mode.slug,
+        num_tools=len(tools),
+        prompt_length=len(system_content),
+    )
 
     # Bind tools to LLM
     if tools:

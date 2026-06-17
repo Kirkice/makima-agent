@@ -1,7 +1,7 @@
 # Makima Agent Backend Roadmap
 
-> **最后更新**: 2025-06-15  
-> **当前状态**: Phase 0-4 已完成 ✅
+> **最后更新**: 2026-06-17  
+> **当前状态**: Phase 0-4 已完成 ✅ · 目录结构整理完成 ✅
 
 ## 1. 目标
 
@@ -30,16 +30,12 @@
 
 ### 3.1 主工程
 
-主工程目录负责你自己的实现：
+采用 **单体后端 + 高性能工具微服务** 架构，核心 Agent 能力集中在 `apps/backend/` 中实现：
 
-- `apps/backend/`：对外 API、会话、用户、任务入口
-- `services/agent-orchestrator/`：Agent 流程编排
-- `services/tool-runtime/`：工具执行层
-- `services/memory-service/`：记忆封装
-- `services/knowledge-service/`：RAG / 文档检索
-- `packages/common/`：公共工具与基础类型
+- `apps/backend/`：核心单体服务（API、认证、会话、编排、记忆、知识库、审计、任务队列）
+- `services/tool-runtime/`：Rust gRPC 高性能工具执行服务
+- `packages/common/`：公共工具与基础类型（配置管理、结构化日志）
 - `packages/schemas/`：事件协议、DTO、接口 schema
-- `packages/clients/`：模型与外部系统客户端封装
 
 ### 3.2 外部依赖
 
@@ -57,23 +53,26 @@
 
 ## 4. 目标架构
 
+采用单体后端架构，所有核心模块集中在 `apps/backend/` 中，工具执行通过独立的 Rust gRPC 服务提供：
+
 ```text
-Client / UI
+Client / UI (Unity / Web / 其他前端)
    |
    v
-API Gateway / Session Service
+apps/backend/  (FastAPI 单体服务)
+   ├── API 层        — 认证、会话、路由
+   ├── 编排层        — LangGraph 多步任务编排
+   ├── 记忆层        — Mem0 长期记忆
+   ├── 知识层        — LlamaIndex RAG 检索
+   ├── 安全与观测    — RBAC、审计日志、OpenTelemetry
+   └── 任务队列      — Celery 异步任务
+   |
+   v (gRPC)
+services/tool-runtime/  (Rust 微服务)
+   └── Shell / File / HTTP / Document / Sandbox
    |
    v
-Agent Orchestrator (LangGraph)
-   |
-   +--> Tool Runtime (OpenHands style)
-   |
-   +--> Memory Service (Mem0 style)
-   |
-   +--> Knowledge Service (RAG / document retrieval)
-   |
-   v
-Storage / Queue / Observability / Safety
+PostgreSQL + Redis (存储 / 队列 / 缓存)
 ```
 
 ### 4.1 API 层
@@ -311,16 +310,13 @@ Storage / Queue / Observability / Safety
 ## 7. 目录与职责对应
 
 ```text
-apps/backend/                # 对外服务入口 ✅
-services/api-gateway/        # API 和会话层
-services/agent-orchestrator/ # LangGraph 编排
-services/tool-runtime/       # 工具执行
-services/memory-service/     # 记忆封装
-services/knowledge-service/  # RAG 与检索
-packages/common/             # 通用代码 ✅
-packages/schemas/            # 协议与结构定义 ✅
-packages/clients/            # 外部依赖客户端
-external/*                   # 外部依赖源码
+apps/backend/                # 核心单体服务 ✅（API + 编排 + 记忆 + 知识库 + 安全 + 观测）
+services/tool-runtime/       # Rust 高性能工具执行服务 ✅（gRPC）
+packages/common/             # 公共工具包 ✅（配置管理、结构化日志）
+packages/schemas/            # 事件协议与 DTO ✅
+external/*                   # 外部依赖源码参考（LangGraph / OpenHands / Mem0）
+docs/architecture/           # 架构文档
+infra/docker/                # Dockerfile
 ```
 
 ## 8. 近期执行顺序

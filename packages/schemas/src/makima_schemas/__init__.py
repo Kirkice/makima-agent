@@ -16,6 +16,14 @@ from makima_schemas.api import (
     UserLogin,
 )
 from makima_schemas.events import AgentEvent, AgentEventType
+from makima_schemas.modes import (
+    ModeConfig,
+    ModeSwitchRequest,
+    ModeSwitchResponse,
+    ToolGroup,
+    ToolGroupConfig,
+)
+from makima_schemas.persona import Persona
 from makima_schemas.tools import (
     ToolCallRequest,
     ToolCallResult,
@@ -44,4 +52,12 @@ __all__ = [
     "ToolCallResult",
     "ToolDefinition",
     "ToolParameter",
+    # Modes
+    "ModeConfig",
+    "ModeSwitchRequest",
+    "ModeSwitchResponse",
+    "ToolGroup",
+    "ToolGroupConfig",
+    # Persona
+    "Persona",
 ]
