@@ -1,0 +1,61 @@
+[package]
+name = "makima-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "Makima Agent Desktop Frontend - egui native application"
+
+[dependencies]
+# Core GUI
+eframe = { version = "0.28", default-features = false, features = ["glow"] }
+egui = "0.28"
+egui_dock = "0.4"
+egui_extras = { version = "0.28", features = ["default"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP/SSE client
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures-util = "0.3"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Local paths
+directories = "5"
+
+# Secure credential storage
+keyring = "3"
+
+# File dialog
+rfd = "0.14"
+
+# Clipboard
+copypasta = "0.10"
+
+# Notifications
+egui-toast = "0.12"
+
+# URL parsing
+url = "2"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[features]
+default = []
+
+[[bin]]
+name = "makima-desktop"
+path = "src/main.rs"

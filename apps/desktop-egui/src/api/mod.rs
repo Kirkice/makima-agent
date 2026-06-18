@@ -1,0 +1,11 @@
+pub mod auth;
+pub mod sessions;
+pub mod tasks;
+pub mod health;
+pub mod modes;
+pub mod persona;
+pub mod memory;
+pub mod knowledge;
+pub mod voice;
+pub mod mcp;
+pub mod audit;

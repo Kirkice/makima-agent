@@ -1,0 +1,11 @@
+pub mod inspector;
+pub mod diagnostics;
+pub mod login;
+pub mod modes;
+pub mod memory;
+pub mod knowledge;
+pub mod voice;
+pub mod mcp;
+pub mod audit;
+pub mod model_config;
+pub mod persona;
