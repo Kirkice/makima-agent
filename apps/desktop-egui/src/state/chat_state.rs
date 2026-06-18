@@ -89,6 +89,7 @@ pub struct TokenUsage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: Uuid,
+    pub backend_id: Option<String>,
     pub title: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -100,10 +101,11 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(title: String) -> Self {
+    pub fn new(title: String, backend_id: Option<String>) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
+            backend_id,
             title,
             created_at: now,
             updated_at: now,
@@ -187,11 +189,26 @@ impl ChatState {
     }
 
     pub fn create_session(&mut self, title: String) -> Uuid {
-        let session = Session::new(title);
+        let session = Session::new(title, None);
         let id = session.id;
         self.sessions.push(session);
         self.active_session_id = Some(id);
         id
+    }
+
+    pub fn replace_sessions(&mut self, sessions: Vec<Session>) {
+        let previous_active_backend_id = self
+            .active_session()
+            .and_then(|session| session.backend_id.clone());
+        self.sessions = sessions;
+        self.active_session_id = previous_active_backend_id
+            .and_then(|backend_id| {
+                self.sessions
+                    .iter()
+                    .find(|session| session.backend_id.as_deref() == Some(backend_id.as_str()))
+                    .map(|session| session.id)
+            })
+            .or_else(|| self.sessions.first().map(|session| session.id));
     }
 
     pub fn delete_session(&mut self, id: Uuid) {

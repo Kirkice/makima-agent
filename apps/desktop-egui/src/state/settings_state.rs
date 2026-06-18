@@ -121,6 +121,11 @@ pub struct SettingsState {
     pub token_estimate_per_1k: f64, // assumed cost per 1k tokens for estimation
     pub config_path: Option<String>,
     pub show_secret: bool,
+    // Backend-populated data
+    pub memory_items: Vec<String>,
+    pub knowledge_docs: Vec<crate::api::knowledge::ApiDocument>,
+    pub knowledge_results: Vec<String>,
+    pub audit_entries: Vec<crate::api::audit::AuditEntry>,
     // Persona fields
     pub persona_name: String,
     pub persona_is_default: bool,
@@ -150,6 +155,10 @@ impl Default for SettingsState {
             token_estimate_per_1k: 0.003,
             config_path: None,
             show_secret: false,
+            memory_items: Vec::new(),
+            knowledge_docs: Vec::new(),
+            knowledge_results: Vec::new(),
+            audit_entries: Vec::new(),
             persona_name: "Default".to_string(),
             persona_is_default: true,
             persona_modified: false,

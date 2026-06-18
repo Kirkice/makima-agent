@@ -2,19 +2,18 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
+/// Matches backend /memories response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiMemory {
-    pub id: String,
+    pub id: Option<String>,
     pub content: String,
-    pub category: Option<String>,
+    pub metadata: Option<serde_json::Value>,
     pub created_at: Option<String>,
-    pub pinned: Option<bool>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct CreateMemoryRequest {
-    pub content: String,
-    pub category: Option<String>,
+#[derive(Debug, Deserialize)]
+struct MemoryListResponse {
+    items: Vec<ApiMemory>,
 }
 
 pub struct MemoryApi {
@@ -28,43 +27,30 @@ impl MemoryApi {
         Self { client, base_url, token }
     }
 
-    /// GET /api/memory
+    /// GET /memories
     pub async fn list(&self) -> Result<Vec<ApiMemory>> {
-        let url = format!("{}/api/memory", self.base_url);
+        let url = format!("{}/memories", self.base_url);
         let resp = self.client.get(&url).bearer_auth(&self.token).send().await
             .context("Failed to fetch memories")?;
         if !resp.status().is_success() { anyhow::bail!("Failed: {}", resp.status()); }
-        Ok(resp.json().await.context("Failed to parse memories")?)
+        Ok(resp.json::<MemoryListResponse>().await.map(|l| l.items).unwrap_or_default())
     }
 
-    /// GET /api/memory?search=...
+    /// POST /memories/search
     pub async fn search(&self, query: &str) -> Result<Vec<ApiMemory>> {
-        let url = format!("{}/api/memory?search={}", self.base_url, urlencoding(query));
-        let resp = self.client.get(&url).bearer_auth(&self.token).send().await
+        let url = format!("{}/memories/search", self.base_url);
+        let resp = self.client.post(&url).bearer_auth(&self.token)
+            .json(&serde_json::json!({ "query": query })).send().await
             .context("Failed to search memories")?;
         if !resp.status().is_success() { anyhow::bail!("Failed: {}", resp.status()); }
-        Ok(resp.json().await.context("Failed to parse memories")?)
+        Ok(resp.json::<MemoryListResponse>().await.map(|l| l.items).unwrap_or_default())
     }
 
-    /// POST /api/memory
-    pub async fn create(&self, req: &CreateMemoryRequest) -> Result<ApiMemory> {
-        let url = format!("{}/api/memory", self.base_url);
-        let resp = self.client.post(&url).bearer_auth(&self.token).json(req).send().await
-            .context("Failed to create memory")?;
-        if !resp.status().is_success() { anyhow::bail!("Failed: {}", resp.status()); }
-        Ok(resp.json().await.context("Failed to parse memory")?)
-    }
-
-    /// DELETE /api/memory/{id}
+    /// DELETE /memories/{id}
     pub async fn delete(&self, id: &str) -> Result<()> {
-        let url = format!("{}/api/memory/{}", self.base_url, id);
-        let resp = self.client.delete(&url).bearer_auth(&self.token).send().await
+        let url = format!("{}/memories/{}", self.base_url, id);
+        self.client.delete(&url).bearer_auth(&self.token).send().await
             .context("Failed to delete memory")?;
-        if !resp.status().is_success() { anyhow::bail!("Failed: {}", resp.status()); }
         Ok(())
     }
-}
-
-fn urlencoding(s: &str) -> String {
-    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }

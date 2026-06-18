@@ -1,766 +1,260 @@
-# Makima Agent Egui Frontend Implementation Path
+# Makima Desktop Egui Frontend Status
 
-## Goal
+这个文档用于描述 `apps/desktop-egui` 当前真实实现状态，不再是纯规划稿。
 
-Build a Rust desktop frontend with `egui` that feels close to Codex-class agent tooling, but is shaped around Makima's current backend and future agent features.
+## 1. 当前目标
 
-This document focuses on:
+桌面端已经搭起了一个可运行的 `egui/eframe` Agent 前端骨架，覆盖了以下大方向：
 
-- what the frontend should include
-- what can be built immediately with current APIs
-- what backend gaps exist today
-- how to phase implementation so we get value early instead of waiting for a "perfect" UI
+- 聊天主界面
+- 会话侧边栏
+- 登录态管理
+- SSE 任务流接收
+- 多个配置面板入口
+- Inspector / Timeline / 任务状态展示
 
----
+目前项目更接近“高保真原型 + 部分后端打通”，还没有完全达到“全功能生产可用 Agent 工作台”。
 
-## Product Direction
+## 2. 当前已完成
 
-The frontend should not be just "a prettier CLI". It should become an agent control surface:
+### 2.1 基础应用骨架
 
-- chat-first
-- mode-aware
-- streaming-first
-- observability-friendly
-- voice-capable
-- configuration-heavy but safe
+- 已完成 `eframe` 桌面应用入口与主壳层布局。
+- 已完成左侧导航、顶部状态区、中央聊天区、右侧 Inspector 的整体结构。
+- 已完成应用状态管理拆分，包含：
+  - `AppState`
+  - `ChatState`
+  - `SettingsState`
+  - `TaskState`
 
-The closest mental model is:
+### 2.2 登录与鉴权
 
-- left side: conversation and workspace navigation
-- center: streaming chat/task execution surface
-- right side: context, controls, telemetry, tools, model and voice settings
+- 已接入后端登录接口。
+- 登录请求已对齐后端 `POST /auth/login`。
+- 已支持本地保存 token。
+- 启动时会尝试恢复登录态。
+- 已修复“不是点登录也触发请求”的问题。
+- 当本地 token 失效时，会在启动恢复阶段自动清理无效登录态。
 
----
+### 2.3 会话与聊天主流程
 
-## Recommended Tech Stack
+- 已具备本地会话列表与当前会话切换能力。
+- 已支持创建本地会话。
+- 已支持发送用户消息并启动任务流。
+- 任务请求已对齐后端 `POST /tasks`。
+- SSE 流事件已能接收并映射到当前聊天时间线。
+- 已支持把后端 `session_id` 绑定回本地会话，避免后续流事件找不到目标会话。
+- 已支持在时间线中展示：
+  - 用户消息
+  - 助手文本
+  - 工具结果
+  - 完成事件
+  - 错误事件
 
-### Core
+### 2.4 已完成的后端接口对齐
 
-- `eframe` for native desktop shell
-- `egui` for UI
-- `tokio` for async runtime
-- `reqwest` for REST + SSE transport
-- `serde` / `serde_json` for API models
-- `anyhow` / `thiserror` for error handling
-- `tracing` for app logs
-- `directories` for local app config/cache paths
+- Auth API 已对齐。
+- Sessions API 已对齐，且已兼容 `{ items, total }` 返回结构。
+- Tasks API 已对齐，且已兼容后端 SSE 包装事件结构。
+- Memory API 路径已对齐。
+- Knowledge API 路径已对齐。
 
-### Helpful UI crates
+### 2.5 工程可构建状态
 
-- `egui_extras` for tables
-- `egui_dock` for dockable panels
-- `egui_plot` for token/cost/latency graphs
-- `egui-toast` or custom toast system for notifications
-- `rfd` for file picker
-- `copypasta` for clipboard
+- `apps/desktop-egui` 当前可以通过 `cargo check`。
+- 说明主链路已经基本连通，至少不是“只画了 UI 但完全无法编译”的状态。
 
-### Optional later
+## 3. 部分完成
 
-- `rodio` or `cpal` for local audio playback/recording
-- `notify` for local config file watching
-- `taffy` not needed unless we later hybridize layout logic
+下面这些模块已经有 UI、状态或 API 文件，但还没有完全打通。
 
----
+### 3.1 会话能力
 
-## UI Information Architecture
+- 已有会话列表与当前会话切换。
+- 但会话的“后端完整持久化体验”还不完整。
+- 当前更像“本地状态优先，后端映射补充”的混合方案。
 
-## Main Shell
+主要缺口：
 
-Use a 3-column layout:
+- 聊天历史重载不完整。
+- 会话重命名、删除、排序、归档等体验未完全闭环。
+- 最近聊天列表还没有做到成熟产品级的检索、分组、筛选。
 
-- left rail
-  - recent chats
-  - pinned chats
-  - saved searches
-  - quick actions
-- center content
-  - active conversation
-  - streaming messages
-  - task/tool timeline
-  - input composer
-- right inspector
-  - mode
-  - model config
-  - token/cost estimate
-  - context/memory/knowledge hits
-  - voice and runtime controls
+### 3.2 Transcript / Timeline
 
-Top bar:
+- 消息气泡和时间线已经能显示核心内容。
+- Inspector 也有初步结构。
+- 但高级交互仍未完成。
 
-- session title
-- current server/environment
-- current mode badge
-- model badge
-- online/offline health
-- command palette entry
+主要缺口：
 
-Bottom status bar:
+- 消息重试能力还是占位状态。
+- 更细粒度的任务步骤折叠、展开、过滤未完善。
+- 成本统计、token 估算、模型耗时等还没有真正接入。
 
-- auth state
-- SSE connected/disconnected
-- task state
-- token estimate
-- current voice
+### 3.3 配置面板体系
 
----
+已有多个面板入口：
 
-## Feature Set
+- Modes
+- Persona
+- Model Config
+- Voice
+- MCP
+- Memory
+- Knowledge
+- Audit
 
-## 1. Chat Workspace
+但多数还处于“本地状态演示”或“静态占位”阶段。
 
-Must have:
+## 4. 未完成项清单
 
-- recent conversations list
-- create / rename / delete conversation
-- chat bubbles with role styling
-- streaming assistant output
-- tool call cards
-- tool result cards
-- task error rendering
-- retry last input
-- copy message
-- collapse long tool traces
+这一节是当前最重要的部分，列出还没有真正做完的内容。
 
-Nice to have:
+### 4.1 聊天核心未完成
 
-- branch conversation
-- diff between two assistant answers
-- search within current chat
-- message bookmarks
-- export markdown / JSON
+- 未完成聊天历史从后端完整拉取与恢复。
+- 未完成“停止生成 / 取消任务”的真实后端控制。
+- 未完成消息级重试。
+- 未完成分支对话、编辑上一条消息、从某条消息继续等高级交互。
+- 未完成聊天成本统计、token 估算、模型延迟指标展示。
 
-Current backend support:
+### 4.2 会话管理未完成
 
-- `POST /sessions`, `GET /sessions`, `PATCH /sessions/{id}`, `DELETE /sessions/{id}` in [apps/backend/src/makima/routes/sessions.py](/f:/Project/AIProject/makima-agent/apps/backend/src/makima/routes/sessions.py:17)
-- `POST /tasks` SSE stream and `GET /tasks/{task_id}` in [apps/backend/src/makima/routes/tasks.py](/f:/Project/AIProject/makima-agent/apps/backend/src/makima/routes/tasks.py:21)
+- 未完成成熟的最近聊天管理。
+- 未完成按时间分组。
+- 未完成搜索会话。
+- 未完成会话重命名的完整后端同步。
+- 未完成删除/归档/恢复会话的完整闭环。
+- 未完成跨设备一致的会话恢复体验。
 
-Backend gap:
+### 4.3 Mode 切换未完成
 
-- there is no dedicated "list messages for a session" endpoint yet
-- frontend phase 1 can reconstruct visible chat from task stream + local cache
-- but for a real app, add `GET /sessions/{id}/messages`
+- UI 已有，但没有完整接入真实后端模式管理。
+- 未完成会话级 Mode 切换持久化。
+- 未完成 Mode 说明、能力边界、风险提示等产品化信息。
+- 未完成不同 Mode 下的工具权限或行为差异展示。
 
----
+### 4.4 大模型配置未完成
 
-## 2. Recent Chats / Navigation
+- Model Config 面板仍主要是本地状态。
+- 未完成真实后端模型配置读写。
+- 未完成 provider / model / temperature / max tokens 的持久化保存。
+- 未完成预设管理。
+- 未完成不同模型可用性探测与失败提示。
 
-Must have:
+### 4.5 MCP 管理未完成
 
-- sort by updated time
-- unread/active marker
-- draft indicator
-- search by title
-- favorite/pin
+- MCP 面板目前没有完整接入后端。
+- 未完成 MCP Server 列表读取。
+- 未完成启停、重连、健康检查。
+- 未完成工具可见性、权限边界、错误日志展示。
+- 未完成安装、移除、配置编辑这类工作流。
 
-Nice to have:
+### 4.6 语音管理未完成
 
-- tags
-- folders or workspaces
-- "today / this week / older" grouping
+- Voice 面板目前还是本地配置性质。
+- 未完成 Fish Audio / Edge TTS / 其他 TTS Provider 的统一管理 UI。
+- 未完成 voice id、音色预览、默认音色选择的完整落库和读取。
+- 未完成多语言适配提示。
+- 未完成录音输入、VAD、ASR、语音播报队列等完整语音工作流。
 
----
+### 4.7 Persona 管理未完成
 
-## 3. Chat Composer
+- Persona 面板目前没有完整接入后端。
+- 未完成 Persona 列表拉取、保存、删除。
+- 未完成系统提示词模板管理。
+- 未完成 Persona 与 Mode / Model / Voice 的联动。
 
-Must have:
+### 4.8 Memory 未完成
 
-- multiline input
-- submit / stop generation
-- drag-drop file placeholder
-- slash command support
-- mode switch shortcut
-- estimated token/cost preview before send
+- Memory 面板当前仍是占位内容。
+- 未完成真实记忆列表读取。
+- 未完成搜索、编辑、删除、固定、禁用。
+- 未完成记忆命中来源展示。
+- 未完成“本轮引用了哪些记忆”的溯源体验。
 
-Nice to have:
+### 4.9 Knowledge 未完成
 
-- prompt snippets
-- reusable prompt templates
-- quick insert from memory / knowledge
-- local markdown preview toggle
+- Knowledge 面板当前仍是占位内容。
+- 未完成知识文档列表展示。
+- 未完成上传、切片状态、索引状态、失败重试。
+- 未完成检索结果可视化。
+- 未完成文档来源与片段预览。
 
----
+### 4.10 Audit / 观测能力未完成
 
-## 4. Task Timeline
+- 未完成真实审计日志接入。
+- 未完成用户操作、任务轨迹、工具调用的统一审计视图。
+- 未完成错误聚合与筛选。
+- 未完成性能指标面板。
 
-This is one of the biggest places to feel "more advanced than chat".
+### 4.11 账户与设置未完成
 
-Show a live execution strip for:
+- 未完成完整的登出流程打磨。
+- 未完成多环境后端切换。
+- 未完成代理配置、网络诊断、依赖状态检查。
+- 未完成设置导入导出。
 
-- thinking phase
-- memory recall
-- retrieval
-- tool dispatch
-- tool result
-- completion
-- error
+### 4.12 UI 细节与产品化未完成
 
-Current backend support:
+- 未完成更成熟的空状态与错误态设计。
+- 未完成批量操作体验。
+- 未完成拖拽上传。
+- 未完成全局命令面板。
+- 未完成快捷键体系。
+- 未完成更完整的通知中心。
+- 未完成更细的响应式与窗口尺寸适配优化。
 
-- SSE event types already exist in [apps/backend/src/makima/routes/tasks.py](/f:/Project/AIProject/makima-agent/apps/backend/src/makima/routes/tasks.py:45)
+## 5. 当前主要后端依赖缺口
 
-Recommended visualization:
+前端并不是所有问题都在 UI 层，部分能力卡在后端接口尚未提供或尚未稳定。
 
-- compact timeline above messages
-- expandable per-step drawer
-- inline tool cards inside transcript
-- right-panel raw event inspector for debugging
+当前比较明显的缺口包括：
 
----
+- 缺少完整的消息历史查询接口。
+- 缺少任务取消接口。
+- 缺少会话级 Mode 切换接口或稳定约定。
+- 缺少模型配置管理接口。
+- 缺少 MCP 管理接口。
+- 缺少统一语音设置接口。
+- 缺少成本 / token 估算接口。
+- 缺少统一健康检查与依赖状态接口。
 
-## 5. Cost / Token / Runtime Estimation
+这意味着部分界面即使已经做出来，也只能先停留在本地模拟层。
 
-Must have:
+## 6. 当前代码层面的明显信号
 
-- estimated input tokens before send
-- rolling per-session token total
-- estimated session cost
-- current task elapsed time
+从当前工程状态来看，有几个很明确的实现信号：
 
-Nice to have:
+- 很多 API 模块已经存在，但仍未被实际 UI 流程消费。
+- 多个面板有真实 UI，但数据还是静态占位或只写本地状态。
+- 工程能编译，但仍有较多 warning，说明还有不少“预留能力未接上”。
 
-- by-model cost table
-- daily/weekly local usage dashboard
-- latency histogram
+这类 warning 本身不一定阻塞运行，但它很直观地说明项目还处在“持续集成中”的阶段，而不是“全部收口完毕”的阶段。
 
-Current backend support:
+## 7. 建议的下一阶段优先级
 
-- there is token counting support in tool runtime, but no dedicated frontend-friendly API yet
+如果按投入产出比来排，建议下一阶段按这个顺序继续：
 
-Backend gap:
+1. 先补聊天主链路闭环
+2. 再补会话历史与恢复
+3. 再打通 Mode / Model / Persona / Voice 的真实配置保存
+4. 再补 MCP 管理
+5. 最后完善 Memory / Knowledge / Audit 等增强模块
 
-- add `/api/usage/estimate`
-- or expose token estimation through existing runtime service
+更具体一点：
 
-Frontend phase 1 fallback:
+1. 完成聊天历史查询、恢复、重试、取消任务
+2. 完成最近聊天、会话搜索、重命名、删除、归档
+3. 完成真实模型配置接口接入
+4. 完成真实 Persona / Voice / Mode 持久化
+5. 完成 MCP 管理与健康状态
+6. 完成 Memory / Knowledge 面板的真实数据接入
+7. 完成成本估算、审计、性能指标
 
-- local approximation based on character count and selected model
+## 8. 一句话结论
 
----
+`apps/desktop-egui` 不是“还没开始”，也不是“已经全部完成”。
 
-## 6. Mode Switching
-
-Must have:
-
-- mode dropdown
-- mode detail panel
-- mode description / when-to-use
-- built-in vs custom mode marker
-- reload project modes
-
-Nice to have:
-
-- compare modes
-- clone mode
-- inline edit draft
-
-Current backend support:
-
-- `GET /api/modes`, `GET /api/modes/{slug}`, `POST /api/modes`, `DELETE /api/modes/{slug}`, `POST /api/modes/reload` in [apps/backend/src/makima/routes/modes.py](/f:/Project/AIProject/makima-agent/apps/backend/src/makima/routes/modes.py:12)
-
-Backend gap:
-
-- no session-bound mode selection API is visible in current routes
-- README mentions one, but current code does not expose it
-
-Recommended backend addition:
-
-- `PATCH /sessions/{id}/mode`
-- include active mode in session detail
-
----
-
-## 7. Model Configuration
-
-Must have:
-
-- current provider / base URL / model
-- temperature
-- max steps
-- timeout
-- active env source indicator
-
-Nice to have:
-
-- per-mode model override editor
-- model presets
-- test connection
-- model capability tags: tools / long context / low latency / cheap
-
-Current backend reality:
-
-- app reads config and supports mode-level model fields, but there is no full dedicated model config API yet
-
-Backend gap:
-
-- add `/api/settings/model`
-- add `/api/settings/runtime`
-- add a safe "masked secrets" response shape
-
-Important rule:
-
-- never echo raw API keys back to the UI
-- show `configured: true/false`, last updated timestamp, and provider name instead
-
----
-
-## 8. MCP Management
-
-This should be first-class, not hidden in settings.
-
-Must have:
-
-- list configured MCP servers
-- enabled/disabled status
-- transport type
-- startup health
-- last error
-- manual reconnect
-
-Nice to have:
-
-- add/remove server
-- inspect advertised tools/resources
-- permission scopes
-- per-mode MCP enablement
-
-Current backend reality:
-
-- there is no visible MCP management API in current Makima backend routes
-
-Backend gap:
-
-- add `/api/mcp/servers`
-- add `/api/mcp/servers/{id}/health`
-- add `/api/mcp/servers/{id}/tools`
-- add enable/disable and restart actions
-
-Frontend phase 1 fallback:
-
-- local-only configuration screen backed by a frontend config file
-
----
-
-## 9. Voice Management
-
-Split this into two separate layers:
-
-- voice conversation runtime
-- TTS voice selection / cloned voice management
-
-Must have:
-
-- TTS provider selector
-- active voice ID
-- voice test button
-- mic input device selector
-- speaker output selector
-- push-to-talk / always-listen toggle
-- input/output volume meters
-
-Nice to have:
-
-- VAD threshold tuning
-- STT/TTS provider fallback chain
-- saved voice presets
-- live transcript overlay
-
-Current project reality:
-
-- CLI TTS exists in [cli.py](/f:/Project/AIProject/makima-agent/cli.py:206)
-- voice runtime exists in [services/voice-runtime/agent.py](/f:/Project/AIProject/makima-agent/services/voice-runtime/agent.py:43)
-
-Backend gap:
-
-- add a voice settings API if frontend should manage provider/voice centrally
-
-Recommended frontend tabs:
-
-- `Voice Chat`
-- `TTS Voices`
-- `Audio Devices`
-- `Speech Diagnostics`
-
----
-
-## 10. Persona Management
-
-Must have:
-
-- show current persona
-- reload persona
-- view default persona
-- edit in-memory persona draft
-
-Nice to have:
-
-- diff current vs default
-- "strictness", "warmth", "verbosity" sliders mapped onto persona templates
-
-Current backend support:
-
-- persona endpoints exist in [apps/backend/src/makima/routes/persona.py](/f:/Project/AIProject/makima-agent/apps/backend/src/makima/routes/persona.py:14)
-
-Important warning:
-
-- current update route is in-memory only unless `.makima/persona.yaml` is also updated
-- UI should show this clearly
-
----
-
-## 11. Memory Panel
-
-Must have:
-
-- memory service status
-- list memories
-- search memories
-- delete memory
-
-Nice to have:
-
-- pin memory
-- mark as wrong / stale
-- memory categories
-
-Current backend support:
-
-- memory endpoints exist in [apps/backend/src/makima/routes/memory.py](/f:/Project/AIProject/makima-agent/apps/backend/src/makima/routes/memory.py:17)
-
----
-
-## 12. Knowledge / RAG Panel
-
-Must have:
-
-- upload document
-- list documents
-- delete document
-- test retrieval
-
-Nice to have:
-
-- chunk preview
-- source snippet preview
-- ingestion progress
-- retrieval debug mode
-
-Current backend support:
-
-- knowledge routes are available in [apps/backend/src/makima/routes/knowledge.py](/f:/Project/AIProject/makima-agent/apps/backend/src/makima/routes/knowledge.py:22)
-
----
-
-## 13. Audit / Admin Panel
-
-Must have:
-
-- audit log table
-- filters by severity/action/resource
-- request detail drawer
-
-Nice to have:
-
-- export CSV
-- suspicious activity highlighting
-
-Current backend support:
-
-- admin-only audit route in [apps/backend/src/makima/routes/audit.py](/f:/Project/AIProject/makima-agent/apps/backend/src/makima/routes/audit.py:18)
-
----
-
-## 14. Health / Diagnostics
-
-This is easy to skip and always regretted later.
-
-Must have:
-
-- backend health
-- auth health
-- SSE stream state
-- current API base URL
-- local config path
-- error log console
-
-Nice to have:
-
-- latency probes
-- retry diagnostics
-- dependency matrix: LLM / memory / voice / MCP / storage
-
----
-
-## 15. Settings / Secrets UX
-
-Must have:
-
-- local-only settings file
-- masked secret inputs
-- "configured / missing" badges instead of raw secret display
-- import/export non-secret settings
-
-Recommended storage split:
-
-- frontend UI state: local app config
-- real secrets: OS keyring if possible, fallback to local ignored file
-
-Recommended crates:
-
-- `keyring` for OS credential store
-
-Important rule:
-
-- do not store third-party API keys in plain UI state if avoidable
-
----
-
-## Recommended Desktop App Structure
-
-```text
-apps/desktop-egui/
-  Cargo.toml
-  src/
-    main.rs
-    app.rs
-    bootstrap.rs
-    theme.rs
-    routes.rs
-    commands.rs
-    config/
-      mod.rs
-      app_config.rs
-      secure_store.rs
-    api/
-      mod.rs
-      auth.rs
-      sessions.rs
-      tasks.rs
-      modes.rs
-      persona.rs
-      memory.rs
-      knowledge.rs
-      audit.rs
-      mcp.rs
-      voice.rs
-    state/
-      mod.rs
-      app_state.rs
-      chat_state.rs
-      task_state.rs
-      settings_state.rs
-    ui/
-      shell.rs
-      top_bar.rs
-      side_nav.rs
-      chat/
-        transcript.rs
-        bubbles.rs
-        composer.rs
-        timeline.rs
-      panels/
-        inspector.rs
-        modes.rs
-        model_config.rs
-        memory.rs
-        knowledge.rs
-        voice.rs
-        mcp.rs
-        audit.rs
-        diagnostics.rs
-```
-
----
-
-## UX Style Guidance
-
-If we want "similar to Codex or better", do not make this look like a default debug dashboard.
-
-Direction:
-
-- dark graphite base
-- restrained red accents for Makima identity
-- high information density
-- clear hierarchy
-- no oversized padding everywhere
-- keyboard-first interactions
-
-Important interaction patterns:
-
-- command palette
-- global quick switcher
-- dockable right panels
-- resizable chat/tool split
-- persistent session sidebar
-- rich hover states for tool steps and context hits
-
----
-
-## Implementation Phases
-
-## Phase 0: Foundation
-
-Goal:
-
-- create desktop app shell
-- add login
-- add health check
-- add config/secrets storage
-
-Deliverables:
-
-- app boots
-- user can configure server URL
-- user can log in
-- app stores token securely
-
----
-
-## Phase 1: Usable Chat Client
-
-Goal:
-
-- make it genuinely better than CLI for daily chat use
-
-Deliverables:
-
-- recent sessions
-- create/rename/delete session
-- SSE task streaming
-- chat transcript
-- tool call/result rendering
-- stop/retry actions
-- basic token estimate
-
-Backend dependency:
-
-- add message history endpoint if we want durable transcript reload
-
----
-
-## Phase 2: Agent Control Surface
-
-Goal:
-
-- expose mode, persona, memory, knowledge, diagnostics
-
-Deliverables:
-
-- mode switch panel
-- persona panel
-- memory panel
-- knowledge upload/retrieve panel
-- diagnostics panel
-
----
-
-## Phase 3: Advanced Runtime Controls
-
-Goal:
-
-- bring in model settings, voice settings, and MCP management
-
-Deliverables:
-
-- model config UI
-- voice config UI
-- MCP list/health UI
-- local cost dashboard
-
-Backend dependency:
-
-- add settings APIs
-- add MCP APIs
-- add voice settings APIs
-
----
-
-## Phase 4: Power User Experience
-
-Goal:
-
-- make the app feel premium and agent-native
-
-Deliverables:
-
-- command palette
-- chat search
-- bookmarks
-- branch conversation
-- timeline inspector
-- audit/admin tools
-- local usage analytics
-
----
-
-## Phase 5: "Better Than Codex" Layer
-
-This is where Makima can differentiate.
-
-Ideas:
-
-- memory confidence inspector
-- prompt/context composition viewer
-- retrieval provenance panel
-- live agent reasoning phase map without exposing unsafe chain-of-thought
-- mode recommendation engine
-- voice persona presets
-- session snapshots and replay
-- one-click "convert chat to knowledge"
-
----
-
-## Backend Gaps To Prioritize
-
-These will unblock the frontend fastest:
-
-1. `GET /sessions/{id}/messages`
-2. `PATCH /sessions/{id}/mode`
-3. masked settings endpoints for model/runtime/voice
-4. MCP management endpoints
-5. token/cost estimate endpoint
-6. unified health/dependencies endpoint
-
----
-
-## Suggested Development Order
-
-1. Build desktop shell and auth.
-2. Implement sessions + chat + SSE streaming.
-3. Add message persistence endpoint in backend.
-4. Add mode/persona/memory/knowledge inspector panels.
-5. Add settings and secure secret storage.
-6. Add voice and MCP management.
-7. Add analytics, command palette, and premium UX touches.
-
----
-
-## Practical First Milestone
-
-If we want the fastest believable demo, target this:
-
-- login
-- session list
-- streaming chat
-- tool timeline
-- mode dropdown
-- right inspector with token estimate + persona + memory status
-
-That is enough to look like a real agent workbench instead of a toy.
-
----
-
-## Recommendation
-
-Start with a native desktop app under `apps/desktop-egui`, not a web wrapper. `egui` is strongest when we embrace:
-
-- fast internal tooling UI
-- dense control surfaces
-- dockable inspector patterns
-- debug + operations visibility
-
-If you want, the next step I can do is continue from this README and give you:
-
-1. a concrete `apps/desktop-egui` crate scaffold plan
-2. the Rust module skeleton
-3. the first-screen wireframe mapped to `egui` panels
-4. the backend API contract list the frontend should consume
+它现在已经完成了桌面 Agent 工作台的骨架、登录链路、聊天主链路和部分后端对齐，但大量高级面板和配置能力仍处于半成品或占位状态，尤其是 Mode、Model、MCP、Voice、Memory、Knowledge、Audit 这些模块还没有真正收口。

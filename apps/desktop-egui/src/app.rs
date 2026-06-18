@@ -9,7 +9,6 @@ use crate::config::secure_store::SecureStore;
 use crate::state::app_state::AppState;
 use crate::ui;
 
-/// Holds transient login dialog state (not persisted)
 pub struct LoginDialogState {
     pub username: String,
     pub password: String,
@@ -20,17 +19,10 @@ pub struct LoginDialogState {
 
 impl Default for LoginDialogState {
     fn default() -> Self {
-        Self {
-            username: String::new(),
-            password: String::new(),
-            server_url: "http://localhost:8000".to_string(),
-            error: None,
-            loading: false,
-        }
+        Self { username: String::new(), password: String::new(), server_url: "http://localhost:8000".to_string(), error: None, loading: false }
     }
 }
 
-/// Actions that the UI can request from the app
 pub enum UiAction {
     Login,
     SendMessage,
@@ -59,39 +51,22 @@ impl Default for MakimaApp {
         login_dialog.server_url = config.server_url.clone();
 
         if let Some(token) = secure_store.get_token() {
-            if let Ok(mut s) = state.lock() {
-                s.auth_token = Some(token);
-                s.is_logged_in = true;
-                s.server_url = config.server_url.clone();
-            }
+            if let Ok(mut s) = state.lock() { s.auth_token = Some(token); s.is_logged_in = true; s.server_url = config.server_url.clone(); }
         }
+        let client = reqwest::Client::builder().user_agent("makima-desktop/0.1.0").build().expect("Failed to create HTTP client");
 
-        let client = reqwest::Client::builder()
-            .user_agent("makima-desktop/0.1.0")
-            .build()
-            .expect("Failed to create HTTP client");
-
-        Self {
-            state,
-            runtime,
-            client,
-            config,
-            secure_store,
-            initialized: false,
-            login_dialog,
-            pending_action: None,
-        }
+        Self { state, runtime, client, config, secure_store, initialized: false, login_dialog, pending_action: None }
     }
 }
 
 impl MakimaApp {
     fn exec_login(&mut self) {
-        let username = std::mem::take(&mut self.login_dialog.username);
-        let password = std::mem::take(&mut self.login_dialog.password);
-        let server_url = self.login_dialog.server_url.clone();
         self.login_dialog.loading = true;
         self.login_dialog.error = None;
 
+        let username = std::mem::take(&mut self.login_dialog.username);
+        let password = std::mem::take(&mut self.login_dialog.password);
+        let server_url = self.login_dialog.server_url.clone();
         let state = self.state.clone();
         let client = self.client.clone();
 
@@ -103,10 +78,8 @@ impl MakimaApp {
             match auth_api.login(&username, &password).await {
                 Ok(resp) => {
                     let token = resp.access_token;
-                    let secure_store = SecureStore::new();
-                    let _ = secure_store.store_token(&token);
+                    SecureStore::new().store_token(&token).ok();
 
-                    // Scope the lock
                     {
                         let mut s = state.lock().unwrap();
                         s.server_url = server_url.clone();
@@ -116,21 +89,16 @@ impl MakimaApp {
                         s.set_status("Logged in".to_string());
                     }
 
-                    // Fetch sessions (separate lock window)
-                    {
-                        let sessions_api = SessionsApi::new(client, server_url, token);
-                        let r = Runtime::new().unwrap();
-                        if let Ok(api_sessions) = r.block_on(sessions_api.list()) {
-                            let mut s = state.lock().unwrap();
-                            for api_s in api_sessions {
-                                let title = api_s.title.unwrap_or_else(|| "Untitled".to_string());
-                                s.chat.sessions.push(crate::state::chat_state::Session::new(title));
-                            }
-                            if !s.chat.sessions.is_empty() {
-                                s.chat.active_session_id = Some(s.chat.sessions[0].id);
-                            }
-                            s.set_status("Sessions loaded".to_string());
+                    // Fetch sessions
+                    let sessions_api = SessionsApi::new(client, server_url, token);
+                    if let Ok(list) = Runtime::new().unwrap().block_on(sessions_api.list()) {
+                        let mut s = state.lock().unwrap();
+                        for api_s in list {
+                            let title = api_s.title.unwrap_or_else(|| "Untitled".to_string());
+                            s.chat.sessions.push(crate::state::chat_state::Session::new(title, None));
                         }
+                        if !s.chat.sessions.is_empty() { s.chat.active_session_id = Some(s.chat.sessions[0].id); }
+                        s.set_status("Sessions loaded".to_string());
                     }
                 }
                 Err(e) => {
@@ -144,22 +112,20 @@ impl MakimaApp {
     fn exec_send_message(&mut self) {
         let mut s = self.state.lock().unwrap();
         let text = s.chat.composer.input.trim().to_string();
-        if text.is_empty() {
-            return;
-        }
+        if text.is_empty() { return; }
 
-        let session_count = s.chat.sessions.len();
         if s.chat.active_session().is_none() {
-            s.chat.create_session(format!("Chat {}", session_count + 1));
+            let n = s.chat.sessions.len();
+            s.chat.create_session(format!("Chat {}", n + 1));
         }
 
-        let session_id = s.chat.active_session_id;
+        let session_id = match s.chat.active_session_id {
+            Some(id) => id.to_string(),
+            None => { s.set_status("No active session".to_string()); return; }
+        };
         let token = match &s.auth_token {
             Some(t) => t.clone(),
-            None => {
-                s.set_status("Not authenticated".to_string());
-                return;
-            }
+            None => { s.set_status("Not authenticated".to_string()); return; }
         };
         let server_url = s.server_url.clone();
 
@@ -168,21 +134,14 @@ impl MakimaApp {
             let msg = crate::state::chat_state::ChatMessage {
                 ts: chrono::Utc::now().timestamp_millis(),
                 msg_type: crate::state::chat_state::MessageType::Ask,
-                ask: None,
-                say: None,
-                text: Some(text.clone()),
-                partial: false,
-                reasoning: None,
-                token_usage: None,
-                tool_call_id: None,
-                error: None,
-                id: Uuid::new_v4(),
-                session_id: session.id,
+                ask: None, say: None,
+                text: Some(text.clone()), partial: false,
+                reasoning: None, token_usage: None, tool_call_id: None, error: None,
+                id: Uuid::new_v4(), session_id: session.id,
             };
             session.messages.push(msg);
             session.updated_at = chrono::Utc::now();
         }
-
         s.chat.composer.input.clear();
         s.chat.composer.is_streaming = true;
         s.set_status("Sending...".to_string());
@@ -193,18 +152,13 @@ impl MakimaApp {
 
         self.runtime.spawn(async move {
             let tasks_api = TasksApi::new(client, server_url, token);
-            let sid_str = session_id.map(|id| id.to_string());
-
-            match tasks_api.stream(sid_str, Some(text)).await {
+            match tasks_api.stream(session_id, text).await {
                 Ok(mut rx) => {
                     while let Some(event_result) = rx.recv().await {
                         let mut s = state.lock().unwrap();
                         match event_result {
                             Ok(event) => handle_sse_event(&mut s, event),
-                            Err(e) => {
-                                s.set_status(format!("Stream error: {}", e));
-                                s.chat.composer.is_streaming = false;
-                            }
+                            Err(e) => { s.set_status(format!("Stream error: {}", e)); s.chat.composer.is_streaming = false; }
                         }
                     }
                     let mut s = state.lock().unwrap();
@@ -229,138 +183,55 @@ fn handle_sse_event(state: &mut AppState, event: crate::state::task_state::TaskE
     let session_id = state.chat.active_session_id.unwrap_or_else(Uuid::new_v4);
 
     match event {
-        TaskEvent::TaskStarted { task_id } => {
+        TaskEvent::TaskStarted { .. } => {
             let mut task = crate::state::task_state::TaskExecutionState::default();
             task.status = TaskStatus::Running;
-            task.task_id = Uuid::parse_str(&task_id).ok();
             state.task.active_task = Some(task);
         }
-        TaskEvent::TaskCompleted { .. } => {
-            if let Some(t) = state.task.active_task.as_mut() {
-                t.status = TaskStatus::Idle;
-            }
-        }
+        TaskEvent::TaskCompleted { .. } => { if let Some(t) = state.task.active_task.as_mut() { t.status = TaskStatus::Idle; } }
         TaskEvent::TaskError { error, .. } => {
-            if let Some(t) = state.task.active_task.as_mut() {
-                t.status = TaskStatus::Idle;
-                t.error = Some(error);
+            if let Some(t) = state.task.active_task.as_mut() { t.status = TaskStatus::Idle; t.error = Some(error.clone()); }
+            if let Some(session) = state.chat.active_session_mut() {
+                let err_clone = error.clone();
+                session.messages.push(ChatMessage { ts: Utc::now().timestamp_millis(), msg_type: MessageType::Say, ask: None, say: Some(SayKind::Error), text: Some(error), partial: false, reasoning: None, token_usage: None, tool_call_id: None, error: Some(err_clone), id: Uuid::new_v4(), session_id });
+                session.updated_at = Utc::now();
             }
         }
         TaskEvent::Message { message, action, .. } => {
-            let text = message
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            let text = message.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let is_partial = action == "updated";
-
             if let Some(session) = state.chat.active_session_mut() {
                 if is_partial {
                     if let Some(last) = session.messages.last_mut() {
-                        if last.partial && last.msg_type == MessageType::Say {
-                            last.text = Some(text);
-                            return;
-                        }
+                        if last.partial && last.msg_type == MessageType::Say { last.text = Some(text); return; }
                     }
                 }
-
-                let msg = ChatMessage {
-                    ts: Utc::now().timestamp_millis(),
-                    msg_type: MessageType::Say,
-                    ask: None,
-                    say: Some(SayKind::Text),
-                    text: Some(text),
-                    partial: is_partial,
-                    reasoning: None,
-                    token_usage: None,
-                    tool_call_id: None,
-                    error: None,
-                    id: Uuid::new_v4(),
-                    session_id,
-                };
-                session.messages.push(msg);
+                session.messages.push(ChatMessage { ts: Utc::now().timestamp_millis(), msg_type: MessageType::Say, ask: None, say: Some(SayKind::Text), text: Some(text), partial: is_partial, reasoning: None, token_usage: None, tool_call_id: None, error: None, id: Uuid::new_v4(), session_id });
                 session.updated_at = Utc::now();
             }
         }
         TaskEvent::ToolStart { tool_name, .. } => {
-            if let Some(t) = state.task.active_task.as_mut() {
-                t.add_timeline_entry(TimelinePhase::ToolDispatch, tool_name.clone(), None);
-            }
-            if let Some(session) = state.chat.active_session_mut() {
-                session.messages.push(ChatMessage {
-                    ts: Utc::now().timestamp_millis(),
-                    msg_type: MessageType::Say,
-                    ask: None,
-                    say: Some(SayKind::Tool),
-                    text: Some(format!("🔧 Tool: {}", tool_name)),
-                    partial: false,
-                    reasoning: None,
-                    token_usage: None,
-                    tool_call_id: None,
-                    error: None,
-                    id: Uuid::new_v4(),
-                    session_id,
-                });
-                session.updated_at = Utc::now();
-            }
+            if let Some(t) = state.task.active_task.as_mut() { t.add_timeline_entry(TimelinePhase::ToolDispatch, tool_name.clone(), None); }
         }
         TaskEvent::ToolResult { tool_name, result } => {
-            let result_text = result
-                .as_str()
-                .map(|s| truncate(s, 200))
-                .unwrap_or_else(|| format!("{:?}", result));
+            let text = result.as_str().map(|s| truncate(s, 200)).unwrap_or_else(|| format!("{:?}", result));
             if let Some(session) = state.chat.active_session_mut() {
-                session.messages.push(ChatMessage {
-                    ts: Utc::now().timestamp_millis(),
-                    msg_type: MessageType::Say,
-                    ask: None,
-                    say: Some(SayKind::Tool),
-                    text: Some(format!("✅ {}: {}", tool_name, result_text)),
-                    partial: false,
-                    reasoning: None,
-                    token_usage: None,
-                    tool_call_id: None,
-                    error: None,
-                    id: Uuid::new_v4(),
-                    session_id,
-                });
+                session.messages.push(ChatMessage { ts: Utc::now().timestamp_millis(), msg_type: MessageType::Say, ask: None, say: Some(SayKind::Tool), text: Some(format!("✅ {}: {}", tool_name, text)), partial: false, reasoning: None, token_usage: None, tool_call_id: None, error: None, id: Uuid::new_v4(), session_id });
                 session.updated_at = Utc::now();
             }
         }
         TaskEvent::ToolError { tool_name, error } => {
             if let Some(session) = state.chat.active_session_mut() {
-                session.messages.push(ChatMessage {
-                    ts: Utc::now().timestamp_millis(),
-                    msg_type: MessageType::Say,
-                    ask: None,
-                    say: Some(SayKind::Tool),
-                    text: Some(format!("❌ {}: {}", tool_name, error)),
-                    partial: false,
-                    reasoning: None,
-                    token_usage: None,
-                    tool_call_id: None,
-                    error: Some(error.clone()),
-                    id: Uuid::new_v4(),
-                    session_id,
-                });
+                session.messages.push(ChatMessage { ts: Utc::now().timestamp_millis(), msg_type: MessageType::Say, ask: None, say: Some(SayKind::Tool), text: Some(format!("❌ {}: {}", tool_name, error)), partial: false, reasoning: None, token_usage: None, tool_call_id: None, error: Some(error.clone()), id: Uuid::new_v4(), session_id });
                 session.updated_at = Utc::now();
             }
         }
         TaskEvent::Thinking { content } => {
-            if let Some(t) = state.task.active_task.as_mut() {
-                t.add_timeline_entry(TimelinePhase::Thinking, "Thinking".to_string(), Some(content));
-            }
+            if let Some(t) = state.task.active_task.as_mut() { t.add_timeline_entry(TimelinePhase::Thinking, "Thinking".to_string(), Some(content)); }
         }
         TaskEvent::TokenUsage { tokens_in, tokens_out, cost } => {
             if let Some(t) = state.task.active_task.as_mut() {
-                t.token_usage = TokenUsage {
-                    total_tokens_in: tokens_in,
-                    total_tokens_out: tokens_out,
-                    total_cache_writes: None,
-                    total_cache_reads: None,
-                    total_cost: cost,
-                    context_tokens: 0,
-                };
+                t.token_usage = TokenUsage { total_tokens_in: tokens_in, total_tokens_out: tokens_out, total_cache_writes: None, total_cache_reads: None, total_cost: cost, context_tokens: 0 };
             }
             state.set_status(format!("Tokens: ↑{} ↓{} ${:.5}", tokens_in, tokens_out, cost));
         }
@@ -380,16 +251,13 @@ impl eframe::App for MakimaApp {
             self.bootstrap();
         }
 
-        // Process pending action (set by UI)
         if let Some(action) = self.pending_action.take() {
             match action {
                 UiAction::Login => self.exec_login(),
                 UiAction::SendMessage => self.exec_send_message(),
                 UiAction::Logout => {
                     let mut s = self.state.lock().unwrap();
-                    s.is_logged_in = false;
-                    s.auth_token = None;
-                    s.show_login = true;
+                    s.is_logged_in = false; s.auth_token = None; s.show_login = true;
                     let _ = self.secure_store.delete_token();
                 }
                 UiAction::RefreshSessions => {
@@ -406,7 +274,7 @@ impl eframe::App for MakimaApp {
                                 let mut s = state.lock().unwrap();
                                 for api_s in list {
                                     let title = api_s.title.unwrap_or_else(|| "Untitled".to_string());
-                                    s.chat.sessions.push(crate::state::chat_state::Session::new(title));
+                                    s.chat.sessions.push(crate::state::chat_state::Session::new(title, None));
                                 }
                                 s.set_status("Sessions refreshed".to_string());
                             }
@@ -414,6 +282,16 @@ impl eframe::App for MakimaApp {
                     }
                 }
             }
+        }
+
+        let mut state = self.state.lock().unwrap();
+
+        // Process API commands from panels
+        let commands: Vec<_> = state.api_commands.drain(..).collect();
+        drop(state);
+
+        for cmd in commands {
+            self.exec_api_command(cmd);
         }
 
         let mut state = self.state.lock().unwrap();
@@ -425,6 +303,162 @@ impl eframe::App for MakimaApp {
 }
 
 impl MakimaApp {
+    fn exec_api_command(&mut self, cmd: crate::state::app_state::ApiCommand) {
+        use crate::api::{audit::AuditApi, knowledge::KnowledgeApi, mcp::McpApi, memory::MemoryApi, modes::ModesApi, persona::PersonaApi, voice::VoiceApi};
+        use crate::state::app_state::ApiCommand;
+
+        let s = self.state.lock().unwrap();
+        let token = match &s.auth_token { Some(t) => t.clone(), None => return };
+        let server_url = s.server_url.clone();
+        drop(s);
+
+        let state = self.state.clone();
+        let client = self.client.clone();
+
+        self.runtime.spawn(async move {
+            match cmd {
+                ApiCommand::FetchModes => {
+                    let api = ModesApi::new(client, server_url, token);
+                    if let Ok(modes) = api.list().await {
+                        let mut s = state.lock().unwrap();
+                        s.settings.modes = modes.into_iter().map(|m| crate::state::settings_state::ModeConfig {
+                            slug: m.slug, name: m.name,
+                            role_definition: m.role_definition.unwrap_or_default(),
+                            when_to_use: m.when_to_use,
+                            description: m.description,
+                            custom_instructions: m.custom_instructions,
+                            groups: m.groups.unwrap_or_default(),
+                            source: m.source,
+                        }).collect();
+                        if s.settings.active_mode_slug.is_none() {
+                            s.settings.active_mode_slug = s.settings.modes.first().map(|m| m.slug.clone());
+                        }
+                        s.set_status("Modes loaded".to_string());
+                    }
+                }
+                ApiCommand::FetchPersona => {
+                    let api = PersonaApi::new(client, server_url, token);
+                    if let Ok(p) = api.get_current().await {
+                        let mut s = state.lock().unwrap();
+                        s.settings.persona_name = p.name;
+                        s.settings.persona_is_default = p.is_default.unwrap_or(false);
+                        s.settings.persona_default_preview = p.content.clone().unwrap_or_default();
+                        s.set_status("Persona loaded".to_string());
+                    }
+                }
+                ApiCommand::ReloadPersona => {
+                    let api = PersonaApi::new(client, server_url, token);
+                    if let Ok(p) = api.reload().await {
+                        let mut s = state.lock().unwrap();
+                        s.settings.persona_name = p.name;
+                        s.settings.persona_modified = false;
+                        s.set_status("Persona reloaded".to_string());
+                    }
+                }
+                ApiCommand::FetchMemories => {
+                    let api = MemoryApi::new(client, server_url, token);
+                    if let Ok(list) = api.list().await {
+                        let mut s = state.lock().unwrap();
+                        s.settings.memory_items = list.into_iter().map(|m| m.content).collect();
+                        let count = s.settings.memory_items.len();
+                        s.set_status(format!("{} memories loaded", count));
+                    }
+                }
+                ApiCommand::SearchMemories(q) => {
+                    let api = MemoryApi::new(client, server_url, token);
+                    if let Ok(list) = api.search(&q).await {
+                        let mut s = state.lock().unwrap();
+                        s.settings.memory_items = list.into_iter().map(|m| m.content).collect();
+                        let count = s.settings.memory_items.len();
+                        s.set_status(format!("{} results", count));
+                    }
+                }
+                ApiCommand::DeleteMemory(id) => {
+                    let api = MemoryApi::new(client, server_url, token);
+                    let _ = api.delete(&id).await;
+                    let mut s = state.lock().unwrap();
+                    s.set_status("Memory deleted".to_string());
+                }
+                ApiCommand::FetchDocuments => {
+                    let api = KnowledgeApi::new(client, server_url, token);
+                    if let Ok(list) = api.list().await {
+                        let mut s = state.lock().unwrap();
+                        s.settings.knowledge_docs = list;
+                        let count = s.settings.knowledge_docs.len();
+                        s.set_status(format!("{} documents loaded", count));
+                    }
+                }
+                ApiCommand::RetrieveKnowledge(q) => {
+                    let api = KnowledgeApi::new(client, server_url, token);
+                    if let Ok(result) = api.retrieve(&q).await {
+                        let mut s = state.lock().unwrap();
+                        s.settings.knowledge_results = result.chunks.into_iter().map(|c| c.content).collect();
+                        s.set_status("Retrieval done".to_string());
+                    }
+                }
+                ApiCommand::FetchMcpServers => {
+                    let api = McpApi::new(client, server_url, token);
+                    if let Ok(list) = api.list().await {
+                        let mut s = state.lock().unwrap();
+                        s.settings.mcp_servers = list.into_iter().map(|srv| crate::state::settings_state::McpServerConfig {
+                            name: srv.name,
+                            transport_type: match srv.transport_type.as_deref() {
+                                Some("stdio") => crate::state::settings_state::McpTransportType::Stdio,
+                                Some("sse") => crate::state::settings_state::McpTransportType::Sse,
+                                _ => crate::state::settings_state::McpTransportType::StreamableHttp,
+                            },
+                            status: match srv.status.as_deref() {
+                                Some("connected") => crate::state::settings_state::McpConnectionStatus::Connected,
+                                Some("connecting") => crate::state::settings_state::McpConnectionStatus::Connecting,
+                                Some("error") => crate::state::settings_state::McpConnectionStatus::Error,
+                                _ => crate::state::settings_state::McpConnectionStatus::Disconnected,
+                            },
+                            error: srv.last_error,
+                            tools: srv.tools.unwrap_or_default().into_iter().map(|t| crate::state::settings_state::McpToolConfig {
+                                name: t.name, description: t.description, input_schema: None, always_allow: false, enabled: t.enabled.unwrap_or(true),
+                            }).collect(),
+                            enabled: srv.enabled.unwrap_or(true),
+                            last_health_check: None,
+                        }).collect();
+                        s.set_status("MCP servers loaded".to_string());
+                    }
+                }
+                ApiCommand::ReconnectMcp(name) => {
+                    let api = McpApi::new(client, server_url, token);
+                    let _ = api.reconnect(&name).await;
+                    let mut s = state.lock().unwrap();
+                    s.set_status(format!("Reconnecting {}...", name));
+                }
+                ApiCommand::ToggleMcp(name, enabled) => {
+                    let api = McpApi::new(client, server_url, token);
+                    let _ = api.toggle(&name, enabled).await;
+                    let mut s = state.lock().unwrap();
+                    if let Some(srv) = s.settings.mcp_servers.iter_mut().find(|x| x.name == name) {
+                        srv.enabled = enabled;
+                    }
+                }
+                ApiCommand::FetchAuditLog => {
+                    let api = AuditApi::new(client, server_url, token);
+                    if let Ok(list) = api.list().await {
+                        let mut s = state.lock().unwrap();
+                        s.settings.audit_entries = list;
+                        s.set_status("Audit log loaded".to_string());
+                    }
+                }
+                ApiCommand::FetchVoiceSettings => {
+                    let api = VoiceApi::new(client, server_url, token);
+                    if let Ok(vs) = api.get_settings().await {
+                        let mut s = state.lock().unwrap();
+                        if let Some(p) = vs.tts_provider { s.settings.voice_config.tts_provider = p; }
+                        if let Some(v) = vs.active_voice_id { s.settings.voice_config.active_voice_id = Some(v); }
+                        if let Some(ptt) = vs.push_to_talk { s.settings.voice_config.push_to_talk = ptt; }
+                        s.set_status("Voice settings loaded".to_string());
+                    }
+                }
+            }
+        });
+    }
+
     fn bootstrap(&self) {
         let state = self.state.clone();
         let client = self.client.clone();
@@ -433,16 +467,11 @@ impl MakimaApp {
         self.runtime.spawn(async move {
             let health_api = HealthApi::new(client.clone(), server_url.clone());
             let backend_ok = health_api.check().await.is_ok();
-
             let token = {
                 let mut s = state.lock().unwrap();
                 s.settings.health.backend = backend_ok;
                 s.settings.health.api_base_url = server_url.clone();
-                if !backend_ok {
-                    s.show_login = true;
-                    s.set_status("Backend offline".to_string());
-                    return;
-                }
+                if !backend_ok { s.show_login = true; s.set_status("Backend offline".to_string()); return; }
                 s.auth_token.clone()
             };
 
@@ -451,27 +480,17 @@ impl MakimaApp {
                 let is_valid = matches!(auth_api.verify_token(&token).await, Ok(true));
                 let mut s = state.lock().unwrap();
                 if is_valid {
-                    s.is_logged_in = true;
-                    s.set_status("Authenticated".to_string());
+                    s.is_logged_in = true; s.set_status("Authenticated".to_string());
                     let sessions_api = SessionsApi::new(client, server_url, token);
                     if let Ok(list) = Runtime::new().unwrap().block_on(sessions_api.list()) {
                         for api_s in list {
                             let title = api_s.title.unwrap_or_else(|| "Untitled".to_string());
-                            s.chat.sessions.push(crate::state::chat_state::Session::new(title));
+                            s.chat.sessions.push(crate::state::chat_state::Session::new(title, None));
                         }
-                        if !s.chat.sessions.is_empty() {
-                            s.chat.active_session_id = Some(s.chat.sessions[0].id);
-                        }
-                        s.set_status("Sessions loaded".to_string());
+                        if !s.chat.sessions.is_empty() { s.chat.active_session_id = Some(s.chat.sessions[0].id); }
                     }
-                } else {
-                    s.is_logged_in = false;
-                    s.show_login = true;
-                }
-            } else {
-                let mut s = state.lock().unwrap();
-                s.show_login = true;
-            }
+                } else { s.is_logged_in = false; s.show_login = true; }
+            } else { let mut s = state.lock().unwrap(); s.show_login = true; }
         });
 
         if let Ok(mut s) = self.state.lock() {

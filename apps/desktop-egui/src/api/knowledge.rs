@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
+/// Matches backend DocumentResponse
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiDocument {
     pub id: String,
@@ -9,6 +10,11 @@ pub struct ApiDocument {
     pub status: Option<String>,
     pub chunk_count: Option<u32>,
     pub created_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DocumentListResponse {
+    items: Vec<ApiDocument>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,27 +41,26 @@ impl KnowledgeApi {
         Self { client, base_url, token }
     }
 
-    /// GET /api/knowledge
+    /// GET /knowledge/documents
     pub async fn list(&self) -> Result<Vec<ApiDocument>> {
-        let url = format!("{}/api/knowledge", self.base_url);
+        let url = format!("{}/knowledge/documents", self.base_url);
         let resp = self.client.get(&url).bearer_auth(&self.token).send().await
             .context("Failed to fetch documents")?;
         if !resp.status().is_success() { anyhow::bail!("Failed: {}", resp.status()); }
-        Ok(resp.json().await.context("Failed to parse documents")?)
+        Ok(resp.json::<DocumentListResponse>().await.map(|l| l.items).unwrap_or_default())
     }
 
-    /// DELETE /api/knowledge/{id}
+    /// DELETE /knowledge/documents/{id}
     pub async fn delete(&self, id: &str) -> Result<()> {
-        let url = format!("{}/api/knowledge/{}", self.base_url, id);
-        let resp = self.client.delete(&url).bearer_auth(&self.token).send().await
+        let url = format!("{}/knowledge/documents/{}", self.base_url, id);
+        self.client.delete(&url).bearer_auth(&self.token).send().await
             .context("Failed to delete document")?;
-        if !resp.status().is_success() { anyhow::bail!("Failed: {}", resp.status()); }
         Ok(())
     }
 
-    /// POST /api/knowledge/retrieve
+    /// POST /knowledge/retrieve
     pub async fn retrieve(&self, query: &str) -> Result<RetrievalResult> {
-        let url = format!("{}/api/knowledge/retrieve", self.base_url);
+        let url = format!("{}/knowledge/retrieve", self.base_url);
         let body = serde_json::json!({ "query": query });
         let resp = self.client.post(&url).bearer_auth(&self.token).json(&body).send().await
             .context("Failed to retrieve knowledge")?;
