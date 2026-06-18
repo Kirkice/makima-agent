@@ -144,44 +144,118 @@ def load_env_credentials() -> tuple[str, str]:
     return username, password
 
 
+def _load_env_value(name: str) -> str:
+    """Load a value from environment first, then apps/backend/.env."""
+    value = os.getenv(name, "")
+    if value:
+        return value
+
+    env_file = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "apps", "backend", ".env"
+    )
+    if os.path.exists(env_file):
+        with open(env_file, encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                if k.strip() == name:
+                    return v.strip()
+    return ""
+
+
+def _load_fish_audio_config() -> tuple[str, str]:
+    """Load Fish Audio API key and voice reference ID."""
+    return (
+        _load_env_value("MAKIMA_FISH_AUDIO_KEY"),
+        _load_env_value("MAKIMA_FISH_AUDIO_REFERENCE_ID"),
+    )
+
+
+def _update_env_value(name: str, value: str) -> bool:
+    """Update or append a variable in apps/backend/.env."""
+    env_file = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "apps", "backend", ".env"
+    )
+    lines: list[str] = []
+    found = False
+
+    if os.path.exists(env_file):
+        with open(env_file, encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+
+    for idx, line in enumerate(lines):
+        if line.startswith(f"{name}="):
+            lines[idx] = f"{name}={value}\n"
+            found = True
+            break
+
+    if not found:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.append(f"{name}={value}\n")
+
+    with open(env_file, "w", encoding="utf-8", errors="ignore") as f:
+        f.writelines(lines)
+
+    os.environ[name] = value
+    return True
+
+
 def _speak_text(text: str) -> None:
-    """Use OpenAI TTS or edge-tts to speak text aloud. Runs synchronously."""
+    """Use Fish Audio API or edge-tts to speak text aloud. Runs synchronously."""
     tmp_path = os.path.join(tempfile.gettempdir(), "makima_tts.mp3")
     success = False
 
-    # ── Try OpenAI TTS first (requires MAKIMA_LLM_API_KEY) ──
+    # ── Try Fish Audio API first (requires MAKIMA_FISH_AUDIO_KEY) ──
     try:
-        from openai import OpenAI
+        import httpx
         import pygame
 
-        api_key = os.getenv("MAKIMA_LLM_API_KEY", "")
-        api_base = os.getenv("MAKIMA_LLM_API_BASE", "https://api.openai.com/v1")
+        api_key, reference_id = _load_fish_audio_config()
+        api_url = "https://api.fish.audio/v1/tts"
 
-        # Available voices: alloy, echo, fable, onyx, nova, shimmer
-        tts_voice = os.getenv("MAKIMA_TTS_VOICE", "nova")
-        tts_model = os.getenv("MAKIMA_TTS_MODEL", "tts-1")  # or tts-1-hd
+        if api_key and reference_id:
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(
+                    api_url,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "text": text,
+                        "reference_id": reference_id,
+                    },
+                )
+                if resp.status_code == 200:
+                    with open(tmp_path, "wb") as f:
+                        f.write(resp.content)
 
-        if api_key:
-            client = OpenAI(api_key=api_key, base_url=api_base)
-            response = client.audio.speech.create(
-                model=tts_model,
-                voice=tts_voice,
-                input=text,
-                response_format="mp3",
+                    if os.path.exists(tmp_path):
+                        if not pygame.mixer.get_init():
+                            pygame.mixer.init(frequency=24000)
+                        pygame.mixer.music.load(tmp_path)
+                        pygame.mixer.music.play()
+                        while pygame.mixer.music.get_busy():
+                            time.sleep(0.1)
+                        pygame.mixer.music.unload()
+                        success = True
+                else:
+                    console.print(
+                        f"  [dim]Fish Audio TTS failed (HTTP {resp.status_code}): "
+                        f"{resp.text[:200]}. Falling back to Edge TTS.[/dim]"
+                    )
+        elif api_key and not reference_id:
+            console.print(
+                "  [dim]Fish Audio skipped: MAKIMA_FISH_AUDIO_REFERENCE_ID is not set. "
+                "Falling back to Edge TTS.[/dim]"
             )
-            response.stream_to_file(tmp_path)
-
-            if os.path.exists(tmp_path):
-                if not pygame.mixer.get_init():
-                    pygame.mixer.init(frequency=24000)
-                pygame.mixer.music.load(tmp_path)
-                pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy():
-                    time.sleep(0.1)
-                pygame.mixer.music.unload()
-                success = True
-    except Exception:
-        pass
+    except Exception as exc:
+        console.print(
+            f"  [dim]Fish Audio TTS exception: {exc}. Falling back to Edge TTS.[/dim]"
+        )
 
     # ── Fallback to edge-tts (free, no API key needed) ──
     if not success:
@@ -347,6 +421,94 @@ class MakimaCLI:
                 padding=(1, 2),
             )
         )
+
+    def list_fish_voices(self, limit: int = 8) -> bool:
+        api_key, current_reference_id = _load_fish_audio_config()
+        if not api_key:
+            self.print_error("MAKIMA_FISH_AUDIO_KEY is not configured")
+            return False
+
+        try:
+            response = httpx.get(
+                "https://api.fish.audio/model",
+                params={"type": "tts", "page_size": limit},
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=30.0,
+            )
+        except Exception as exc:
+            self.print_error(f"Failed to load Fish voices: {exc}")
+            return False
+
+        if response.status_code != 200:
+            self.print_error(f"Fish voices request failed: HTTP {response.status_code}")
+            return False
+
+        items = response.json().get("items", [])
+        if not items:
+            console.print("  [dim]No Fish voices returned.[/dim]")
+            return False
+
+        table = Table(
+            show_header=True,
+            header_style=f"bold {COLORS['gold']}",
+            border_style="border_soft",
+            box=box.SIMPLE_HEAVY,
+            padding=(0, 1),
+        )
+        table.add_column("Active", width=8)
+        table.add_column("Voice ID", style="bold")
+        table.add_column("Title")
+        table.add_column("Tags", style="dim")
+
+        for item in items:
+            voice_id = str(item.get("_id", ""))
+            tags = ", ".join(item.get("tags", [])[:4])
+            active = "CURRENT" if voice_id == current_reference_id else ""
+            table.add_row(active, voice_id, str(item.get("title", "")), tags)
+
+        console.print()
+        console.print(
+            Panel(
+                Group(
+                    table,
+                    Text(""),
+                    Text(
+                        "Use /fishvoice <voice_id> to set the active Fish voice.",
+                        style="dim",
+                    ),
+                ),
+                title="[title]Fish Voices[/title]",
+                border_style="border_soft",
+                box=box.ROUNDED,
+                padding=(0, 1),
+            )
+        )
+        console.print()
+        return True
+
+    def set_fish_voice(self, voice_id: str) -> bool:
+        voice_id = voice_id.strip()
+        if not voice_id:
+            self.print_error("Usage: /fishvoice <voice_id>")
+            return False
+
+        try:
+            _update_env_value("MAKIMA_FISH_AUDIO_REFERENCE_ID", voice_id)
+        except Exception as exc:
+            self.print_error(f"Failed to update .env: {exc}")
+            return False
+
+        console.print(f"  [dim]Fish voice set to:[/dim] [bold]{voice_id}[/bold]")
+        console.print()
+        return True
+
+    def show_fish_voice(self) -> None:
+        _, reference_id = _load_fish_audio_config()
+        if reference_id:
+            console.print(f"  [dim]Current Fish voice:[/dim] [bold]{reference_id}[/bold]")
+        else:
+            console.print("  [dim]Current Fish voice: not configured[/dim]")
+        console.print()
 
     def login(self, username: str, password: str) -> bool:
         try:
@@ -795,6 +957,8 @@ class MakimaCLI:
             ("/session", "Show current session info"),
             ("/speak", "🎙️ Speak to Makima (voice input)"),
             (f"/voice  ({tts_status})", "Toggle voice output (TTS)"),
+            ("/fishvoices", "List available Fish Audio voices"),
+            ("/fishvoice [id]", "Show or set the active Fish voice"),
             ("/exit, /quit", "Exit the CLI"),
         ]:
             table.add_row(cmd, desc)
@@ -827,11 +991,11 @@ class MakimaCLI:
             console.print("  [dim]Using credentials from .env[/dim]")
         else:
             try:
-                username = pt_prompt(HTML("  <b>Username:</b> ")).strip() or "cli_user"
-                password = (
-                    pt_prompt(HTML("  <b>Password:</b> "), is_password=True).strip()
-                    or "cli_pass"
-                )
+                username = pt_prompt(HTML("  <b>Username:</b> ")).strip()
+                password = pt_prompt(HTML("  <b>Password:</b> "), is_password=True).strip()
+                if not username or not password:
+                    console.print("\n  [error]Username and password are required.[/error]\n")
+                    sys.exit(1)
             except (KeyboardInterrupt, EOFError):
                 console.print("\n  [dim]Aborted.[/dim]")
                 sys.exit(0)
@@ -887,6 +1051,15 @@ class MakimaCLI:
                     status = "[bold green]ON[/bold green]" if self._tts_enabled else "[bold red]OFF[/bold red]"
                     console.print(f"  [dim]Voice output (TTS):[/dim] {status}")
                     console.print()
+                    continue
+                if message == "/fishvoices":
+                    self.list_fish_voices()
+                    continue
+                if message == "/fishvoice":
+                    self.show_fish_voice()
+                    continue
+                if message.startswith("/fishvoice "):
+                    self.set_fish_voice(message.partition(" ")[2])
                     continue
                 if message == "/speak":
                     # Voice input mode

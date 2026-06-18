@@ -274,9 +274,9 @@ LIVEKIT_API_SECRET=your-api-secret
 
 # ── 其他配置 ──────────────────────────────────────
 MAKIMA_DEBUG=false
-MAKIMA_API_SECRET_KEY=change-this-to-a-random-string
-MAKIMA_CLI_USERNAME=admin
-MAKIMA_CLI_PASSWORD=123456
+MAKIMA_API_SECRET_KEY=replace-with-a-long-random-secret
+MAKIMA_CLI_USERNAME=your-local-admin
+MAKIMA_CLI_PASSWORD=replace-with-a-strong-local-password
 ```
 
 ### 4. 启动后端服务
@@ -410,8 +410,8 @@ catchphrases:
 # 登录
 POST /api/auth/login
 {
-  "username": "admin",
-  "password": "123456"
+  "username": "your-local-admin",
+  "password": "replace-with-a-strong-local-password"
 }
 
 # 返回 JWT token

@@ -174,7 +174,7 @@ def main() -> None:
     print("  Checking dependencies...")
     check_dependencies()
 
-    cleanup_port()
+    # cleanup_port()  # Disabled: was killing its own uvicorn process
 
     print("  Starting server...")
     kwargs = {}
