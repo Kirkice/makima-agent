@@ -204,94 +204,41 @@ def _update_env_value(name: str, value: str) -> bool:
 
 
 def _speak_text(text: str) -> None:
-    """Use Fish Audio API or edge-tts to speak text aloud. Runs synchronously."""
-    tmp_path = os.path.join(tempfile.gettempdir(), "makima_tts.mp3")
-    success = False
-
-    # ── Try Fish Audio API first (requires MAKIMA_FISH_AUDIO_KEY) ──
+    """Use Fish Audio API to speak text aloud. Runs synchronously."""
     try:
-        import httpx
         import pygame
+        from makima_common.fish_audio import synthesize_sync
 
-        api_key, reference_id = _load_fish_audio_config()
-        api_url = "https://api.fish.audio/v1/tts"
-
-        if api_key and reference_id:
-            with httpx.Client(timeout=30.0) as client:
-                resp = client.post(
-                    api_url,
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "text": text,
-                        "reference_id": reference_id,
-                    },
-                )
-                if resp.status_code == 200:
-                    with open(tmp_path, "wb") as f:
-                        f.write(resp.content)
-
-                    if os.path.exists(tmp_path):
-                        if not pygame.mixer.get_init():
-                            pygame.mixer.init(frequency=24000)
-                        pygame.mixer.music.load(tmp_path)
-                        pygame.mixer.music.play()
-                        while pygame.mixer.music.get_busy():
-                            time.sleep(0.1)
-                        pygame.mixer.music.unload()
-                        success = True
-                else:
-                    console.print(
-                        f"  [dim]Fish Audio TTS failed (HTTP {resp.status_code}): "
-                        f"{resp.text[:200]}. Falling back to Edge TTS.[/dim]"
-                    )
-        elif api_key and not reference_id:
+        result = synthesize_sync(text)
+        if result is None:
             console.print(
-                "  [dim]Fish Audio skipped: MAKIMA_FISH_AUDIO_REFERENCE_ID is not set. "
-                "Falling back to Edge TTS.[/dim]"
+                "  [dim]Fish Audio TTS skipped: "
+                "MAKIMA_FISH_AUDIO_KEY or MAKIMA_FISH_AUDIO_REFERENCE_ID not set.[/dim]"
             )
-    except Exception as exc:
-        console.print(
-            f"  [dim]Fish Audio TTS exception: {exc}. Falling back to Edge TTS.[/dim]"
-        )
+            return
 
-    # ── Fallback to edge-tts (free, no API key needed) ──
-    if not success:
-        try:
-            import edge_tts
-            import pygame
+        audio_bytes, sr = result
+        tmp_path = os.path.join(tempfile.gettempdir(), "makima_tts.wav")
 
-            voice = "zh-CN-XiaoxiaoNeural"
-            rate = "-5%"
-            pitch = "-2Hz"
+        # Convert raw PCM to WAV
+        from makima_common.fish_audio import pcm_to_wav
+        wav_bytes = pcm_to_wav(audio_bytes, sr)
+        with open(tmp_path, "wb") as f:
+            f.write(wav_bytes)
 
-            async def _generate():
-                communicate = edge_tts.Communicate(
-                    text=text, voice=voice, rate=rate, pitch=pitch
-                )
-                await communicate.save(tmp_path)
-
-            asyncio.run(_generate())
-
-            if os.path.exists(tmp_path):
-                if not pygame.mixer.get_init():
-                    pygame.mixer.init(frequency=24000)
-                pygame.mixer.music.load(tmp_path)
-                pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy():
-                    time.sleep(0.1)
-                pygame.mixer.music.unload()
-        except Exception:
-            pass
-
-    # Cleanup temp file
-    try:
         if os.path.exists(tmp_path):
+            if not pygame.mixer.get_init():
+                pygame.mixer.init(frequency=sr)
+            pygame.mixer.music.load(tmp_path)
+            pygame.mixer.music.play()
+            while pygame.mixer.music.get_busy():
+                time.sleep(0.1)
+            pygame.mixer.music.unload()
             os.remove(tmp_path)
-    except OSError:
-        pass
+    except ImportError:
+        console.print("  [dim]Fish Audio support not installed (pip install makima-common[voice])[/dim]")
+    except Exception as exc:
+        console.print(f"  [dim]Fish Audio TTS error: {exc}[/dim]")
 
 
 class MakimaCLI:
@@ -652,8 +599,8 @@ class MakimaCLI:
         return user_msg[:30]
 
     def voice_input(self) -> str:
-        """Record audio from microphone and transcribe using Whisper API.
-        
+        """Record audio from microphone and transcribe using Fish Audio ASR.
+
         Returns:
             Transcribed text string, or empty string on failure.
         """
@@ -662,16 +609,14 @@ class MakimaCLI:
         except ImportError:
             self.print_error("SpeechRecognition not installed. Run: pip install SpeechRecognition")
             return ""
-        
+
         recognizer = sr.Recognizer()
-        
+
         console.print("  [dim]🎙️ Listening... (speak now, silence to stop)[/dim]")
-        
+
         try:
             with sr.Microphone() as source:
-                # Adjust for ambient noise
                 recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                # Listen for speech (timeout after 10 seconds of silence)
                 audio = recognizer.listen(source, timeout=10, phrase_time_limit=30)
         except sr.WaitTimeoutError:
             console.print("  [dim]⏱️ No speech detected, timeout.[/dim]")
@@ -679,83 +624,26 @@ class MakimaCLI:
         except Exception as exc:
             self.print_error(f"Microphone error: {exc}")
             return ""
-        
-        console.print("  [dim]🔄 Transcribing...[/dim]")
-        
-        # Get audio data as WAV bytes
-        wav_data = audio.get_wav_data()
-        
-        # Read API config from .env
-        env_file = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "apps", "backend", ".env"
-        )
-        api_key = ""
-        api_base = "https://api.openai.com/v1"
-        if os.path.exists(env_file):
-            with open(env_file, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    key, _, value = line.partition("=")
-                    key = key.strip()
-                    value = value.strip()
-                    if key == "MAKIMA_LLM_API_KEY":
-                        api_key = value
-                    elif key == "MAKIMA_LLM_API_BASE":
-                        api_base = value
-        
-        if not api_key:
-            # Fallback to Google free API
-            try:
-                text = recognizer.recognize_google(audio, language="zh-CN")
-                return text
-            except Exception:
-                self.print_error("No API key configured and Google STT failed")
-                return ""
-        
-        # Use Whisper API via HTTP
+
+        console.print("  [dim]🔄 Transcribing (Fish Audio ASR)...[/dim]")
+
+        # Use shared transcribe function
         try:
-            whisper_url = api_base.rstrip("/") + "/audio/transcriptions"
-            response = self.client.post(
-                whisper_url,
-                files={"file": ("audio.wav", wav_data, "audio/wav")},
-                data={
-                    "model": "whisper-1",
-                    "language": "zh",
-                    "response_format": "json",
-                },
-                headers={"Authorization": f"Bearer {api_key}"},
-                timeout=30.0,
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                text = result.get("text", "")
-                if text:
-                    console.print(f"  [dim]📝 Heard:[/dim] [bold]{text}[/bold]")
-                    return text
-                else:
-                    console.print("  [dim]⚠️ Could not transcribe audio.[/dim]")
-                    return ""
-            else:
-                # Fallback to Google
-                try:
-                    text = recognizer.recognize_google(audio, language="zh-CN")
-                    console.print(f"  [dim]📝 Heard:[/dim] [bold]{text}[/bold]")
-                    return text
-                except Exception:
-                    self.print_error(f"Whisper API error: HTTP {response.status_code}")
-                    return ""
-        except Exception as exc:
-            # Fallback to Google
-            try:
-                text = recognizer.recognize_google(audio, language="zh-CN")
+            from makima_common.fish_audio import transcribe
+            wav_data = audio.get_wav_data()
+            text = asyncio.run(transcribe(wav_data, sample_rate=16000, language="zh"))
+            if text:
                 console.print(f"  [dim]📝 Heard:[/dim] [bold]{text}[/bold]")
                 return text
-            except Exception:
-                self.print_error(f"Transcription failed: {exc}")
+            else:
+                console.print("  [dim]⚠️ Could not transcribe audio.[/dim]")
                 return ""
+        except ImportError:
+            self.print_error("Fish Audio support not installed (pip install makima-common[voice])")
+            return ""
+        except Exception as exc:
+            self.print_error(f"Transcription failed: {exc}")
+            return ""
 
     def send_message(self, message: str) -> str:
         headers = {"Authorization": f"Bearer {self.token}"}
