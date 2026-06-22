@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use livekit::prelude::*;
-use livekit::room::{Room, RoomOptions};
+use livekit::{Room, RoomOptions};
 
 use crate::voice::audio_capture::start_audio_capture;
 use crate::voice::audio_playback::start_audio_playback;
@@ -88,8 +88,8 @@ impl VoiceManager {
         };
 
         // Connect to the LiveKit room
-        let room = match Room::connect(&self.livekit_url, &token, RoomOptions::default()).await {
-            Ok((room, _)) => room,
+        let (room, _) = match Room::connect(&self.livekit_url, &token, RoomOptions::default()).await {
+            Ok(result) => result,
             Err(e) => {
                 self.status = CallStatus::Error(format!("Connection failed: {}", e));
                 return Err(self.status.clone().to_string());

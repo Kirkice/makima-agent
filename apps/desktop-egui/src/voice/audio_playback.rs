@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use livekit::prelude::*;
-use livekit::room::Room;
+use livekit::Room;
 
 /// Spawn a tokio task that plays back remote audio from LiveKit.
 ///
@@ -20,7 +20,7 @@ pub fn start_audio_playback(room: Arc<Room>) -> tokio::task::JoinHandle<()> {
     })
 }
 
-fn run_playback_loop(room: Arc<Room>) -> Result<(), String> {
+fn run_playback_loop(_room: Arc<Room>) -> Result<(), String> {
     let host = cpal::default_host();
     let device = host
         .default_output_device()
@@ -41,8 +41,8 @@ fn run_playback_loop(room: Arc<Room>) -> Result<(), String> {
     // In a full implementation, we'd subscribe to RemoteAudioTracks and push
     // their AudioFrames into a ring buffer that this stream reads from.
     // For now, we just output silence to demonstrate the cpal integration.
-    let sample_rate = config.sample_rate().0 as usize;
-    let channels = config.channels() as usize;
+    let _sample_rate = config.sample_rate().0 as usize;
+    let _channels = config.channels() as usize;
 
     let stream = device
         .build_output_stream(
@@ -75,9 +75,10 @@ fn run_playback_loop(room: Arc<Room>) -> Result<(), String> {
 
 /// List available output (speaker) devices.
 pub fn list_output_devices() -> Vec<String> {
+    use cpal::traits::DeviceTrait;
     let host = cpal::default_host();
-    host.output_devices()
-        .into_iter()
-        .filter_map(|d| d.name().ok())
-        .collect()
+    match host.output_devices() {
+        Ok(devices) => devices.filter_map(|d| d.name().ok()).collect(),
+        Err(_) => vec!["Default".to_string()],
+    }
 }

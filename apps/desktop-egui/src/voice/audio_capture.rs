@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use livekit::prelude::*;
-use livekit::room::Room;
+use livekit::Room;
 
 /// Spawn a tokio task that captures microphone audio and publishes it.
 ///
@@ -21,7 +21,7 @@ pub fn start_audio_capture(room: Arc<Room>) -> tokio::task::JoinHandle<()> {
     })
 }
 
-fn run_capture_loop(room: Arc<Room>) -> Result<(), String> {
+fn run_capture_loop(_room: Arc<Room>) -> Result<(), String> {
     let host = cpal::default_host();
     let device = host
         .default_input_device()
@@ -70,9 +70,10 @@ fn run_capture_loop(room: Arc<Room>) -> Result<(), String> {
 
 /// List available input (microphone) devices.
 pub fn list_input_devices() -> Vec<String> {
+    use cpal::traits::DeviceTrait;
     let host = cpal::default_host();
-    host.input_devices()
-        .into_iter()
-        .filter_map(|d| d.name().ok())
-        .collect()
+    match host.input_devices() {
+        Ok(devices) => devices.filter_map(|d| d.name().ok()).collect(),
+        Err(_) => vec!["Default".to_string()],
+    }
 }

@@ -138,7 +138,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     // Microphone selection
     ui.horizontal(|ui| {
         ui.label("🎙️ Mic:");
-        egui::ComboBox::from_id_salt("mic_device")
+        egui::ComboBox::from_id_source("mic_device")
             .selected_text(&vc.selected_mic)
             .show_ui(ui, |ui| {
                 for dev in &vc.available_mics {
@@ -178,7 +178,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     // Speaker selection
     ui.horizontal(|ui| {
         ui.label("🔊 Speaker:");
-        egui::ComboBox::from_id_salt("speaker_device")
+        egui::ComboBox::from_id_source("speaker_device")
             .selected_text(&vc.selected_speaker)
             .show_ui(ui, |ui| {
                 for dev in &vc.available_speakers {

@@ -253,8 +253,81 @@
 6. 完成 Memory / Knowledge 面板的真实数据接入
 7. 完成成本估算、审计、性能指标
 
-## 8. 一句话结论
+## 8. 新增功能：语音通话与 3D 头像面板
 
-`apps/desktop-egui` 不是“还没开始”，也不是“已经全部完成”。
+### 8.1 LiveKit WebRTC 语音通话集成
 
-它现在已经完成了桌面 Agent 工作台的骨架、登录链路、聊天主链路和部分后端对齐，但大量高级面板和配置能力仍处于半成品或占位状态，尤其是 Mode、Model、MCP、Voice、Memory、Knowledge、Audit 这些模块还没有真正收口。
+已完成 LiveKit WebRTC 语音通话功能的基础集成：
+
+**新增模块：**
+- `src/voice/connection.rs` - LiveKit 房间连接管理器（VoiceManager）
+- `src/voice/audio_capture.rs` - cpal 麦克风音频采集
+- `src/voice/audio_playback.rs` - cpal 扬声器音频播放
+- `src/state/voice_state.rs` - VoiceCallState 通话状态管理
+
+**新增 UI：**
+- `src/ui/panels/voice.rs` - 语音通话控制面板
+  - 连接状态显示（已连接/连接中/断开）
+  - 通话时长显示
+  - 房间名称配置
+  - LiveKit 凭证输入（URL、API Key、Secret）
+  - 呼叫/挂断控制按钮
+  - 麦克风静音开关
+  - 输入/输出设备选择
+  - 音量指示器
+
+**依赖：**
+- `livekit` 0.7 - LiveKit Rust SDK
+- `livekit-api` 0.5 - Token 生成与房间管理
+- `cpal` 0.15 - 跨平台音频采集/播放
+
+**构建说明：**
+由于 Windows MAX_PATH 限制（260 字符），WebRTC SDK 需要手动部署到短路径。详见 [webrtc-build-guide.md](webrtc-build-guide.md)。
+
+编译时设置环境变量：
+```powershell
+$env:LK_CUSTOM_WEBRTC="C:\lk-webrtc\webrtc"
+cargo build
+```
+
+### 8.2 3D 头像占位面板
+
+已添加 3D 头像面板占位，为未来 Unity WebGL 集成预留接口：
+
+**新增模块：**
+- `src/ui/panels/avatar.rs` - 3D 头像占位面板
+  - 显示像素风 Makima 头像
+  - 显示渲染引擎状态（当前为 egui 像素，目标为 Unity WebGL）
+  - 显示语音连接状态
+  - 显示情绪/唇形同步状态（占位）
+
+**布局变更：**
+- 顶部栏新增 Chat/Avatar 模式切换按钮
+- Chat 模式：3 列布局（导航 | 聊天 | 检查器）
+- Avatar 模式：4 列布局（导航 | 聊天 | 头像 | 检查器）
+
+**可选依赖：**
+- `wry` 0.40 - WebView 嵌入（通过 `avatar` feature 启用）
+
+启用 3D 头像渲染：
+```powershell
+cargo build --features avatar
+```
+
+### 8.3 状态管理扩展
+
+**新增状态：**
+- `AppState.view_mode` - 当前视图模式（Chat/Avatar）
+- `AppState.voice_call` - VoiceCallState 实例
+- `PanelKind::Avatar` - 头像面板类型
+
+**新增 ApiCommand：**
+- `StartVoiceCall` - 发起语音通话
+- `StopVoiceCall` - 结束语音通话
+- `ToggleVoiceMute` - 切换麦克风静音
+
+## 9. 一句话结论
+
+`apps/desktop-egui` 不是"还没开始"，也不是"已经全部完成"。
+
+它现在已经完成了桌面 Agent 工作台的骨架、登录链路、聊天主链路、**LiveKit WebRTC 语音通话**、**3D 头像占位面板**和部分后端对齐，但大量高级面板和配置能力仍处于半成品或占位状态，尤其是 Mode、Model、MCP、Memory、Knowledge、Audit 这些模块还没有真正收口。
