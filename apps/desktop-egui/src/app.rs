@@ -310,6 +310,7 @@ impl MakimaApp {
         use crate::state::app_state::ApiCommand;
 
         // Voice commands are handled directly on self.voice_manager (not spawned)
+        #[cfg(feature = "voice")]
         match &cmd {
             ApiCommand::StartVoiceCall { room_name, livekit_url, api_key, api_secret } => {
                 self.voice_manager.room_name = room_name.clone();
@@ -347,6 +348,12 @@ impl MakimaApp {
                 return;
             }
             _ => {}
+        }
+
+        // When voice feature is disabled, silently ignore voice commands
+        #[cfg(not(feature = "voice"))]
+        {
+            let _ = &cmd; // suppress unused warning
         }
 
         let s = self.state.lock().unwrap();

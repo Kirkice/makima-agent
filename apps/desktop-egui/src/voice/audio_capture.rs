@@ -1,3 +1,4 @@
+#![cfg(feature = "voice")]
 //! Microphone audio capture via cpal → LiveKit local audio track.
 //!
 //! Captures audio from the default input device, converts to the format

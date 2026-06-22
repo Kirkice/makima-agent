@@ -1,3 +1,4 @@
+#![cfg(feature = "voice")]
 //! Remote audio playback via cpal ← LiveKit remote audio tracks.
 //!
 //! Subscribes to remote participants' audio tracks and plays them back

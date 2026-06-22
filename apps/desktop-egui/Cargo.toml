@@ -53,16 +53,17 @@ url = "2"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
-# Voice / LiveKit
-livekit = "0.7"
-livekit-api = "0.5"
-cpal = "0.15"
+# Voice / LiveKit (optional — requires webrtc-sys native build)
+livekit = { version = "0.7", optional = true }
+livekit-api = { version = "0.5", optional = true }
+cpal = { version = "0.15", optional = true }
 
 # Avatar WebView (optional)
 wry = { version = "0.40", optional = true }
 
 [features]
 default = []
+voice = ["livekit", "livekit-api", "cpal"]
 avatar = ["wry"]  # Enable 3D avatar WebView rendering
 
 [[bin]]

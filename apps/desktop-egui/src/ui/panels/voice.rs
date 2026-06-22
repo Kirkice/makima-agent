@@ -4,11 +4,33 @@ use eframe::egui;
 
 /// Voice call management panel — LiveKit WebRTC integration.
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
-    let vc = &mut state.voice_call;
-
     ui.colored_label(colors::RED_ACCENT, "📞 Voice Call");
     ui.separator();
     ui.add_space(8.0);
+
+    #[cfg(not(feature = "voice"))]
+    {
+        ui.colored_label(
+            colors::TEXT_MUTED,
+            "Voice feature not compiled.\nRebuild with: cargo build --features voice",
+        );
+        // Still allow fetching voice settings from the backend
+        ui.add_space(12.0);
+        if ui.button("🔄 Load Voice Settings").clicked() {
+            state.api_commands.push(ApiCommand::FetchVoiceSettings);
+        }
+        return;
+    }
+
+    #[cfg(feature = "voice")]
+    {
+        draw_voice_ui(ui, state);
+    }
+}
+
+#[cfg(feature = "voice")]
+fn draw_voice_ui(ui: &mut egui::Ui, state: &mut AppState) {
+    let vc = &mut state.voice_call;
 
     // ── Connection Status ──────────────────────────────────────────────
     egui::Frame::none()
