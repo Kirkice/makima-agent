@@ -3,7 +3,7 @@ use crate::state::app_state::{AppState, PanelKind};
 use crate::theme::colors;
 
 use super::chat::{composer, transcript};
-use super::panels::{audit, diagnostics, inspector, knowledge, login, mcp, memory, model_config, modes, persona, voice};
+use super::panels::{audit, avatar, diagnostics, inspector, knowledge, login, mcp, memory, model_config, modes, persona, voice};
 use super::side_nav;
 use super::top_bar;
 
@@ -33,11 +33,13 @@ pub fn draw(
                 return;
             }
 
-            // Main 3-column layout
+            // Main layout: 3-column (Chat mode) or 4-column (Avatar mode)
             let available = ui.available_size();
             let left_width = 220.0_f32.min(available.x * 0.2);
             let inspector_width = if state.chat.show_inspector { 280.0_f32.min(available.x * 0.25) } else { 0.0 };
-            let center_width = available.x - left_width - inspector_width;
+            let is_avatar_mode = state.view_mode == crate::state::app_state::ViewMode::Avatar;
+            let avatar_width = if is_avatar_mode { 320.0_f32.min(available.x * 0.25) } else { 0.0 };
+            let center_width = available.x - left_width - inspector_width - avatar_width;
 
             ui.horizontal(|ui| {
                 // Left Rail
@@ -74,6 +76,15 @@ pub fn draw(
                             });
                     },
                 );
+
+                // Avatar Panel (only in Avatar mode)
+                if is_avatar_mode {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(avatar_width, ui.available_height()),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| { avatar::draw(ui, state); },
+                    );
+                }
 
                 // Right Inspector
                 if state.chat.show_inspector && inspector_width > 0.0 {
@@ -117,6 +128,7 @@ fn draw_panel(ui: &mut egui::Ui, state: &mut AppState, panel: PanelKind) {
                     PanelKind::ModelConfig => model_config::draw(ui, state),
                     PanelKind::Diagnostics => diagnostics::draw(ui, state),
                     PanelKind::Persona => { persona::draw(ui, state); }
+                    PanelKind::Avatar => { avatar::draw(ui, state); }
                 }
             });
         });
@@ -133,5 +145,6 @@ fn panel_label(p: PanelKind) -> &'static str {
         PanelKind::Audit => "Audit Log",
         PanelKind::ModelConfig => "Model Configuration",
         PanelKind::Diagnostics => "Diagnostics",
+        PanelKind::Avatar => "3D Avatar",
     }
 }

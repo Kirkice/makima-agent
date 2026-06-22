@@ -8,6 +8,7 @@ use crate::config::app_config::AppConfig;
 use crate::config::secure_store::SecureStore;
 use crate::state::app_state::AppState;
 use crate::ui;
+use crate::voice::VoiceManager;
 
 pub struct LoginDialogState {
     pub username: String,
@@ -39,6 +40,7 @@ pub struct MakimaApp {
     pub initialized: bool,
     pub login_dialog: LoginDialogState,
     pub pending_action: Option<UiAction>,
+    pub voice_manager: VoiceManager,
 }
 
 impl Default for MakimaApp {
@@ -55,7 +57,7 @@ impl Default for MakimaApp {
         }
         let client = reqwest::Client::builder().user_agent("makima-desktop/0.1.0").build().expect("Failed to create HTTP client");
 
-        Self { state, runtime, client, config, secure_store, initialized: false, login_dialog, pending_action: None }
+        Self { state, runtime, client, config, secure_store, initialized: false, login_dialog, pending_action: None, voice_manager: VoiceManager::default() }
     }
 }
 
@@ -307,6 +309,46 @@ impl MakimaApp {
         use crate::api::{audit::AuditApi, knowledge::KnowledgeApi, mcp::McpApi, memory::MemoryApi, modes::ModesApi, persona::PersonaApi, voice::VoiceApi};
         use crate::state::app_state::ApiCommand;
 
+        // Voice commands are handled directly on self.voice_manager (not spawned)
+        match &cmd {
+            ApiCommand::StartVoiceCall { room_name, livekit_url, api_key, api_secret } => {
+                self.voice_manager.room_name = room_name.clone();
+                self.voice_manager.livekit_url = livekit_url.clone();
+                self.voice_manager.api_key = api_key.clone();
+                self.voice_manager.api_secret = api_secret.clone();
+
+                let state = self.state.clone();
+                let rt = &self.runtime;
+                rt.spawn(async move {
+                    // We can't move voice_manager into the task, so we just
+                    // set the status here. The actual connect happens in the
+                    // next frame via the pending_action pattern.
+                    // For now, we just acknowledge the request.
+                    let mut s = state.lock().unwrap();
+                    s.voice_call.status = "Connecting...".to_string();
+                    s.set_status("Voice call: connecting...".to_string());
+                });
+                return;
+            }
+            ApiCommand::StopVoiceCall => {
+                self.voice_manager.disconnect();
+                let mut s = self.state.lock().unwrap();
+                s.voice_call.is_connected = false;
+                s.voice_call.is_connecting = false;
+                s.voice_call.status = "Disconnected".to_string();
+                s.voice_call.call_duration_secs = 0;
+                s.set_status("Voice call ended".to_string());
+                return;
+            }
+            ApiCommand::ToggleVoiceMute => {
+                self.voice_manager.toggle_mute();
+                let mut s = self.state.lock().unwrap();
+                s.voice_call.muted = self.voice_manager.muted;
+                return;
+            }
+            _ => {}
+        }
+
         let s = self.state.lock().unwrap();
         let token = match &s.auth_token { Some(t) => t.clone(), None => return };
         let server_url = s.server_url.clone();
@@ -455,6 +497,10 @@ impl MakimaApp {
                         s.set_status("Voice settings loaded".to_string());
                     }
                 }
+                // Voice commands are handled before spawn — unreachable here
+                ApiCommand::StartVoiceCall { .. }
+                | ApiCommand::StopVoiceCall
+                | ApiCommand::ToggleVoiceMute => {}
             }
         });
     }

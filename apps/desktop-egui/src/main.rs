@@ -11,6 +11,7 @@ mod config;
 mod state;
 mod theme;
 mod ui;
+mod voice;
 
 use eframe::egui::ViewportBuilder;
 

@@ -1,10 +1,10 @@
 use eframe::egui::{self, Color32, Rounding};
 
-use crate::state::app_state::AppState;
+use crate::state::app_state::{AppState, ViewMode};
 use crate::theme::colors;
 
 /// Draw the top bar with session title, mode badge, health indicator, etc.
-pub fn draw(ui: &mut egui::Ui, state: &AppState) {
+pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     // Top bar with dark background
     egui::Frame::none()
         .fill(colors::GRAPHITE_ELEVATED)
@@ -38,6 +38,27 @@ pub fn draw(ui: &mut egui::Ui, state: &AppState) {
                         .unwrap_or(mode);
 
                     badge(ui, mode_name, colors::RED_DIM, colors::RED_ACCENT);
+                }
+
+                ui.add_space(8.0);
+
+                // View mode toggle (Chat / Avatar)
+                let is_avatar = state.view_mode == ViewMode::Avatar;
+                let chat_style = if !is_avatar {
+                    egui::Button::new("💬 Chat").fill(colors::RED_DIM).small()
+                } else {
+                    egui::Button::new("💬 Chat").fill(colors::GRAPHITE_ELEVATED).small()
+                };
+                if ui.add(chat_style).clicked() {
+                    state.view_mode = ViewMode::Chat;
+                }
+                let avatar_style = if is_avatar {
+                    egui::Button::new("🧑 Avatar").fill(colors::RED_DIM).small()
+                } else {
+                    egui::Button::new("🧑 Avatar").fill(colors::GRAPHITE_ELEVATED).small()
+                };
+                if ui.add(avatar_style).clicked() {
+                    state.view_mode = ViewMode::Avatar;
                 }
 
                 ui.add_space(8.0);

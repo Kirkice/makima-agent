@@ -9,3 +9,4 @@ pub mod mcp;
 pub mod audit;
 pub mod model_config;
 pub mod persona;
+pub mod avatar;

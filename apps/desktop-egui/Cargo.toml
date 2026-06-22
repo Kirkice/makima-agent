@@ -53,8 +53,17 @@ url = "2"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
+# Voice / LiveKit
+livekit = "0.7"
+livekit-api = "0.5"
+cpal = "0.15"
+
+# Avatar WebView (optional)
+wry = { version = "0.40", optional = true }
+
 [features]
 default = []
+avatar = ["wry"]  # Enable 3D avatar WebView rendering
 
 [[bin]]
 name = "makima-desktop"
