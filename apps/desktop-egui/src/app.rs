@@ -641,7 +641,36 @@ impl MakimaApp {
                     let mut s = state.lock().unwrap();
                     s.is_logged_in = false; s.show_login = true;
                 }
-            } else { let mut s = state.lock().unwrap(); s.show_login = true; }
+            } else {
+                // Try auto-login via MAKIMA_CLI_USERNAME / MAKIMA_CLI_PASSWORD env vars
+                let env_user = std::env::var("MAKIMA_CLI_USERNAME").unwrap_or_default();
+                let env_pass = std::env::var("MAKIMA_CLI_PASSWORD").unwrap_or_default();
+                if !env_user.is_empty() && !env_pass.is_empty() {
+                    let auth_api = AuthApi::new(client.clone(), server_url.clone());
+                    if let Ok(resp) = auth_api.login(&env_user, &env_pass).await {
+                        let token = resp.access_token;
+                        SecureStore::new().store_token(&token).ok();
+                        {
+                            let mut s = state.lock().unwrap();
+                            s.auth_token = Some(token.clone());
+                            s.is_logged_in = true;
+                            s.set_status("Auto-login via env".to_string());
+                        }
+                        let sessions_api = SessionsApi::new(client, server_url, token);
+                        if let Ok(list) = sessions_api.list().await {
+                            let mut s = state.lock().unwrap();
+                            for api_s in list {
+                                let title = api_s.title.unwrap_or_else(|| "Untitled".to_string());
+                                s.chat.sessions.push(crate::state::chat_state::Session::new(title, None));
+                            }
+                            if !s.chat.sessions.is_empty() { s.chat.active_session_id = Some(s.chat.sessions[0].id); }
+                        }
+                        return;
+                    }
+                }
+                let mut s = state.lock().unwrap();
+                s.show_login = true;
+            }
         });
 
         if let Ok(mut s) = self.state.lock() {

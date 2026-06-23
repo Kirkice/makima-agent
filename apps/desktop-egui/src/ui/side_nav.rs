@@ -1,13 +1,10 @@
 use eframe::egui::{self, CornerRadius};
-use uuid::Uuid;
 
 use crate::state::app_state::{ActivitySection, ApiCommand, AppState};
 use crate::theme::colors;
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-        ui.set_width(ui.available_width());
-
+    ui.vertical(|ui| {
         section_header(ui, state.activity_section);
         ui.add_space(12.0);
 
@@ -20,38 +17,39 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     });
 }
 
+// ── Sessions ──────────────────────────────────────────────────────────
+
 fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.horizontal(|ui| {
-        ui.colored_label(colors::TEXT_PRIMARY, egui::RichText::new("Recent").strong());
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let button = egui::Button::new("+ New")
-                .fill(colors::ELEVATED)
-                .stroke(egui::Stroke::NONE);
-            if ui.add(button).clicked() {
-                state
-                    .chat
-                    .create_session(format!("Chat {}", state.chat.sessions.len() + 1));
-                state.set_status("New session created".to_string());
-            }
+    // "Recent" title + "+ New" button in a card header style
+    egui::Frame::NONE
+        .fill(colors::ELEVATED)
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(
+                    colors::TEXT_PRIMARY,
+                    egui::RichText::new("Recent").size(13.0).strong(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let button = egui::Button::new("+ New")
+                        .fill(colors::RED_ACCENT)
+                        .stroke(egui::Stroke::NONE)
+                        .min_size(egui::vec2(64.0, 26.0));
+                    if ui.add(button).clicked() {
+                        state.chat.create_session(format!(
+                            "Chat {}",
+                            state.chat.sessions.len() + 1
+                        ));
+                        state.set_status("New session created".to_string());
+                    }
+                });
+            });
         });
-    });
     ui.add_space(8.0);
 
     draw_search(ui, &mut state.chat.search_query, "Search conversations");
-    ui.add_space(12.0);
-
-    let session_data: Vec<(Uuid, String, bool, usize, bool)> = state
-        .chat
-        .sessions
-        .iter()
-        .map(|s| {
-            let matches = state.chat.search_query.is_empty()
-                || s.title
-                    .to_lowercase()
-                    .contains(&state.chat.search_query.to_lowercase());
-            (s.id, s.title.clone(), matches, s.messages.len(), s.unread)
-        })
-        .collect();
+    ui.add_space(10.0);
 
     let active_id = state.chat.active_session_id;
     let is_empty = state.chat.sessions.is_empty();
@@ -60,49 +58,54 @@ fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
     egui::ScrollArea::vertical()
         .id_salt("conversation_sidebar_list")
         .show(ui, |ui| {
-            for (id, title, matches, msg_count, unread) in &session_data {
+            for session in &state.chat.sessions {
+                let matches = state.chat.search_query.is_empty()
+                    || session
+                        .title
+                        .to_lowercase()
+                        .contains(&state.chat.search_query.to_lowercase());
                 if !matches {
                     continue;
                 }
 
-                let selected = Some(*id) == active_id;
+                let selected = Some(session.id) == active_id;
                 let response = egui::Frame::NONE
                     .fill(if selected {
                         colors::SELECTION_SOFT
                     } else {
                         colors::TRANSPARENT
                     })
-                    .corner_radius(CornerRadius::same(12))
-                    .inner_margin(egui::Margin::symmetric(12, 10))
+                    .corner_radius(CornerRadius::same(8))
+                    .inner_margin(egui::Margin::symmetric(10, 8))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.colored_label(
-                                if *unread {
-                                    colors::RED_ACCENT
-                                } else {
-                                    colors::TEXT_MUTED
-                                },
-                                "●",
-                            );
-                            ui.add_space(6.0);
+                            // Unread dot
+                            if session.unread {
+                                let (rect, _) =
+                                    ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                                ui.painter()
+                                    .circle_filled(rect.center(), 4.0, colors::RED_ACCENT);
+                            } else {
+                                ui.add_sized(egui::vec2(8.0, 8.0), egui::Label::new(""));
+                            }
+                            ui.add_space(4.0);
                             ui.vertical(|ui| {
                                 ui.colored_label(
                                     colors::TEXT_PRIMARY,
-                                    egui::RichText::new(truncate(title, 28)).size(13.0),
+                                    egui::RichText::new(truncate(&session.title, 28)).size(13.0),
                                 );
                                 ui.colored_label(
                                     colors::TEXT_MUTED,
-                                    format!("{msg_count} messages"),
+                                    format!("{} msg{}", session.messages.len(), if session.messages.len() == 1 { "" } else { "s" }),
                                 );
                             });
                         });
                     });
 
                 if response.response.clicked() {
-                    to_select = Some(*id);
+                    to_select = Some(session.id);
                 }
-
-                ui.add_space(4.0);
+                ui.add_space(2.0);
             }
 
             if is_empty {
@@ -122,22 +125,26 @@ fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
+// ── Resources ─────────────────────────────────────────────────────────
+
 fn draw_resources(ui: &mut egui::Ui, state: &mut AppState) {
-    summary_card(
+    kv_card(
         ui,
-        "Memory",
-        format!("{} items cached", state.settings.memory_items.len()).as_str(),
-        "Refresh",
-        || state.api_commands.push(ApiCommand::FetchMemories),
+        "🧠  Memory",
+        &format!("{} items cached", state.settings.memory_items.len()),
+        colors::INFO,
+        Some(|| state.api_commands.push(ApiCommand::FetchMemories)),
     );
-    summary_card(
+    kv_card(
         ui,
-        "Knowledge",
-        format!("{} docs indexed", state.settings.knowledge_docs.len()).as_str(),
-        "Load",
-        || state.api_commands.push(ApiCommand::FetchDocuments),
+        "📚  Knowledge",
+        &format!("{} docs indexed", state.settings.knowledge_docs.len()),
+        colors::SUCCESS,
+        Some(|| state.api_commands.push(ApiCommand::FetchDocuments)),
     );
 }
+
+// ── Agent ─────────────────────────────────────────────────────────────
 
 fn draw_agent(ui: &mut egui::Ui, state: &mut AppState) {
     let mode_name = state
@@ -156,18 +163,20 @@ fn draw_agent(ui: &mut egui::Ui, state: &mut AppState) {
         "Model not configured".to_string()
     };
 
-    info_card(ui, "Mode", &mode_name);
-    info_card(ui, "Persona", &persona_name);
-    info_card(ui, "Model", &model_name);
+    kv_card_static(ui, "🤖  Mode", &mode_name, colors::RED_ACCENT);
+    kv_card_static(ui, "🎭  Persona", &persona_name, colors::WARNING);
+    kv_card_static(ui, "🧠  Model", &model_name, colors::INFO);
 }
 
+// ── Integrations ──────────────────────────────────────────────────────
+
 fn draw_integrations(ui: &mut egui::Ui, state: &mut AppState) {
-    let voice_status = if state.voice_call.is_connected {
-        "Voice connected"
+    let (voice_label, voice_color) = if state.voice_call.is_connected {
+        ("●  Connected", colors::SUCCESS)
     } else if state.voice_call.is_connecting {
-        "Voice connecting"
+        ("◌  Connecting", colors::WARNING)
     } else {
-        "Voice idle"
+        ("○  Idle", colors::TEXT_MUTED)
     };
     let mcp_connected = state
         .settings
@@ -180,20 +189,30 @@ fn draw_integrations(ui: &mut egui::Ui, state: &mut AppState) {
             )
         })
         .count();
+    let mcp_total = state.settings.mcp_servers.len();
 
-    info_card(ui, "Voice", voice_status);
-    info_card(
+    kv_card_static(ui, "🎙Voice", voice_label, voice_color);
+    kv_card_static(
         ui,
-        "MCP",
-        &format!("{mcp_connected}/{} connected", state.settings.mcp_servers.len()),
+        "🔗  MCP",
+        &format!("{} / {} connected", mcp_connected, mcp_total),
+        if mcp_total > 0 && mcp_connected == mcp_total {
+            colors::SUCCESS
+        } else if mcp_connected > 0 {
+            colors::WARNING
+        } else {
+            colors::TEXT_MUTED
+        },
     );
 
-    ui.add_space(4.0);
-    if ui.button("Open diagnostics").clicked() {
+    ui.add_space(8.0);
+    if ui.button("📋  Open diagnostics").clicked() {
         state.drawer_open = true;
         state.drawer_tab = Some(crate::state::app_state::DrawerTab::Diagnostics);
     }
 }
+
+// ── Shared Components ─────────────────────────────────────────────────
 
 fn section_header(ui: &mut egui::Ui, section: ActivitySection) {
     let (title, subtitle) = match section {
@@ -203,20 +222,28 @@ fn section_header(ui: &mut egui::Ui, section: ActivitySection) {
         ActivitySection::Integrations => ("Integrations", "Voice, MCP and runtime health"),
     };
 
-    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-        ui.set_width(ui.available_width());
+    ui.vertical(|ui| {
         ui.colored_label(
             colors::TEXT_PRIMARY,
-            egui::RichText::new(title).size(15.0).strong(),
+            egui::RichText::new(title).size(16.0).strong(),
         );
         ui.colored_label(colors::TEXT_MUTED, subtitle);
+
+        // Subtle separator line
+        let sep_rect = egui::Rect::from_min_size(
+            ui.cursor().min + egui::vec2(0.0, 4.0),
+            egui::vec2(ui.available_width(), 1.0),
+        );
+        ui.painter()
+            .rect_filled(sep_rect, CornerRadius::ZERO, colors::BORDER_WEAK);
     });
 }
 
 fn draw_search(ui: &mut egui::Ui, value: &mut String, hint: &str) {
     egui::Frame::NONE
         .fill(colors::ELEVATED)
-        .corner_radius(CornerRadius::same(12))
+        .stroke(egui::Stroke::new(1.0, colors::BORDER_WEAK))
+        .corner_radius(CornerRadius::same(8))
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -231,53 +258,64 @@ fn draw_search(ui: &mut egui::Ui, value: &mut String, hint: &str) {
         });
 }
 
-fn summary_card<F: FnOnce()>(ui: &mut egui::Ui, title: &str, body: &str, action: &str, on_click: F) {
-    let mut callback = Some(on_click);
+/// Key-value card with left accent bar. Optionally shows a refresh button.
+fn kv_card<F: FnOnce()>(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &str,
+    accent: egui::Color32,
+    refresh: Option<F>,
+) {
+    let mut cb = refresh;
     egui::Frame::NONE
         .fill(colors::ELEVATED)
-        .corner_radius(CornerRadius::same(12))
-        .inner_margin(egui::Margin::same(12))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(egui::Margin {
+            left: 12,
+            right: 10,
+            top: 9,
+            bottom: 9,
+        })
         .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.colored_label(
-                colors::TEXT_PRIMARY,
-                egui::RichText::new(title).size(14.0).strong(),
+            // Left accent bar
+            let bar_rect = egui::Rect::from_min_size(
+                ui.min_rect().min,
+                egui::vec2(3.0, ui.min_rect().height()),
             );
-            ui.colored_label(colors::TEXT_MUTED, body);
-            ui.add_space(8.0);
+            ui.painter()
+                .rect_filled(bar_rect, CornerRadius::same(2), accent);
+
             ui.horizontal(|ui| {
-                if ui.button(action).clicked() {
-                    if let Some(cb) = callback.take() {
-                        cb();
+                ui.colored_label(colors::TEXT_SECONDARY, label);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.colored_label(
+                        accent,
+                        egui::RichText::new(value).size(13.0),
+                    );
+                    if let Some(f) = cb.take() {
+                        if ui.small_button("↻").on_hover_text("Refresh").clicked() {
+                            f();
+                        }
                     }
-                }
+                });
             });
         });
-    ui.add_space(8.0);
+    ui.add_space(6.0);
 }
 
-fn info_card(ui: &mut egui::Ui, title: &str, body: &str) {
-    egui::Frame::NONE
-        .fill(colors::ELEVATED)
-        .corner_radius(CornerRadius::same(12))
-        .inner_margin(egui::Margin::same(12))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.colored_label(colors::TEXT_MUTED, title);
-            ui.colored_label(
-                colors::TEXT_PRIMARY,
-                egui::RichText::new(body).size(13.0).strong(),
-            );
-        });
-    ui.add_space(8.0);
+/// Key-value card without refresh button (simpler signature).
+fn kv_card_static(ui: &mut egui::Ui, label: &str, value: &str, accent: egui::Color32) {
+    kv_card::<fn()>(ui, label, value, accent, None);
 }
 
 fn empty_state(ui: &mut egui::Ui, title: &str, subtitle: &str) {
-    ui.add_space(48.0);
-    ui.vertical_centered(|ui| {
-        ui.colored_label(colors::TEXT_MUTED, egui::RichText::new("○").size(28.0));
-        ui.colored_label(colors::TEXT_PRIMARY, egui::RichText::new(title).strong());
-        ui.colored_label(colors::TEXT_MUTED, subtitle);
+    ui.add_space(32.0);
+    ui.centered_and_justified(|ui| {
+        ui.vertical(|ui| {
+            ui.colored_label(colors::TEXT_MUTED, egui::RichText::new("○").size(28.0));
+            ui.colored_label(colors::TEXT_PRIMARY, egui::RichText::new(title).strong());
+            ui.colored_label(colors::TEXT_MUTED, subtitle);
+        });
     });
 }
 

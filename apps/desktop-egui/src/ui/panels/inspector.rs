@@ -8,7 +8,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         header(ui);
         ui.add_space(14.0);
 
-        info_group(
+        // ── Agent ──
+        section_title(ui, "🤖  Agent");
+        ui.add_space(6.0);
+
+        kv_card(
             ui,
             "Mode",
             state
@@ -16,9 +20,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                 .active_mode()
                 .map(|mode| mode.name.as_str())
                 .unwrap_or("No mode selected"),
+            colors::RED_ACCENT,
         );
-
-        info_group(
+        kv_card(
             ui,
             "Model",
             if state.settings.model_config.configured {
@@ -26,58 +30,138 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             } else {
                 "Not configured"
             },
+            colors::INFO,
         );
 
+        // ── Session ──
         if let Some(session) = state.chat.active_session() {
-            info_group(ui, "Session", &format!("{} messages", session.messages.len()));
-            info_group(
+            ui.add_space(12.0);
+            section_title(ui, "📊  Session");
+            ui.add_space(6.0);
+
+            kv_card(
                 ui,
-                "Usage",
-                &format!(
-                    "{} tok · ${:.5}",
-                    session.estimated_token_count(),
-                    session.estimated_cost(state.settings.token_estimate_per_1k)
-                ),
+                "Messages",
+                &format_count(session.messages.len(), "message", "messages"),
+                colors::TEXT_MUTED,
             );
+            let tokens = session.estimated_token_count();
+            kv_card(ui, "Tokens", &format_tokens(tokens), colors::TEXT_MUTED);
+            let cost = session.estimated_cost(state.settings.token_estimate_per_1k);
+            kv_card(ui, "Est. Cost", &format!("${:.5}", cost), colors::TEXT_MUTED);
         }
+
+        // ── Task ──
+        ui.add_space(12.0);
+        section_title(ui, "⚡  Task");
+        ui.add_space(6.0);
 
         if let Some(task) = &state.task.active_task {
-            info_group(ui, "Task", &format!("{:?}", task.status));
-            info_group(ui, "Timeline", &format!("{} steps", task.timeline.len()));
+            let (task_label, task_color) = match task.status {
+                crate::state::task_state::TaskStatus::Running => ("Running", colors::SUCCESS),
+                crate::state::task_state::TaskStatus::Idle => ("Idle", colors::TEXT_MUTED),
+                _ => ("Completed", colors::INFO),
+            };
+            kv_card(ui, "Status", task_label, task_color);
+            kv_card(
+                ui,
+                "Timeline",
+                &format!("{} step{}", task.timeline.len(), if task.timeline.len() == 1 { "" } else { "s" }),
+                colors::TEXT_MUTED,
+            );
         } else {
-            info_group(ui, "Task", "Idle");
+            kv_card(ui, "Status", "Idle", colors::TEXT_MUTED);
         }
 
-        let voice_status = if state.voice_call.is_connected {
-            "Connected"
+        // ── Voice ──
+        ui.add_space(12.0);
+        section_title(ui, "🎙  Voice");
+        ui.add_space(6.0);
+
+        let (voice_label, voice_color) = if state.voice_call.is_connected {
+            ("●  Connected", colors::SUCCESS)
         } else if state.voice_call.is_connecting {
-            "Connecting"
+            ("◌  Connecting", colors::WARNING)
         } else {
-            "Idle"
+            ("○  Idle", colors::TEXT_MUTED)
         };
-        info_group(ui, "Voice", voice_status);
+        kv_card(ui, "Status", voice_label, voice_color);
     });
 }
 
 fn header(ui: &mut egui::Ui) {
     ui.colored_label(
         colors::TEXT_PRIMARY,
-        egui::RichText::new("Context").size(15.0).strong(),
+        egui::RichText::new("Context").size(16.0).strong(),
     );
     ui.colored_label(colors::TEXT_MUTED, "Current session summary");
+
+    // Subtle separator line
+    let sep_rect = egui::Rect::from_min_size(
+        ui.cursor().min + egui::vec2(0.0, 4.0),
+        egui::vec2(ui.available_width(), 1.0),
+    );
+    ui.painter()
+        .rect_filled(sep_rect, CornerRadius::ZERO, colors::BORDER_WEAK);
+    ui.add_space(4.0);
 }
 
-fn info_group(ui: &mut egui::Ui, label: &str, value: &str) {
+fn section_title(ui: &mut egui::Ui, title: &str) {
+    ui.colored_label(
+        colors::TEXT_SECONDARY,
+        egui::RichText::new(title).size(12.0).strong(),
+    );
+}
+
+/// Key-value info card with left accent border and horizontal label-value layout.
+fn kv_card(ui: &mut egui::Ui, label: &str, value: &str, accent: egui::Color32) {
     egui::Frame::NONE
         .fill(colors::ELEVATED)
-        .corner_radius(CornerRadius::same(12))
-        .inner_margin(egui::Margin::same(12))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(egui::Margin {
+            left: 12,
+            right: 12,
+            top: 9,
+            bottom: 9,
+        })
         .show(ui, |ui| {
-            ui.colored_label(colors::TEXT_MUTED, label);
-            ui.colored_label(
-                colors::TEXT_PRIMARY,
-                egui::RichText::new(value).size(13.0).strong(),
+            // Left accent bar
+            let bar_rect = egui::Rect::from_min_size(
+                ui.min_rect().min,
+                egui::vec2(3.0, ui.min_rect().height()),
             );
+            ui.painter()
+                .rect_filled(bar_rect, CornerRadius::same(2), accent);
+
+            ui.horizontal(|ui| {
+                ui.colored_label(colors::TEXT_MUTED, label);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.colored_label(
+                        egui::Color32::WHITE,
+                        egui::RichText::new(value).size(13.0),
+                    );
+                });
+            });
         });
-    ui.add_space(8.0);
+    ui.add_space(6.0);
+}
+
+fn format_count(n: usize, singular: &str, plural: &str) -> String {
+    if n >= 1000 {
+        format!("{}K {}", n / 1000, plural)
+    } else if n == 1 {
+        format!("{} {}", n, singular)
+    } else {
+        format!("{} {}", n, plural)
+    }
+}
+
+fn format_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1000 {
+        format!("{:.1}K", n as f64 / 1000.0)
+    } else {
+        n.to_string()
+    }
 }
