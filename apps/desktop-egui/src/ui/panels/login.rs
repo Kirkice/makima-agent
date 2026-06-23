@@ -73,11 +73,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState, login_state: &mut LoginDial
                     "Connect"
                 };
 
-                ui.horizontal_centered(|ui| {
+                ui.vertical_centered(|ui| {
                     if ui
                         .add_enabled(
                             can_login,
-                            egui::Button::new(btn_text).min_size(egui::vec2(160.0, 40.0)),
+                            egui::Button::new(btn_text).min_size(egui::vec2(200.0, 40.0)),
                         )
                         .clicked()
                     {
@@ -89,11 +89,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState, login_state: &mut LoginDial
                     }
                 });
 
-                ui.add_space(16.0);
+                ui.add_space(12.0);
                 ui.vertical_centered(|ui| {
                     ui.colored_label(
                         colors::TEXT_MUTED,
-                        "Make sure your Makima backend is running.",
+                        egui::RichText::new("Make sure your Makima backend is running.").size(12.0),
                     );
                 });
             });
@@ -104,19 +104,21 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState, login_state: &mut LoginDial
 
 fn field(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
     ui.colored_label(colors::TEXT_SECONDARY, label);
+    ui.add_space(4.0);
     ui.add(
         egui::TextEdit::singleline(value)
-            .hint_text(hint)
+            .hint_text(egui::RichText::new(hint).color(colors::TEXT_MUTED))
             .desired_width(f32::INFINITY),
     );
 }
 
 fn password_field(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
     ui.colored_label(colors::TEXT_SECONDARY, label);
+    ui.add_space(4.0);
     ui.add(
         egui::TextEdit::singleline(value)
             .password(true)
-            .hint_text(hint)
+            .hint_text(egui::RichText::new(hint).color(colors::TEXT_MUTED))
             .desired_width(f32::INFINITY),
     );
 }

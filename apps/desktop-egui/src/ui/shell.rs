@@ -1,7 +1,7 @@
 use eframe::egui::{self, Frame, Margin};
 
 use crate::app::{LoginDialogState, UiAction};
-use crate::state::app_state::AppState;
+use crate::state::app_state::{AppState, ViewMode};
 use crate::theme::colors;
 
 use super::bottom_drawer;
@@ -23,7 +23,7 @@ pub fn draw(
     pending_action: &mut Option<UiAction>,
     app_dock: &mut AppDockState,
 ) {
-    dock::sync_app_dock(app_dock, state.view_mode, state.show_context_panel, ui.available_size());
+    dock::sync_app_dock(app_dock, state, ui.available_size());
 
     egui::TopBottomPanel::top("makima_menu_bar")
         .exact_height(MENU_BAR_HEIGHT)
@@ -35,18 +35,6 @@ pub fn draw(
         )
         .show_inside(ui, |ui| {
             draw_menu_bar(ui, state, pending_action);
-        });
-
-    egui::TopBottomPanel::top("makima_top_bar")
-        .exact_height(TOP_BAR_HEIGHT)
-        .frame(
-            Frame::NONE
-                .fill(colors::SURFACE)
-                .inner_margin(Margin::symmetric(18, 10))
-                .stroke(egui::Stroke::new(1.0, colors::BORDER_WEAK)),
-        )
-        .show_inside(ui, |ui| {
-            top_bar::draw(ui, state);
         });
 
     if !state.is_logged_in {
@@ -89,65 +77,101 @@ pub fn draw(
 }
 
 fn draw_menu_bar(ui: &mut egui::Ui, state: &mut AppState, pending_action: &mut Option<UiAction>) {
-    egui::MenuBar::new().ui(ui, |ui| {
-        ui.menu_button("File", |ui| {
-            if ui.button("New Chat").clicked() {
-                state
-                    .chat
-                    .create_session(format!("Chat {}", state.chat.sessions.len() + 1));
-                state.set_status("New session created".to_string());
-                ui.close();
-            }
-            if state.is_logged_in && ui.button("Logout").clicked() {
-                *pending_action = Some(UiAction::Logout);
-                ui.close();
-            }
+    ui.horizontal(|ui| {
+        // 左侧：菜单按钮
+        egui::MenuBar::new().ui(ui, |ui| {
+            ui.menu_button("File", |ui| {
+                if ui.button("New Chat").clicked() {
+                    state
+                        .chat
+                        .create_session(format!("Chat {}", state.chat.sessions.len() + 1));
+                    state.set_status("New session created".to_string());
+                    ui.close();
+                }
+                if state.is_logged_in && ui.button("Logout").clicked() {
+                    *pending_action = Some(UiAction::Logout);
+                    ui.close();
+                }
+            });
+
+            ui.menu_button("Edit", |ui| {
+                if ui.button("Clear Composer").clicked() {
+                    state.chat.composer.input.clear();
+                    state.set_status("Composer cleared".to_string());
+                    ui.close();
+                }
+                if ui.button("Clear Status").clicked() {
+                    state.clear_status();
+                    ui.close();
+                }
+            });
+
+            ui.menu_button("View", |ui| {
+                if ui
+                    .button(if state.show_context_panel {
+                        "Hide Context Panel"
+                    } else {
+                        "Show Context Panel"
+                    })
+                    .clicked()
+                {
+                    state.show_context_panel = !state.show_context_panel;
+                    ui.close();
+                }
+                if ui
+                    .button(if state.drawer_open {
+                        "Hide Bottom Drawer"
+                    } else {
+                        "Show Bottom Drawer"
+                    })
+                    .clicked()
+                {
+                    state.drawer_open = !state.drawer_open;
+                    ui.close();
+                }
+            });
+
+            ui.menu_button("Help", |ui| {
+                ui.label("Makima Agent");
+                ui.label("Dock-based workspace");
+                if let Some(path) = &state.app_config_path {
+                    ui.separator();
+                    ui.label(path);
+                }
+            });
         });
 
-        ui.menu_button("Edit", |ui| {
-            if ui.button("Clear Composer").clicked() {
-                state.chat.composer.input.clear();
-                state.set_status("Composer cleared".to_string());
-                ui.close();
-            }
-            if ui.button("Clear Status").clicked() {
-                state.clear_status();
-                ui.close();
-            }
-        });
+        // 右侧：工具按钮（仅在登录后显示）
+        if state.is_logged_in {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // 右侧栏显示/隐藏按钮
+                let context_icon = if state.show_context_panel { "⊞" } else { "⊟" };
+                if ui
+                    .button(context_icon)
+                    .on_hover_text("Toggle Context Panel")
+                    .clicked()
+                {
+                    state.show_context_panel = !state.show_context_panel;
+                }
 
-        ui.menu_button("View", |ui| {
-            if ui
-                .button(if state.show_context_panel {
-                    "Hide Context Panel"
-                } else {
-                    "Show Context Panel"
-                })
-                .clicked()
-            {
-                state.show_context_panel = !state.show_context_panel;
-                ui.close();
-            }
-            if ui
-                .button(if state.drawer_open {
-                    "Hide Bottom Drawer"
-                } else {
-                    "Show Bottom Drawer"
-                })
-                .clicked()
-            {
-                state.drawer_open = !state.drawer_open;
-                ui.close();
-            }
-        });
+                // 模型显示按钮
+                if ui.button("⚙").on_hover_text("Model Settings").clicked() {
+                    // TODO: 打开模型设置面板
+                    state.set_status("Model settings coming soon".to_string());
+                }
 
-        ui.menu_button("Help", |ui| {
-            ui.label("Makima Agent");
-            ui.label("Dock-based workspace");
-            if let Some(path) = &state.app_config_path {
-                ui.separator();
-                ui.label(path);
-            }
-        });
+                // 聊天按钮
+                let chat_active = state.view_mode == ViewMode::Chat;
+                let chat_btn = egui::Button::new("💬")
+                    .fill(if chat_active { colors::RED_ACCENT } else { colors::TRANSPARENT });
+                if ui
+                    .add(chat_btn)
+                    .on_hover_text("Chat View")
+                    .clicked()
+                {
+                    state.view_mode = ViewMode::Chat;
+                }
+            });
+        }
     });
 }

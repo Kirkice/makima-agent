@@ -59,6 +59,18 @@ impl Default for MakimaApp {
         }
         let client = reqwest::Client::builder().user_agent("makima-desktop/0.1.0").build().expect("Failed to create HTTP client");
 
+        // Initialize app_dock before moving state into Self
+        let app_dock = {
+            let state_guard = state.lock().unwrap();
+            init_app_dock(
+                ViewMode::Chat,
+                state_guard.show_context_panel,
+                state_guard.conversations_width,
+                state_guard.inspector_width,
+                egui::vec2(1440.0, 900.0),
+            )
+        };
+
         Self {
             state,
             runtime,
@@ -69,7 +81,7 @@ impl Default for MakimaApp {
             login_dialog,
             pending_action: None,
             voice_manager: VoiceManager::default(),
-            app_dock: init_app_dock(ViewMode::Chat, true, egui::vec2(1440.0, 900.0)),
+            app_dock,
         }
     }
 }

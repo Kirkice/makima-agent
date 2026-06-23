@@ -33,20 +33,20 @@ impl AppDockTab {
 
 pub type AppDockState = DockState<AppDockTab>;
 
-const DEFAULT_SIDEBAR_WIDTH: f32 = 190.0;
-const DEFAULT_CONTEXT_WIDTH: f32 = 190.0;
 const DEFAULT_COMPOSER_HEIGHT: f32 = 180.0;
 
 pub fn init_app_dock(
     view_mode: ViewMode,
     show_context_panel: bool,
+    sidebar_width: f32,
+    context_width: f32,
     available_size: egui::Vec2,
 ) -> AppDockState {
     let mut dock_state = DockState::new(vec![AppDockTab::Chat]);
     let surface = dock_state.main_surface_mut();
 
-    let sidebar_fraction = retained_fraction(available_size.x, DEFAULT_SIDEBAR_WIDTH);
-    let context_fraction = retained_fraction(available_size.x, DEFAULT_CONTEXT_WIDTH);
+    let sidebar_fraction = retained_fraction(available_size.x, sidebar_width);
+    let context_fraction = retained_fraction(available_size.x, context_width);
     let composer_fraction = retained_fraction(available_size.y, DEFAULT_COMPOSER_HEIGHT);
 
     let [main, _sidebar] =
@@ -67,10 +67,14 @@ pub fn init_app_dock(
 
 pub fn sync_app_dock(
     dock_state: &mut AppDockState,
-    view_mode: ViewMode,
-    show_context_panel: bool,
+    state: &AppState,
     available_size: egui::Vec2,
 ) {
+    let view_mode = state.view_mode;
+    let show_context_panel = state.show_context_panel;
+    let sidebar_width = state.conversations_width;
+    let context_width = state.inspector_width;
+
     let has_chat = dock_state.iter_all_tabs().any(|(_, tab)| matches!(tab, AppDockTab::Chat));
     let has_avatar = dock_state.iter_all_tabs().any(|(_, tab)| matches!(tab, AppDockTab::Avatar));
     let has_composer = dock_state
@@ -91,7 +95,13 @@ pub fn sync_app_dock(
         || has_avatar != should_have_avatar
         || has_context != show_context_panel
     {
-        *dock_state = init_app_dock(view_mode, show_context_panel, available_size);
+        *dock_state = init_app_dock(
+            view_mode,
+            show_context_panel,
+            sidebar_width,
+            context_width,
+            available_size,
+        );
     }
 }
 
