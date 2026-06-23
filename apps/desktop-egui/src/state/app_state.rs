@@ -5,10 +5,18 @@ use crate::state::voice_state::VoiceCallState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelKind {
-    Modes, Persona, Memory, Knowledge, Voice, Mcp, Audit, ModelConfig, Diagnostics, Avatar,
+    Modes,
+    Persona,
+    Memory,
+    Knowledge,
+    Voice,
+    Mcp,
+    Audit,
+    ModelConfig,
+    Diagnostics,
+    Avatar,
 }
 
-/// Activity bar section grouping
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivitySection {
     Sessions,
@@ -18,10 +26,11 @@ pub enum ActivitySection {
 }
 
 impl Default for ActivitySection {
-    fn default() -> Self { Self::Sessions }
+    fn default() -> Self {
+        Self::Sessions
+    }
 }
 
-/// Bottom drawer tab
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DrawerTab {
     TaskTimeline,
@@ -31,53 +40,40 @@ pub enum DrawerTab {
     McpActivity,
 }
 
-/// Which main view mode is active
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
-    /// Chat Focus — only Chat in workspace
     Chat,
-    /// Avatar Focus — Chat + Avatar side by side
     Avatar,
 }
 
 impl Default for ViewMode {
-    fn default() -> Self { ViewMode::Chat }
+    fn default() -> Self {
+        ViewMode::Chat
+    }
 }
 
-/// Commands that UI panels can queue for async execution
 #[derive(Debug, Clone)]
 pub enum ApiCommand {
-    /// Fetch modes list
     FetchModes,
-    /// Fetch persona
     FetchPersona,
-    /// Reload persona
     ReloadPersona,
-    /// Fetch memories
     FetchMemories,
-    /// Search memories
     SearchMemories(String),
-    /// Delete memory
     DeleteMemory(String),
-    /// Fetch knowledge documents
     FetchDocuments,
-    /// Retrieve knowledge
     RetrieveKnowledge(String),
-    /// Fetch MCP servers
     FetchMcpServers,
-    /// Reconnect MCP server
     ReconnectMcp(String),
-    /// Toggle MCP server
     ToggleMcp(String, bool),
-    /// Fetch audit log
     FetchAuditLog,
-    /// Fetch voice settings
     FetchVoiceSettings,
-    /// Start a LiveKit voice call
-    StartVoiceCall { room_name: String, livekit_url: String, api_key: String, api_secret: String },
-    /// Stop the current voice call
+    StartVoiceCall {
+        room_name: String,
+        livekit_url: String,
+        api_key: String,
+        api_secret: String,
+    },
     StopVoiceCall,
-    /// Toggle microphone mute during a voice call
     ToggleVoiceMute,
 }
 
@@ -105,17 +101,14 @@ pub struct AppState {
     pub show_modal_model_edit: bool,
     pub show_persona_default: bool,
     pub show_modal_persona_edit: bool,
-    /// Pending API commands to be processed by app.rs
     pub api_commands: Vec<ApiCommand>,
-    // ── New layout state ──────────────────────────────────────────
-    /// Currently selected activity bar section
     pub activity_section: ActivitySection,
-    /// Whether the bottom drawer is open
     pub drawer_open: bool,
-    /// Which drawer tab is active
     pub drawer_tab: Option<DrawerTab>,
-    /// User manually dismissed the drawer — suppress auto-open until conditions change
     pub drawer_user_dismissed: bool,
+    pub conversations_width: f32,
+    pub inspector_width: f32,
+    pub drawer_height: f32,
 }
 
 impl Default for AppState {
@@ -125,10 +118,14 @@ impl Default for AppState {
             task: TaskState::default(),
             settings: SettingsState::default(),
             voice_call: VoiceCallState::default(),
-            auth_token: None, is_logged_in: false,
+            auth_token: None,
+            is_logged_in: false,
             server_url: "http://localhost:8000".to_string(),
-            app_config_path: None, status_message: None,
-            show_login: false, show_settings: false, show_diagnostics: false,
+            app_config_path: None,
+            status_message: None,
+            show_login: false,
+            show_settings: false,
+            show_diagnostics: false,
             show_panel: None,
             view_mode: ViewMode::default(),
             memory_search_query: String::new(),
@@ -145,13 +142,31 @@ impl Default for AppState {
             drawer_open: false,
             drawer_tab: None,
             drawer_user_dismissed: false,
+            conversations_width: 280.0,
+            inspector_width: 284.0,
+            drawer_height: 220.0,
         }
     }
 }
 
 impl AppState {
-    pub fn set_status(&mut self, msg: String) { self.status_message = Some(msg); }
-    pub fn clear_status(&mut self) { self.status_message = None; }
-    pub fn total_token_usage(&self) -> u64 { self.chat.sessions.iter().map(|s| s.estimated_token_count()).sum() }
-    pub fn total_estimated_cost(&self) -> f64 { (self.total_token_usage() as f64 / 1000.0) * self.settings.token_estimate_per_1k }
+    pub fn set_status(&mut self, msg: String) {
+        self.status_message = Some(msg);
+    }
+
+    pub fn clear_status(&mut self) {
+        self.status_message = None;
+    }
+
+    pub fn total_token_usage(&self) -> u64 {
+        self.chat
+            .sessions
+            .iter()
+            .map(|s| s.estimated_token_count())
+            .sum()
+    }
+
+    pub fn total_estimated_cost(&self) -> f64 {
+        (self.total_token_usage() as f64 / 1000.0) * self.settings.token_estimate_per_1k
+    }
 }

@@ -5,8 +5,18 @@ use crate::theme::colors;
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     ui.horizontal(|ui| {
-        ui.colored_label(colors::RED_ACCENT, "◆");
-        ui.add_space(8.0);
+        egui::Frame::NONE
+            .fill(colors::SELECTION_SOFT)
+            .corner_radius(CornerRadius::same(6))
+            .inner_margin(egui::Margin::symmetric(6, 2))
+            .show(ui, |ui| {
+                ui.colored_label(
+                    colors::RED_ACCENT,
+                    egui::RichText::new("M").size(11.0).strong(),
+                );
+            });
+
+        ui.add_space(10.0);
 
         ui.vertical(|ui| {
             ui.colored_label(
@@ -25,17 +35,21 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
         ui.add_space(20.0);
 
-        if let Some(mode) = state.settings.active_mode() {
-            subtle_badge(ui, &mode.name);
-        }
-        if state.settings.model_config.configured {
-            subtle_badge(ui, &state.settings.model_config.model);
+        if state.is_logged_in {
+            if let Some(mode) = state.settings.active_mode() {
+                subtle_badge(ui, &mode.name);
+            }
+            if state.settings.model_config.configured {
+                subtle_badge(ui, &state.settings.model_config.model);
+            }
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             connection_badge(ui, state);
-            ui.add_space(12.0);
-            draw_workspace_switch(ui, state);
+            if state.is_logged_in {
+                ui.add_space(12.0);
+                draw_workspace_switch(ui, state);
+            }
         });
     });
 }
@@ -78,7 +92,7 @@ fn connection_badge(ui: &mut egui::Ui, state: &AppState) {
     };
 
     ui.horizontal(|ui| {
-        ui.colored_label(color, "●");
+        ui.colored_label(color, "•");
         ui.colored_label(colors::TEXT_SECONDARY, text);
     });
 }

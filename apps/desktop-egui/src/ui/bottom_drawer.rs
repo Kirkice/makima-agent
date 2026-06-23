@@ -7,8 +7,6 @@ use eframe::egui::{self, CornerRadius, Frame, Margin};
 use crate::state::app_state::{AppState, DrawerTab};
 use crate::theme::colors;
 
-const DRAWER_HEIGHT: f32 = 220.0;
-
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let task_running = state.task.active_task.as_ref().map_or(false, |t| {
         t.status == crate::state::task_state::TaskStatus::Running
@@ -41,7 +39,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         .corner_radius(CornerRadius::same(12))
         .stroke(egui::Stroke::new(1.0, colors::BORDER_WEAK))
         .show(ui, |ui| {
-            ui.set_min_height(DRAWER_HEIGHT);
+            ui.set_min_height(state.drawer_height);
 
             // Drawer header with tabs and close button
             ui.horizontal(|ui| {
@@ -64,7 +62,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
             // Drawer content
             egui::ScrollArea::vertical()
-                .max_height(DRAWER_HEIGHT - 40.0)
+                .max_height(state.drawer_height - 40.0)
                 .show(ui, |ui| {
                     match state.drawer_tab {
                         Some(DrawerTab::TaskTimeline) => draw_task_timeline(ui, state),
