@@ -1,106 +1,83 @@
-//! Inspector Sidebar - 精简的上下文摘要
-//!
-//! 只展示当前最相关的上下文信息：
-//! - Mode / Model
-//! - Token / Cost
-//! - Task 状态
-//! - Voice / Avatar 状态
+use eframe::egui::{self, CornerRadius};
 
-use eframe::egui;
 use crate::state::app_state::AppState;
 use crate::theme::colors;
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
-    egui::ScrollArea::vertical()
-        .id_salt("inspector_panel")
-        .show(ui, |ui| {
-            // ── Mode Section ─────────────────────────────────────
-            section_header(ui, "Mode");
-            if let Some(mode) = state.settings.active_mode() {
-                ui.colored_label(colors::TEXT_PRIMARY, &mode.name);
-                if let Some(desc) = &mode.description {
-                    ui.colored_label(colors::TEXT_MUTED, desc);
-                }
+    ui.vertical(|ui| {
+        header(ui);
+        ui.add_space(14.0);
+
+        info_group(
+            ui,
+            "Mode",
+            state
+                .settings
+                .active_mode()
+                .map(|mode| mode.name.as_str())
+                .unwrap_or("No mode selected"),
+        );
+
+        info_group(
+            ui,
+            "Model",
+            if state.settings.model_config.configured {
+                &state.settings.model_config.model
             } else {
-                ui.colored_label(colors::TEXT_MUTED, "No mode selected");
-            }
-            ui.add_space(16.0);
+                "Not configured"
+            },
+        );
 
-            // ── Model Section ────────────────────────────────────
-            section_header(ui, "Model");
-            let model = &state.settings.model_config;
-            if model.provider_configured {
-                metric_row(ui, "Provider", &model.provider);
-                metric_row(ui, "Model", &model.model);
-                metric_row(ui, "Temperature", &format!("{:.2}", model.temperature));
-            } else {
-                ui.colored_label(colors::TEXT_MUTED, "Not configured");
-            }
-            ui.add_space(16.0);
+        if let Some(session) = state.chat.active_session() {
+            info_group(ui, "Session", &format!("{} messages", session.messages.len()));
+            info_group(
+                ui,
+                "Usage",
+                &format!(
+                    "{} tok · ${:.5}",
+                    session.estimated_token_count(),
+                    session.estimated_cost(state.settings.token_estimate_per_1k)
+                ),
+            );
+        }
 
-            // ── Token / Cost Section ─────────────────────────────
-            section_header(ui, "Session");
-            if let Some(session) = state.chat.active_session() {
-                let tokens = session.estimated_token_count();
-                let cost = session.estimated_cost(state.settings.token_estimate_per_1k);
-                metric_row(ui, "Tokens", &format!("{}", tokens));
-                metric_row(ui, "Cost", &format!("${:.5}", cost));
-            } else {
-                ui.colored_label(colors::TEXT_MUTED, "No active session");
-            }
-            ui.add_space(16.0);
+        if let Some(task) = &state.task.active_task {
+            info_group(ui, "Task", &format!("{:?}", task.status));
+            info_group(ui, "Timeline", &format!("{} steps", task.timeline.len()));
+        } else {
+            info_group(ui, "Task", "Idle");
+        }
 
-            // ── Task Status ──────────────────────────────────────
-            section_header(ui, "Task");
-            if let Some(task) = &state.task.active_task {
-                let status_text = format!("{:?}", task.status);
-                ui.colored_label(colors::TEXT_PRIMARY, status_text);
-                metric_row(ui, "Elapsed", &format!("{}s", task.elapsed_seconds));
-                if !task.timeline.is_empty() {
-                    metric_row(ui, "Steps", &format!("{}", task.timeline.len()));
-                }
-            } else {
-                ui.colored_label(colors::TEXT_MUTED, "No active task");
-            }
-            ui.add_space(16.0);
-
-            // ── Voice Status ─────────────────────────────────────
-            section_header(ui, "Voice");
-            let vc = &state.voice_call;
-            if vc.is_connected || vc.is_connecting {
-                let (icon, color) = if vc.is_connected {
-                    ("●", colors::SUCCESS)
-                } else {
-                    ("◌", colors::WARNING)
-                };
-                ui.horizontal(|ui| {
-                    ui.colored_label(color, icon);
-                    ui.colored_label(colors::TEXT_PRIMARY, &vc.status);
-                });
-                if vc.is_connected {
-                    let mins = vc.call_duration_secs / 60;
-                    let secs = vc.call_duration_secs % 60;
-                    metric_row(ui, "Duration", &format!("{:02}:{:02}", mins, secs));
-                }
-            } else {
-                metric_row(ui, "TTS", &state.settings.voice_config.tts_provider);
-                if state.settings.voice_config.active_voice_id.is_some() {
-                    metric_row(ui, "Voice", "Configured");
-                }
-            }
-        });
-}
-
-fn section_header(ui: &mut egui::Ui, title: &str) {
-    ui.colored_label(colors::RED_ACCENT, title);
-    ui.add_space(4.0);
-}
-
-fn metric_row(ui: &mut egui::Ui, label: &str, value: &str) {
-    ui.horizontal(|ui| {
-        ui.colored_label(colors::TEXT_SECONDARY, label);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.colored_label(colors::TEXT_PRIMARY, value);
-        });
+        let voice_status = if state.voice_call.is_connected {
+            "Connected"
+        } else if state.voice_call.is_connecting {
+            "Connecting"
+        } else {
+            "Idle"
+        };
+        info_group(ui, "Voice", voice_status);
     });
+}
+
+fn header(ui: &mut egui::Ui) {
+    ui.colored_label(
+        colors::TEXT_PRIMARY,
+        egui::RichText::new("Context").size(15.0).strong(),
+    );
+    ui.colored_label(colors::TEXT_MUTED, "Current session summary");
+}
+
+fn info_group(ui: &mut egui::Ui, label: &str, value: &str) {
+    egui::Frame::NONE
+        .fill(colors::ELEVATED)
+        .corner_radius(CornerRadius::same(12))
+        .inner_margin(egui::Margin::same(12))
+        .show(ui, |ui| {
+            ui.colored_label(colors::TEXT_MUTED, label);
+            ui.colored_label(
+                colors::TEXT_PRIMARY,
+                egui::RichText::new(value).size(13.0).strong(),
+            );
+        });
+    ui.add_space(8.0);
 }

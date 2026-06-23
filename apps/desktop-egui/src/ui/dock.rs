@@ -46,6 +46,18 @@ pub fn init_workspace_dock(view_mode: ViewMode) -> WorkspaceDockState {
     }
 }
 
+pub fn sync_workspace_dock(dock_state: &mut WorkspaceDockState, view_mode: ViewMode) {
+    let expected_tabs = match view_mode {
+        ViewMode::Chat => 1,
+        ViewMode::Avatar => 2,
+    };
+
+    let current_tabs = dock_state.iter_all_tabs().count();
+    if current_tabs != expected_tabs {
+        *dock_state = init_workspace_dock(view_mode);
+    }
+}
+
 struct WorkspaceTabViewer<'a> {
     state: &'a mut AppState,
     pending_action: &'a mut Option<UiAction>,

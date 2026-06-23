@@ -35,8 +35,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         return;
     }
 
-    let drawer_id = ui.id().with("bottom_drawer");
-
     Frame::NONE
         .fill(colors::SURFACE)
         .inner_margin(Margin::symmetric(12, 8))

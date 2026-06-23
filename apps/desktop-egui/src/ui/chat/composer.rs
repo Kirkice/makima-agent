@@ -1,8 +1,3 @@
-//! Composer - 聊天输入框 (72px 基准高度)
-//!
-//! 作为 shell 骨架的固定底部组件，不依赖 dock。
-//! 返回 true 表示用户要发送消息。
-
 use eframe::egui::{self, Key};
 
 use crate::app::UiAction;
@@ -10,69 +5,56 @@ use crate::state::app_state::AppState;
 use crate::theme::colors;
 
 /// Draw the chat input composer. Returns true on send.
-pub fn draw(ui: &mut egui::Ui, state: &mut AppState, _pending_action: &mut Option<UiAction>) -> bool {
+pub fn draw(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    _pending_action: &mut Option<UiAction>,
+) -> bool {
     let mut should_send = false;
 
     egui::Frame::NONE
         .fill(colors::ELEVATED)
-        .corner_radius(egui::CornerRadius::same(12))
-        .inner_margin(egui::Margin::symmetric(16, 10))
+        .corner_radius(egui::CornerRadius::same(14))
+        .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
-            // Token estimate + Slash command hint
             ui.horizontal(|ui| {
                 let tokens = estimate_tokens(&state.chat.composer.input);
-                let cost = (tokens as f64 / 1000.0) * state.settings.token_estimate_per_1k;
                 if tokens > 0 {
-                    ui.colored_label(colors::TEXT_MUTED, format!("~{} tok | ${:.5}", tokens, cost));
+                    let cost = (tokens as f64 / 1000.0) * state.settings.token_estimate_per_1k;
+                    ui.colored_label(colors::TEXT_MUTED, format!("~{tokens} tok · ${cost:.5}"));
+                } else {
+                    ui.colored_label(colors::TEXT_MUTED, "Ready");
                 }
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if state.chat.composer.input.starts_with("/") {
-                        let cmd = state.chat.composer.input.split_whitespace().next().unwrap_or("");
-                        match cmd {
-                            "/mode" => { ui.colored_label(colors::INFO, "→ Switch mode (usage: /mode <slug>)"); }
-                            "/clear" => { ui.colored_label(colors::INFO, "→ Clear current conversation"); }
-                            "/help" => { ui.colored_label(colors::INFO, "→ Available: /mode, /clear, /help, /persona"); }
-                            "/persona" => { ui.colored_label(colors::INFO, "→ Reload persona"); }
-                            _ => { ui.colored_label(colors::TEXT_MUTED, "Unknown command"); }
-                        }
-                    }
+                    ui.colored_label(colors::TEXT_MUTED, "Ctrl+Enter to send");
                 });
             });
 
             let response = ui.add_sized(
-                egui::vec2(ui.available_width(), 48.0),
+                egui::vec2(ui.available_width(), 56.0),
                 egui::TextEdit::multiline(&mut state.chat.composer.input)
-                    .hint_text("Type a message... (Ctrl+Enter to send)")
-                    .desired_rows(2)
+                    .hint_text("Ask Makima anything…")
+                    .desired_rows(3)
                     .frame(false),
             );
 
             ui.horizontal(|ui| {
+                ui.colored_label(colors::TEXT_MUTED, "/mode  /clear  /persona");
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Stop button
                     if state.chat.composer.is_streaming {
-                        if ui.button("■ Stop").clicked() { state.chat.composer.is_streaming = false; }
+                        if ui.button("Stop").clicked() {
+                            state.chat.composer.is_streaming = false;
+                        }
                     } else {
-                        let can_send = !state.chat.composer.input.trim().is_empty() && state.is_logged_in;
-                        if ui.add_enabled(can_send, egui::Button::new("▶ Send")).clicked() {
-                            // Handle slash commands
-                            if state.chat.composer.input.starts_with("/") {
-                                let parts: Vec<&str> = state.chat.composer.input.split_whitespace().collect();
-                                match parts[0] {
-                                    "/clear" => {
-                                        if let Some(s) = state.chat.active_session_mut() { s.messages.clear(); }
-                                        state.chat.composer.input.clear();
-                                        state.set_status("Conversation cleared".to_string());
-                                        return;
-                                    }
-                                    "/help" => {
-                                        state.set_status("Commands: /mode, /clear, /help, /persona".to_string());
-                                        state.chat.composer.input.clear();
-                                        return;
-                                    }
-                                    _ => { should_send = true; }
-                                }
-                            } else {
+                        let send = egui::Button::new("Send")
+                            .fill(colors::SELECTION_SOFT)
+                            .stroke(egui::Stroke::NONE);
+                        let can_send =
+                            !state.chat.composer.input.trim().is_empty() && state.is_logged_in;
+                        if ui.add_enabled(can_send, send).clicked() {
+                            if handle_inline_command(state) {
                                 should_send = true;
                             }
                         }
@@ -80,14 +62,47 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState, _pending_action: &mut Optio
                 });
             });
 
-            // Ctrl+Enter
-            if response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter) && i.modifiers.ctrl) {
-                if !state.chat.composer.input.trim().is_empty() && !state.chat.composer.is_streaming { should_send = true; }
+            if response.lost_focus()
+                && ui.input(|i| i.key_pressed(Key::Enter) && i.modifiers.ctrl)
+                && !state.chat.composer.input.trim().is_empty()
+                && !state.chat.composer.is_streaming
+            {
+                if handle_inline_command(state) {
+                    should_send = true;
+                }
                 response.request_focus();
             }
         });
 
     should_send
+}
+
+fn handle_inline_command(state: &mut AppState) -> bool {
+    if !state.chat.composer.input.starts_with('/') {
+        return true;
+    }
+
+    let parts: Vec<&str> = state.chat.composer.input.split_whitespace().collect();
+    if parts.is_empty() {
+        return false;
+    }
+
+    match parts[0] {
+        "/clear" => {
+            if let Some(session) = state.chat.active_session_mut() {
+                session.messages.clear();
+            }
+            state.chat.composer.input.clear();
+            state.set_status("Conversation cleared".to_string());
+            false
+        }
+        "/help" => {
+            state.set_status("Commands: /mode, /clear, /help, /persona".to_string());
+            state.chat.composer.input.clear();
+            false
+        }
+        _ => true,
+    }
 }
 
 fn estimate_tokens(text: &str) -> u64 {

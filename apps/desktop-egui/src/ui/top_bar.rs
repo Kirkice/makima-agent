@@ -1,73 +1,94 @@
-//! Top Bar - 顶部栏 (56px)
-//!
-//! 显示品牌标识、当前会话标题、workspace 切换按钮、连接状态
+use eframe::egui::{self, CornerRadius};
 
-use eframe::egui::{self, Frame, Margin, Vec2};
 use crate::state::app_state::{AppState, ViewMode};
 use crate::theme::colors;
 
-/// 绘制顶部栏，返回需要切换的 ViewMode（如果用户点击了切换按钮）
-pub fn draw(ui: &mut egui::Ui, state: &mut AppState) -> Option<ViewMode> {
-    let mut switch_to = None;
-    
+pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     ui.horizontal(|ui| {
-        // Brand / Title
-        ui.colored_label(colors::ICON_ACTIVE, "◆");
+        ui.colored_label(colors::RED_ACCENT, "◆");
         ui.add_space(8.0);
-        ui.colored_label(colors::TEXT_PRIMARY, "Makima");
 
-        // Current session title
-        if let Some(session) = state.chat.active_session() {
-            ui.add_space(16.0);
-            ui.colored_label(colors::TEXT_SECONDARY, &session.title);
+        ui.vertical(|ui| {
+            ui.colored_label(
+                colors::TEXT_PRIMARY,
+                egui::RichText::new("Makima").size(16.0).strong(),
+            );
+            ui.colored_label(
+                colors::TEXT_MUTED,
+                state
+                    .chat
+                    .active_session()
+                    .map(|s| s.title.as_str())
+                    .unwrap_or("New conversation"),
+            );
+        });
+
+        ui.add_space(20.0);
+
+        if let Some(mode) = state.settings.active_mode() {
+            subtle_badge(ui, &mode.name);
+        }
+        if state.settings.model_config.configured {
+            subtle_badge(ui, &state.settings.model_config.model);
         }
 
-        // Spacer
-        ui.add_space(ui.available_width() - 200.0);
-
-        // Workspace switch (Chat / Avatar)
-        if let Some(mode) = draw_workspace_switch(ui, state) {
-            switch_to = Some(mode);
-        }
-
-        ui.add_space(16.0);
-
-        // Connection status indicator
-        let (color, text) = if state.settings.health.sse_connected {
-            (colors::SUCCESS, "Online")
-        } else {
-            (colors::TEXT_MUTED, "Offline")
-        };
-        ui.colored_label(color, format!("● {}", text));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            connection_badge(ui, state);
+            ui.add_space(12.0);
+            draw_workspace_switch(ui, state);
+        });
     });
-    
-    switch_to
 }
 
-fn draw_workspace_switch(ui: &mut egui::Ui, state: &mut AppState) -> Option<ViewMode> {
-    let mut result = None;
-    
-    ui.horizontal(|ui| {
-        // Chat button
-        let chat_style = if state.view_mode == ViewMode::Chat {
-            egui::Button::new("💬 Chat").fill(colors::ELEVATED).small()
-        } else {
-            egui::Button::new("💬 Chat").fill(colors::TRANSPARENT).small()
-        };
-        if ui.add(chat_style).clicked() && state.view_mode != ViewMode::Chat {
-            result = Some(ViewMode::Chat);
-        }
+fn draw_workspace_switch(ui: &mut egui::Ui, state: &mut AppState) {
+    egui::Frame::NONE
+        .fill(colors::ELEVATED)
+        .corner_radius(CornerRadius::same(12))
+        .inner_margin(egui::Margin::symmetric(4, 4))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                workspace_button(ui, state, ViewMode::Chat, "Chat");
+                workspace_button(ui, state, ViewMode::Avatar, "Avatar");
+            });
+        });
+}
 
-        // Avatar button
-        let avatar_style = if state.view_mode == ViewMode::Avatar {
-            egui::Button::new("🧑 Avatar").fill(colors::ELEVATED).small()
+fn workspace_button(ui: &mut egui::Ui, state: &mut AppState, mode: ViewMode, label: &str) {
+    let active = state.view_mode == mode;
+    let button = egui::Button::new(label)
+        .fill(if active {
+            colors::SELECTION_SOFT
         } else {
-            egui::Button::new("🧑 Avatar").fill(colors::TRANSPARENT).small()
-        };
-        if ui.add(avatar_style).clicked() && state.view_mode != ViewMode::Avatar {
-            result = Some(ViewMode::Avatar);
-        }
+            colors::TRANSPARENT
+        })
+        .stroke(egui::Stroke::NONE);
+
+    if ui.add(button).clicked() {
+        state.view_mode = mode;
+    }
+}
+
+fn connection_badge(ui: &mut egui::Ui, state: &AppState) {
+    let (text, color) = if state.settings.health.backend && state.is_logged_in {
+        ("Online", colors::SUCCESS)
+    } else if state.settings.health.backend {
+        ("Auth", colors::WARNING)
+    } else {
+        ("Offline", colors::TEXT_MUTED)
+    };
+
+    ui.horizontal(|ui| {
+        ui.colored_label(color, "●");
+        ui.colored_label(colors::TEXT_SECONDARY, text);
     });
-    
-    result
+}
+
+fn subtle_badge(ui: &mut egui::Ui, text: &str) {
+    egui::Frame::NONE
+        .fill(colors::ELEVATED)
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.colored_label(colors::TEXT_SECONDARY, text);
+        });
 }

@@ -1,14 +1,8 @@
-//! Avatar panel — 3D character rendering placeholder.
-//!
-//! Currently shows a placeholder with the pixel avatar and status.
-//! In the future, this will embed a WebView (wry) running Unity WebGL
-//! for real-time 3D character rendering with lip sync and emotions.
+use eframe::egui::{self, CornerRadius};
 
 use crate::state::app_state::AppState;
 use crate::theme::colors;
-use eframe::egui;
 
-/// Pixel art avatar (same as CLI)
 const PIXEL_COLORS: [[Option<&str>; 13]; 15] = [
     [None, None, None, Some("#b94d58"), Some("#bc4f5a"), Some("#d05966"), Some("#d15966"), Some("#d15966"), Some("#d05966"), Some("#bc4f5a"), Some("#b94d58"), None, None],
     [None, None, Some("#d25864"), Some("#ce5964"), Some("#d15966"), Some("#d25a67"), Some("#d15a67"), Some("#d15a67"), Some("#d25a67"), Some("#d15966"), Some("#ce5964"), Some("#d25864"), None],
@@ -27,102 +21,76 @@ const PIXEL_COLORS: [[Option<&str>; 13]; 15] = [
     [None, Some("#9b4d62"), None, Some("#969394"), Some("#f8f3ea"), Some("#bbb9b2"), Some("#3e393b"), Some("#3e393b"), Some("#bbb9b2"), Some("#f8f3ea"), Some("#969394"), None, Some("#9b4d62")],
 ];
 
-/// Draw the avatar panel.
 pub fn draw(ui: &mut egui::Ui, state: &AppState) {
-    ui.vertical_centered(|ui| {
-        ui.add_space(20.0);
+    egui::Frame::NONE
+        .fill(colors::SURFACE)
+        .corner_radius(CornerRadius::same(18))
+        .inner_margin(egui::Margin::same(20))
+        .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.colored_label(
+                    colors::TEXT_PRIMARY,
+                    egui::RichText::new("Avatar Stage").size(18.0).strong(),
+                );
+                ui.colored_label(colors::TEXT_MUTED, "Unity workspace placeholder");
+                ui.add_space(24.0);
 
-        // Title
-        ui.colored_label(colors::RED_ACCENT, egui::RichText::new("MAKIMA").size(24.0).strong());
-        ui.add_space(4.0);
-        ui.colored_label(colors::TEXT_SECONDARY, "3D Avatar View");
+                let pixel_size = 12.0;
+                let avatar_size = egui::vec2(13.0 * pixel_size, 15.0 * pixel_size);
+                let (rect, _) = ui.allocate_exact_size(avatar_size, egui::Sense::hover());
+                let painter = ui.painter_at(rect);
 
-        ui.add_space(24.0);
-
-        // Pixel avatar (scaled up)
-        let pixel_size = 12.0;
-        let avatar_size = egui::vec2(13.0 * pixel_size, 15.0 * pixel_size);
-        let (rect, _) = ui.allocate_exact_size(avatar_size, egui::Sense::hover());
-
-        let painter = ui.painter_at(rect);
-        for (row_idx, row) in PIXEL_COLORS.iter().enumerate() {
-            for (col_idx, cell) in row.iter().enumerate() {
-                if let Some(hex) = cell {
-                    let color = parse_hex_color(hex);
-                    let min = egui::pos2(
-                        rect.min.x + col_idx as f32 * pixel_size,
-                        rect.min.y + row_idx as f32 * pixel_size,
-                    );
-                    let max = egui::pos2(min.x + pixel_size, min.y + pixel_size);
-                    painter.rect_filled(
-                        egui::Rect::from_min_max(min, max),
-                        egui::CornerRadius::ZERO,
-                        color,
-                    );
+                for (row_idx, row) in PIXEL_COLORS.iter().enumerate() {
+                    for (col_idx, cell) in row.iter().enumerate() {
+                        if let Some(hex) = cell {
+                            let color = parse_hex_color(hex);
+                            let min = egui::pos2(
+                                rect.min.x + col_idx as f32 * pixel_size,
+                                rect.min.y + row_idx as f32 * pixel_size,
+                            );
+                            let max = egui::pos2(min.x + pixel_size, min.y + pixel_size);
+                            painter.rect_filled(
+                                egui::Rect::from_min_max(min, max),
+                                egui::CornerRadius::ZERO,
+                                color,
+                            );
+                        }
+                    }
                 }
-            }
-        }
 
-        ui.add_space(24.0);
+                ui.add_space(24.0);
 
-        // Status section
-        egui::Frame::NONE
-            .fill(colors::GRAPHITE_ELEVATED)
-            .corner_radius(egui::CornerRadius::same(8))
-            .inner_margin(egui::Margin::same(16))
-            .show(ui, |ui| {
-                ui.set_min_width(200.0);
-                ui.colored_label(colors::TEXT_SECONDARY, "Rendering Engine");
-                ui.colored_label(colors::TEXT_PRIMARY, "Placeholder (egui pixel art)");
-                ui.add_space(8.0);
-                ui.colored_label(colors::TEXT_SECONDARY, "Target");
-                ui.colored_label(colors::TEXT_PRIMARY, "Unity WebGL via wry");
-                ui.add_space(8.0);
+                status_strip(ui, "Render", "Placeholder");
+                status_strip(
+                    ui,
+                    "Voice",
+                    if state.voice_call.is_connected {
+                        "Connected"
+                    } else if state.voice_call.is_connecting {
+                        "Connecting"
+                    } else {
+                        "Idle"
+                    },
+                );
+                status_strip(ui, "Target", "Unity WebGL");
+            });
+        });
+}
 
-                let vc = &state.voice_call;
-                let (status_icon, status_text) = if vc.is_connected {
-                    ("●", colors::SUCCESS)
-                } else if vc.is_connecting {
-                    ("◌", colors::WARNING)
-                } else {
-                    ("○", colors::TEXT_MUTED)
-                };
-                ui.horizontal(|ui| {
-                    ui.colored_label(colors::TEXT_SECONDARY, "Voice");
-                    ui.colored_label(status_text, format!("{} {}", status_icon, vc.status));
+fn status_strip(ui: &mut egui::Ui, label: &str, value: &str) {
+    egui::Frame::NONE
+        .fill(colors::ELEVATED)
+        .corner_radius(CornerRadius::same(12))
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(colors::TEXT_MUTED, label);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.colored_label(colors::TEXT_PRIMARY, value);
                 });
             });
-
-        ui.add_space(16.0);
-
-        // Emotion preview (placeholder)
-        ui.colored_label(colors::TEXT_MUTED, "Emotion: Neutral");
-        ui.colored_label(colors::TEXT_MUTED, "Lip Sync: Idle");
-
-        ui.add_space(20.0);
-
-        // Info text
-        egui::Frame::NONE
-            .fill(colors::GRAPHITE_BG)
-            .corner_radius(egui::CornerRadius::same(6))
-            .inner_margin(egui::Margin::same(12))
-            .show(ui, |ui| {
-                ui.set_min_width(220.0);
-                ui.colored_label(
-                    colors::TEXT_MUTED,
-                    egui::RichText::new("ℹ This panel will display a 3D avatar\nrendered by Unity WebGL when the\n'avatar' feature is enabled.")
-                        .size(11.0),
-                );
-                ui.add_space(4.0);
-                ui.colored_label(
-                    colors::TEXT_MUTED,
-                    egui::RichText::new("cargo build --features avatar")
-                        .monospace()
-                        .size(10.0)
-                        .color(colors::RED_DIM),
-                );
-            });
-    });
+        });
+    ui.add_space(8.0);
 }
 
 fn parse_hex_color(hex: &str) -> egui::Color32 {
