@@ -202,7 +202,7 @@ def main() -> None:
     print("  Waiting for server to be ready...", end="", flush=True)
     if not wait_for_server(timeout=30):
         print("\n  [ERROR] Server failed to start within 30 seconds")
-        print("  Check apps/backend/.env for configuration")
+        print("  Check .env for configuration")
         cleanup_port()
         server_proc.terminate()
         input("\n  Press Enter to exit...")

@@ -42,7 +42,7 @@ set /a attempts+=1
 if %attempts% gtr 30 (
     echo.
     echo   [ERROR] Server failed to start within 30 seconds
-    echo   Check apps\backend\.env for configuration
+    echo   Check .env for configuration
     echo.
     taskkill /FI "WINDOWTITLE eq Makima Server" /F 2>nul
     pause

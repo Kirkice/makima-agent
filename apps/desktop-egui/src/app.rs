@@ -288,6 +288,57 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max { s.to_string() } else { format!("{}…", &s[..max]) }
 }
 
+async fn load_sessions_into_state(
+    state: Arc<Mutex<AppState>>,
+    client: reqwest::Client,
+    server_url: String,
+    token: String,
+) {
+    let sessions_api = SessionsApi::new(client, server_url, token);
+    if let Ok(list) = sessions_api.list().await {
+        let mut s = state.lock().unwrap();
+        s.chat.sessions.clear();
+        for api_s in list {
+            let title = api_s.title.unwrap_or_else(|| "Untitled".to_string());
+            s.chat.sessions.push(crate::state::chat_state::Session::new(title, None));
+        }
+        if !s.chat.sessions.is_empty() {
+            s.chat.active_session_id = Some(s.chat.sessions[0].id);
+        }
+    }
+}
+
+async fn try_env_auto_login(
+    state: Arc<Mutex<AppState>>,
+    client: reqwest::Client,
+    server_url: String,
+) -> bool {
+    let env_user = std::env::var("MAKIMA_CLI_USERNAME").unwrap_or_default();
+    let env_pass = std::env::var("MAKIMA_CLI_PASSWORD").unwrap_or_default();
+
+    if env_user.is_empty() || env_pass.is_empty() {
+        return false;
+    }
+
+    let auth_api = AuthApi::new(client.clone(), server_url.clone());
+    let Ok(resp) = auth_api.login(&env_user, &env_pass).await else {
+        return false;
+    };
+
+    let token = resp.access_token;
+    SecureStore::new().store_token(&token).ok();
+    {
+        let mut s = state.lock().unwrap();
+        s.auth_token = Some(token.clone());
+        s.is_logged_in = true;
+        s.show_login = false;
+        s.set_status("Auto-login via env".to_string());
+    }
+
+    load_sessions_into_state(state, client, server_url, token).await;
+    true
+}
+
 impl eframe::App for MakimaApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if !self.initialized {
@@ -608,6 +659,7 @@ impl MakimaApp {
         let state = self.state.clone();
         let client = self.client.clone();
         let server_url = self.config.server_url.clone();
+        let secure_store = SecureStore::new();
 
         self.runtime.spawn(async move {
             let health_api = HealthApi::new(client.clone(), server_url.clone());
@@ -628,48 +680,24 @@ impl MakimaApp {
                         let mut s = state.lock().unwrap();
                         s.is_logged_in = true; s.set_status("Authenticated".to_string());
                     }
-                    let sessions_api = SessionsApi::new(client, server_url, token);
-                    if let Ok(list) = sessions_api.list().await {
-                        let mut s = state.lock().unwrap();
-                        for api_s in list {
-                            let title = api_s.title.unwrap_or_else(|| "Untitled".to_string());
-                            s.chat.sessions.push(crate::state::chat_state::Session::new(title, None));
-                        }
-                        if !s.chat.sessions.is_empty() { s.chat.active_session_id = Some(s.chat.sessions[0].id); }
-                    }
+                    load_sessions_into_state(state, client, server_url, token).await;
                 } else {
-                    let mut s = state.lock().unwrap();
-                    s.is_logged_in = false; s.show_login = true;
+                    let _ = secure_store.delete_token();
+                    {
+                        let mut s = state.lock().unwrap();
+                        s.auth_token = None;
+                        s.is_logged_in = false;
+                    }
+                    if !try_env_auto_login(state.clone(), client.clone(), server_url.clone()).await {
+                        let mut s = state.lock().unwrap();
+                        s.show_login = true;
+                    }
                 }
             } else {
-                // Try auto-login via MAKIMA_CLI_USERNAME / MAKIMA_CLI_PASSWORD env vars
-                let env_user = std::env::var("MAKIMA_CLI_USERNAME").unwrap_or_default();
-                let env_pass = std::env::var("MAKIMA_CLI_PASSWORD").unwrap_or_default();
-                if !env_user.is_empty() && !env_pass.is_empty() {
-                    let auth_api = AuthApi::new(client.clone(), server_url.clone());
-                    if let Ok(resp) = auth_api.login(&env_user, &env_pass).await {
-                        let token = resp.access_token;
-                        SecureStore::new().store_token(&token).ok();
-                        {
-                            let mut s = state.lock().unwrap();
-                            s.auth_token = Some(token.clone());
-                            s.is_logged_in = true;
-                            s.set_status("Auto-login via env".to_string());
-                        }
-                        let sessions_api = SessionsApi::new(client, server_url, token);
-                        if let Ok(list) = sessions_api.list().await {
-                            let mut s = state.lock().unwrap();
-                            for api_s in list {
-                                let title = api_s.title.unwrap_or_else(|| "Untitled".to_string());
-                                s.chat.sessions.push(crate::state::chat_state::Session::new(title, None));
-                            }
-                            if !s.chat.sessions.is_empty() { s.chat.active_session_id = Some(s.chat.sessions[0].id); }
-                        }
-                        return;
-                    }
+                if !try_env_auto_login(state.clone(), client.clone(), server_url.clone()).await {
+                    let mut s = state.lock().unwrap();
+                    s.show_login = true;
                 }
-                let mut s = state.lock().unwrap();
-                s.show_login = true;
             }
         });
 

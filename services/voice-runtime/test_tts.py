@@ -3,7 +3,7 @@
 Usage:
     python test_tts.py [text]
 
-Reads API key and reference ID from apps/backend/.env.
+Reads API key and reference ID from the repo root .env.
 Plays the synthesised audio via pygame (if available) or writes to a temp file.
 """
 
@@ -17,7 +17,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-_env_path = Path(__file__).parent.parent.parent / "apps" / "backend" / ".env"
+_env_path = Path(__file__).parent.parent.parent / ".env"
 load_dotenv(_env_path)
 
 import httpx

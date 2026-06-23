@@ -25,7 +25,7 @@ from livekit import api, rtc
 from fish_audio import transcribe, synthesize
 
 # Load environment
-_env_path = Path(__file__).parent.parent.parent / "apps" / "backend" / ".env"
+_env_path = Path(__file__).parent.parent.parent / ".env"
 load_dotenv(_env_path)
 
 logging.basicConfig(level=logging.INFO)

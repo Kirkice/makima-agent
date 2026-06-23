@@ -16,6 +16,8 @@ mod voice;
 use eframe::egui::ViewportBuilder;
 
 fn main() -> Result<(), eframe::Error> {
+    let _ = dotenvy::dotenv();
+
     // Install panic hook for better crash diagnostics
     let default_panic = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {

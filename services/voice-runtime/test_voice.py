@@ -76,7 +76,7 @@ def test_environment():
             ok = False
 
     if not ok:
-        print("\n❌ Some variables missing. Check apps/backend/.env")
+        print("\n❌ Some variables missing. Check .env")
         return False
     print("\n✓ All environment variables OK")
     return True

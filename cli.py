@@ -66,6 +66,9 @@ THEME = Theme(
 
 console = Console(theme=THEME, soft_wrap=True, highlight=False)
 
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+PRIMARY_ENV_FILE = os.path.join(REPO_ROOT, ".env")
+
 PROMPT_STYLE = Style.from_dict(
     {
         "prompt": f"bold {COLORS['ivory']}",
@@ -122,46 +125,65 @@ def render_status_bar(items: list[tuple[str, str]]) -> Panel:
     )
 
 
-def load_env_credentials() -> tuple[str, str]:
-    env_file = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "apps", "backend", ".env"
-    )
-    username = ""
-    password = ""
-    if os.path.exists(env_file):
-        with open(env_file, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                key = key.strip()
-                value = value.strip()
-                if key == "MAKIMA_CLI_USERNAME":
-                    username = value
-                elif key == "MAKIMA_CLI_PASSWORD":
-                    password = value
-    return username, password
+def _env_file_candidates() -> list[str]:
+    return [PRIMARY_ENV_FILE]
 
 
-def _load_env_value(name: str) -> str:
-    """Load a value from environment first, then apps/backend/.env."""
-    value = os.getenv(name, "")
-    if value:
-        return value
-
-    env_file = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "apps", "backend", ".env"
-    )
-    if os.path.exists(env_file):
+def _load_env_into_process() -> None:
+    for env_file in _env_file_candidates():
+        if not os.path.exists(env_file):
+            continue
         with open(env_file, encoding="utf-8", errors="ignore") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("#") or "=" not in line:
                     continue
-                k, _, v = line.partition("=")
-                if k.strip() == name:
-                    return v.strip()
+                key, _, value = line.partition("=")
+                os.environ[key.strip()] = value.strip()
+
+
+def _first_existing_env_file() -> str:
+    for env_file in _env_file_candidates():
+        if os.path.exists(env_file):
+            return env_file
+    return PRIMARY_ENV_FILE
+
+
+def _read_env_value_from_file(env_file: str, name: str) -> str:
+    if not os.path.exists(env_file):
+        return ""
+
+    with open(env_file, encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            if key.strip() == name:
+                return value.strip()
+    return ""
+
+
+_load_env_into_process()
+
+
+def load_env_credentials() -> tuple[str, str]:
+    return (
+        _load_env_value("MAKIMA_CLI_USERNAME"),
+        _load_env_value("MAKIMA_CLI_PASSWORD"),
+    )
+
+
+def _load_env_value(name: str) -> str:
+    """Load a value from environment first, then the shared repo .env."""
+    value = os.getenv(name, "")
+    if value:
+        return value
+
+    for env_file in _env_file_candidates():
+        value = _read_env_value_from_file(env_file, name)
+        if value:
+            return value
     return ""
 
 
@@ -174,10 +196,8 @@ def _load_fish_audio_config() -> tuple[str, str]:
 
 
 def _update_env_value(name: str, value: str) -> bool:
-    """Update or append a variable in apps/backend/.env."""
-    env_file = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "apps", "backend", ".env"
-    )
+    """Update or append a variable in the shared repo .env."""
+    env_file = _first_existing_env_file()
     lines: list[str] = []
     found = False
 
@@ -548,27 +568,16 @@ class MakimaCLI:
         )
 
         try:
-            env_file = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "apps", "backend", ".env"
-            )
             api_key = ""
             api_base = "https://api.deepseek.com"
             model = "deepseek-v4-flash"
-            if os.path.exists(env_file):
-                with open(env_file, encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line or line.startswith("#") or "=" not in line:
-                            continue
-                        key, _, value = line.partition("=")
-                        key = key.strip()
-                        value = value.strip()
-                        if key == "MAKIMA_LLM_API_KEY":
-                            api_key = value
-                        elif key == "MAKIMA_LLM_API_BASE":
-                            api_base = value
-                        elif key == "MAKIMA_LLM_MODEL":
-                            model = value
+            for env_file in _env_file_candidates():
+                if not api_key:
+                    api_key = _read_env_value_from_file(env_file, "MAKIMA_LLM_API_KEY")
+                if api_base == "https://api.deepseek.com":
+                    api_base = _read_env_value_from_file(env_file, "MAKIMA_LLM_API_BASE") or api_base
+                if model == "deepseek-v4-flash":
+                    model = _read_env_value_from_file(env_file, "MAKIMA_LLM_MODEL") or model
 
             if not api_key:
                 return user_msg[:30]

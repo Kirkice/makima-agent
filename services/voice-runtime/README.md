@@ -36,7 +36,7 @@
 
 ## 环境配置
 
-在 `apps/backend/.env` 中添加：
+在根目录 `.env` 中添加：
 
 ```bash
 # LiveKit Cloud

@@ -191,7 +191,7 @@ fn draw_integrations(ui: &mut egui::Ui, state: &mut AppState) {
         .count();
     let mcp_total = state.settings.mcp_servers.len();
 
-    kv_card_static(ui, "🎙Voice", voice_label, voice_color);
+    kv_card_static(ui, "🎙  Voice", voice_label, voice_color);
     kv_card_static(
         ui,
         "🔗  MCP",
