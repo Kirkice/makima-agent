@@ -5,7 +5,9 @@ use crate::state::app_state::{ActivitySection, ApiCommand, AppState};
 use crate::theme::colors;
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.vertical(|ui| {
+    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+        ui.set_width(ui.available_width());
+
         section_header(ui, state.activity_section);
         ui.add_space(12.0);
 
@@ -201,7 +203,8 @@ fn section_header(ui: &mut egui::Ui, section: ActivitySection) {
         ActivitySection::Integrations => ("Integrations", "Voice, MCP and runtime health"),
     };
 
-    ui.vertical(|ui| {
+    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+        ui.set_width(ui.available_width());
         ui.colored_label(
             colors::TEXT_PRIMARY,
             egui::RichText::new(title).size(15.0).strong(),
@@ -235,17 +238,20 @@ fn summary_card<F: FnOnce()>(ui: &mut egui::Ui, title: &str, body: &str, action:
         .corner_radius(CornerRadius::same(12))
         .inner_margin(egui::Margin::same(12))
         .show(ui, |ui| {
+            ui.set_width(ui.available_width());
             ui.colored_label(
                 colors::TEXT_PRIMARY,
                 egui::RichText::new(title).size(14.0).strong(),
             );
             ui.colored_label(colors::TEXT_MUTED, body);
             ui.add_space(8.0);
-            if ui.button(action).clicked() {
-                if let Some(cb) = callback.take() {
-                    cb();
+            ui.horizontal(|ui| {
+                if ui.button(action).clicked() {
+                    if let Some(cb) = callback.take() {
+                        cb();
+                    }
                 }
-            }
+            });
         });
     ui.add_space(8.0);
 }
@@ -256,6 +262,7 @@ fn info_card(ui: &mut egui::Ui, title: &str, body: &str) {
         .corner_radius(CornerRadius::same(12))
         .inner_margin(egui::Margin::same(12))
         .show(ui, |ui| {
+            ui.set_width(ui.available_width());
             ui.colored_label(colors::TEXT_MUTED, title);
             ui.colored_label(
                 colors::TEXT_PRIMARY,

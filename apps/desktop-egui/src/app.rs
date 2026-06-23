@@ -8,7 +8,7 @@ use crate::config::app_config::AppConfig;
 use crate::config::secure_store::SecureStore;
 use crate::state::app_state::{AppState, ViewMode};
 use crate::ui;
-use crate::ui::dock::{WorkspaceDockState, init_workspace_dock};
+use crate::ui::dock::{AppDockState, init_app_dock};
 use crate::voice::VoiceManager;
 
 pub struct LoginDialogState {
@@ -42,7 +42,7 @@ pub struct MakimaApp {
     pub login_dialog: LoginDialogState,
     pub pending_action: Option<UiAction>,
     pub voice_manager: VoiceManager,
-    pub workspace_dock: WorkspaceDockState,
+    pub app_dock: AppDockState,
 }
 
 impl Default for MakimaApp {
@@ -59,7 +59,18 @@ impl Default for MakimaApp {
         }
         let client = reqwest::Client::builder().user_agent("makima-desktop/0.1.0").build().expect("Failed to create HTTP client");
 
-        Self { state, runtime, client, config, secure_store, initialized: false, login_dialog, pending_action: None, voice_manager: VoiceManager::default(), workspace_dock: init_workspace_dock(ViewMode::Chat) }
+        Self {
+            state,
+            runtime,
+            client,
+            config,
+            secure_store,
+            initialized: false,
+            login_dialog,
+            pending_action: None,
+            voice_manager: VoiceManager::default(),
+            app_dock: init_app_dock(ViewMode::Chat, true, egui::vec2(1440.0, 900.0)),
+        }
     }
 }
 
@@ -314,7 +325,7 @@ impl eframe::App for MakimaApp {
         };
         
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui::shell::draw(ui, &mut state, &mut self.login_dialog, &mut self.pending_action, &mut self.workspace_dock);
+            ui::shell::draw(ui, &mut state, &mut self.login_dialog, &mut self.pending_action, &mut self.app_dock);
         });
         ctx.request_repaint();
     }

@@ -4,105 +4,148 @@ use crate::state::app_state::{AppState, ViewMode};
 use crate::theme::colors;
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.horizontal(|ui| {
-        egui::Frame::NONE
-            .fill(colors::SELECTION_SOFT)
-            .corner_radius(CornerRadius::same(6))
-            .inner_margin(egui::Margin::symmetric(6, 2))
-            .show(ui, |ui| {
-                ui.colored_label(
-                    colors::RED_ACCENT,
-                    egui::RichText::new("M").size(11.0).strong(),
-                );
-            });
-
-        ui.add_space(10.0);
-
-        ui.vertical(|ui| {
-            ui.colored_label(
-                colors::TEXT_PRIMARY,
-                egui::RichText::new("Makima").size(16.0).strong(),
-            );
-            ui.colored_label(
-                colors::TEXT_MUTED,
-                state
-                    .chat
-                    .active_session()
-                    .map(|s| s.title.as_str())
-                    .unwrap_or("New conversation"),
-            );
-        });
-
-        ui.add_space(20.0);
-
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         if state.is_logged_in {
-            if let Some(mode) = state.settings.active_mode() {
-                subtle_badge(ui, &mode.name);
-            }
-            if state.settings.model_config.configured {
-                subtle_badge(ui, &state.settings.model_config.model);
-            }
-        }
+            tool_button(
+                ui,
+                ToolIcon::Context(state.show_context_panel),
+                "Toggle Context",
+                || {
+                    state.show_context_panel = !state.show_context_panel;
+                },
+            );
+            ui.add_space(8.0);
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            connection_badge(ui, state);
-            if state.is_logged_in {
-                ui.add_space(12.0);
-                draw_workspace_switch(ui, state);
-            }
-        });
+            tool_button(
+                ui,
+                ToolIcon::Avatar(state.view_mode == ViewMode::Avatar),
+                "Avatar",
+                || {
+                    state.view_mode = ViewMode::Avatar;
+                },
+            );
+            ui.add_space(8.0);
+
+            tool_button(
+                ui,
+                ToolIcon::Chat(state.view_mode == ViewMode::Chat),
+                "Chat",
+                || {
+                    state.view_mode = ViewMode::Chat;
+                },
+            );
+        }
     });
 }
 
-fn draw_workspace_switch(ui: &mut egui::Ui, state: &mut AppState) {
-    egui::Frame::NONE
-        .fill(colors::ELEVATED)
-        .corner_radius(CornerRadius::same(12))
-        .inner_margin(egui::Margin::symmetric(4, 4))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                workspace_button(ui, state, ViewMode::Chat, "Chat");
-                workspace_button(ui, state, ViewMode::Avatar, "Avatar");
-            });
-        });
+#[derive(Clone, Copy)]
+enum ToolIcon {
+    Chat(bool),
+    Avatar(bool),
+    Context(bool),
 }
 
-fn workspace_button(ui: &mut egui::Ui, state: &mut AppState, mode: ViewMode, label: &str) {
-    let active = state.view_mode == mode;
-    let button = egui::Button::new(label)
+fn tool_button<F: FnOnce()>(ui: &mut egui::Ui, icon: ToolIcon, tooltip: &str, on_click: F) {
+    let mut callback = Some(on_click);
+
+    let active = match icon {
+        ToolIcon::Chat(active) | ToolIcon::Avatar(active) | ToolIcon::Context(active) => active,
+    };
+
+    let button = egui::Button::new("")
+        .min_size(egui::vec2(30.0, 30.0))
         .fill(if active {
             colors::SELECTION_SOFT
         } else {
-            colors::TRANSPARENT
+            colors::ELEVATED
         })
+        .corner_radius(CornerRadius::same(10))
         .stroke(egui::Stroke::NONE);
 
-    if ui.add(button).clicked() {
-        state.view_mode = mode;
+    let response = ui.add(button).on_hover_text(tooltip);
+    paint_icon(ui, response.rect, icon);
+
+    if response.clicked() {
+        if let Some(cb) = callback.take() {
+            cb();
+        }
     }
 }
 
-fn connection_badge(ui: &mut egui::Ui, state: &AppState) {
-    let (text, color) = if state.settings.health.backend && state.is_logged_in {
-        ("Online", colors::SUCCESS)
-    } else if state.settings.health.backend {
-        ("Auth", colors::WARNING)
-    } else {
-        ("Offline", colors::TEXT_MUTED)
-    };
+fn paint_icon(ui: &egui::Ui, rect: egui::Rect, icon: ToolIcon) {
+    let painter = ui.painter();
+    let stroke = egui::Stroke::new(1.4, colors::TEXT_PRIMARY);
 
-    ui.horizontal(|ui| {
-        ui.colored_label(color, "•");
-        ui.colored_label(colors::TEXT_SECONDARY, text);
-    });
-}
-
-fn subtle_badge(ui: &mut egui::Ui, text: &str) {
-    egui::Frame::NONE
-        .fill(colors::ELEVATED)
-        .corner_radius(CornerRadius::same(10))
-        .inner_margin(egui::Margin::symmetric(8, 4))
-        .show(ui, |ui| {
-            ui.colored_label(colors::TEXT_SECONDARY, text);
-        });
+    match icon {
+        ToolIcon::Chat(_) => {
+            let bubble = egui::Rect::from_center_size(rect.center(), egui::vec2(14.0, 10.0));
+            painter.rect_stroke(
+                bubble,
+                CornerRadius::same(4),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            let tail = [
+                egui::pos2(bubble.left() + 3.0, bubble.bottom()),
+                egui::pos2(bubble.left() + 6.0, bubble.bottom()),
+                egui::pos2(bubble.left() + 4.0, bubble.bottom() + 3.0),
+            ];
+            painter.add(egui::Shape::convex_polygon(
+                tail.to_vec(),
+                colors::TEXT_PRIMARY,
+                egui::Stroke::NONE,
+            ));
+        }
+        ToolIcon::Avatar(_) => {
+            painter.circle_stroke(
+                rect.center_top() + egui::vec2(0.0, 10.0),
+                4.0,
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    rect.center() + egui::vec2(-6.0, 7.0),
+                    rect.center() + egui::vec2(6.0, 7.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    rect.center() + egui::vec2(-4.0, 7.0),
+                    rect.center() + egui::vec2(0.0, 1.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    rect.center() + egui::vec2(4.0, 7.0),
+                    rect.center() + egui::vec2(0.0, 1.0),
+                ],
+                stroke,
+            );
+        }
+        ToolIcon::Context(active) => {
+            let panel = egui::Rect::from_center_size(rect.center(), egui::vec2(14.0, 12.0));
+            painter.rect_stroke(
+                panel,
+                CornerRadius::same(3),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            let split_x = panel.right() - 4.5;
+            painter.line_segment(
+                [egui::pos2(split_x, panel.top()), egui::pos2(split_x, panel.bottom())],
+                stroke,
+            );
+            if !active {
+                painter.line_segment(
+                    [
+                        egui::pos2(panel.right() - 3.0, panel.top() + 2.0),
+                        egui::pos2(panel.right() - 3.0, panel.bottom() - 2.0),
+                    ],
+                    egui::Stroke::new(2.2, colors::RED_ACCENT),
+                );
+            }
+        }
+    }
 }

@@ -4,24 +4,15 @@ use crate::app::{LoginDialogState, UiAction};
 use crate::state::app_state::AppState;
 use crate::theme::colors;
 
-use super::activity_bar;
 use super::bottom_drawer;
-use super::chat::composer;
-use super::dock::{self, WorkspaceDockState};
-use super::panels::inspector;
+use super::dock::{self, AppDockState};
 use super::panels::login;
-use super::side_nav;
 use super::status_bar;
 use super::top_bar;
 
+const MENU_BAR_HEIGHT: f32 = 30.0;
 const TOP_BAR_HEIGHT: f32 = 56.0;
-const COMPOSER_HEIGHT: f32 = 92.0;
 const STATUS_BAR_HEIGHT: f32 = 32.0;
-const ACTIVITY_BAR_WIDTH: f32 = 52.0;
-const MIN_CONVERSATIONS_WIDTH: f32 = 220.0;
-const MAX_CONVERSATIONS_WIDTH: f32 = 420.0;
-const MIN_INSPECTOR_WIDTH: f32 = 220.0;
-const MAX_INSPECTOR_WIDTH: f32 = 380.0;
 const MIN_DRAWER_HEIGHT: f32 = 160.0;
 const MAX_DRAWER_HEIGHT: f32 = 360.0;
 
@@ -30,9 +21,21 @@ pub fn draw(
     state: &mut AppState,
     login_dialog: &mut LoginDialogState,
     pending_action: &mut Option<UiAction>,
-    workspace_dock: &mut WorkspaceDockState,
+    app_dock: &mut AppDockState,
 ) {
-    dock::sync_workspace_dock(workspace_dock, state.view_mode);
+    dock::sync_app_dock(app_dock, state.view_mode, state.show_context_panel, ui.available_size());
+
+    egui::TopBottomPanel::top("makima_menu_bar")
+        .exact_height(MENU_BAR_HEIGHT)
+        .frame(
+            Frame::NONE
+                .fill(colors::SURFACE)
+                .inner_margin(Margin::symmetric(12, 4))
+                .stroke(egui::Stroke::new(1.0, colors::BORDER_WEAK)),
+        )
+        .show_inside(ui, |ui| {
+            draw_menu_bar(ui, state, pending_action);
+        });
 
     egui::TopBottomPanel::top("makima_top_bar")
         .exact_height(TOP_BAR_HEIGHT)
@@ -51,16 +54,9 @@ pub fn draw(
             .fill(colors::BG)
             .inner_margin(Margin::same(24))
             .show(ui, |ui| {
-                let available = ui.available_size();
-                ui.allocate_ui_with_layout(
-                    available,
-                    egui::Layout::top_down(egui::Align::Center),
-                    |ui| {
-                        if login::draw(ui, state, login_dialog) {
-                            *pending_action = Some(UiAction::Login);
-                        }
-                    },
-                );
+                if login::draw(ui, state, login_dialog) {
+                    *pending_action = Some(UiAction::Login);
+                }
             });
         return;
     }
@@ -85,69 +81,73 @@ pub fn draw(
             });
     }
 
-    egui::TopBottomPanel::bottom("makima_composer")
-        .exact_height(COMPOSER_HEIGHT)
-        .frame(
-            Frame::NONE
-                .fill(colors::SURFACE)
-                .inner_margin(Margin::symmetric(18, 14))
-                .stroke(egui::Stroke::new(1.0, colors::BORDER_WEAK)),
-        )
+    egui::CentralPanel::default()
+        .frame(Frame::NONE.fill(colors::BG).inner_margin(Margin::same(12)))
         .show_inside(ui, |ui| {
-            if composer::draw(ui, state, pending_action) {
-                *pending_action = Some(UiAction::SendMessage);
+            dock::draw_app_dock(ui, state, app_dock, pending_action);
+        });
+}
+
+fn draw_menu_bar(ui: &mut egui::Ui, state: &mut AppState, pending_action: &mut Option<UiAction>) {
+    egui::MenuBar::new().ui(ui, |ui| {
+        ui.menu_button("File", |ui| {
+            if ui.button("New Chat").clicked() {
+                state
+                    .chat
+                    .create_session(format!("Chat {}", state.chat.sessions.len() + 1));
+                state.set_status("New session created".to_string());
+                ui.close();
+            }
+            if state.is_logged_in && ui.button("Logout").clicked() {
+                *pending_action = Some(UiAction::Logout);
+                ui.close();
             }
         });
 
-    egui::SidePanel::left("makima_activity_bar")
-        .exact_width(ACTIVITY_BAR_WIDTH + 16.0)
-        .frame(
-            Frame::NONE
-                .fill(colors::SURFACE)
-                .inner_margin(Margin::symmetric(8, 14))
-                .stroke(egui::Stroke::new(1.0, colors::BORDER_WEAK)),
-        )
-        .show_inside(ui, |ui| {
-            ui.set_width(ACTIVITY_BAR_WIDTH);
-            activity_bar::draw(ui, state);
+        ui.menu_button("Edit", |ui| {
+            if ui.button("Clear Composer").clicked() {
+                state.chat.composer.input.clear();
+                state.set_status("Composer cleared".to_string());
+                ui.close();
+            }
+            if ui.button("Clear Status").clicked() {
+                state.clear_status();
+                ui.close();
+            }
         });
 
-    egui::SidePanel::left("makima_conversations")
-        .resizable(true)
-        .default_width(state.conversations_width)
-        .min_width(MIN_CONVERSATIONS_WIDTH)
-        .max_width(MAX_CONVERSATIONS_WIDTH)
-        .frame(
-            Frame::NONE
-                .fill(colors::SURFACE)
-                .inner_margin(Margin::same(16)),
-        )
-        .show_inside(ui, |ui| {
-            state.conversations_width =
-                ui.available_width().clamp(MIN_CONVERSATIONS_WIDTH, MAX_CONVERSATIONS_WIDTH);
-            side_nav::draw(ui, state);
+        ui.menu_button("View", |ui| {
+            if ui
+                .button(if state.show_context_panel {
+                    "Hide Context Panel"
+                } else {
+                    "Show Context Panel"
+                })
+                .clicked()
+            {
+                state.show_context_panel = !state.show_context_panel;
+                ui.close();
+            }
+            if ui
+                .button(if state.drawer_open {
+                    "Hide Bottom Drawer"
+                } else {
+                    "Show Bottom Drawer"
+                })
+                .clicked()
+            {
+                state.drawer_open = !state.drawer_open;
+                ui.close();
+            }
         });
 
-    egui::SidePanel::right("makima_inspector")
-        .resizable(true)
-        .default_width(state.inspector_width)
-        .min_width(MIN_INSPECTOR_WIDTH)
-        .max_width(MAX_INSPECTOR_WIDTH)
-        .frame(
-            Frame::NONE
-                .fill(colors::SURFACE)
-                .inner_margin(Margin::same(16))
-                .stroke(egui::Stroke::new(1.0, colors::BORDER_WEAK)),
-        )
-        .show_inside(ui, |ui| {
-            state.inspector_width =
-                ui.available_width().clamp(MIN_INSPECTOR_WIDTH, MAX_INSPECTOR_WIDTH);
-            inspector::draw(ui, state);
+        ui.menu_button("Help", |ui| {
+            ui.label("Makima Agent");
+            ui.label("Dock-based workspace");
+            if let Some(path) = &state.app_config_path {
+                ui.separator();
+                ui.label(path);
+            }
         });
-
-    egui::CentralPanel::default()
-        .frame(Frame::NONE.fill(colors::BG).inner_margin(Margin::same(16)))
-        .show_inside(ui, |ui| {
-            dock::draw_workspace(ui, state, workspace_dock, pending_action);
-        });
+    });
 }

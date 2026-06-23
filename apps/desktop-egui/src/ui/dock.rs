@@ -1,99 +1,159 @@
-//! Main Workspace Dock — only Chat and Avatar tabs
-//!
-//! The workspace dock is intentionally minimal: only two tabs
-//! that represent the primary work surfaces. All other panels
-//! live in fixed sidebars or the bottom drawer.
-
 use eframe::egui;
 use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
+
 use crate::app::UiAction;
 use crate::state::app_state::{AppState, ViewMode};
 use crate::theme::colors;
 
-/// Workspace tabs — strictly limited to Chat and Avatar
+use super::activity_bar;
+use super::chat::composer;
+use super::panels::inspector;
+use super::side_nav;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum WorkspaceTab {
+pub enum AppDockTab {
+    Sidebar,
     Chat,
     Avatar,
+    Composer,
+    Context,
 }
 
-impl WorkspaceTab {
+impl AppDockTab {
     pub fn title(&self) -> &'static str {
         match self {
-            Self::Chat => "💬 Chat",
-            Self::Avatar => "🧑 Avatar",
+            Self::Sidebar => "Sidebar",
+            Self::Chat => "Chat",
+            Self::Avatar => "Avatar",
+            Self::Composer => "Composer",
+            Self::Context => "Context",
         }
     }
 }
 
-/// Type alias for workspace dock state
-pub type WorkspaceDockState = DockState<WorkspaceTab>;
+pub type AppDockState = DockState<AppDockTab>;
 
-/// Initialize workspace dock based on view mode
-pub fn init_workspace_dock(view_mode: ViewMode) -> WorkspaceDockState {
-    match view_mode {
-        ViewMode::Chat => {
-            // Chat Focus: only Chat tab
-            DockState::new(vec![WorkspaceTab::Chat])
-        }
-        ViewMode::Avatar => {
-            // Avatar Focus: Chat + Avatar side by side
-            let mut ds = DockState::new(vec![WorkspaceTab::Chat]);
-            let surface = ds.main_surface_mut();
-            surface.split_right(NodeIndex::root(), 0.5, vec![WorkspaceTab::Avatar]);
-            ds
-        }
+const DEFAULT_SIDEBAR_WIDTH: f32 = 190.0;
+const DEFAULT_CONTEXT_WIDTH: f32 = 190.0;
+const DEFAULT_COMPOSER_HEIGHT: f32 = 180.0;
+
+pub fn init_app_dock(
+    view_mode: ViewMode,
+    show_context_panel: bool,
+    available_size: egui::Vec2,
+) -> AppDockState {
+    let mut dock_state = DockState::new(vec![AppDockTab::Chat]);
+    let surface = dock_state.main_surface_mut();
+
+    let sidebar_fraction = retained_fraction(available_size.x, DEFAULT_SIDEBAR_WIDTH);
+    let context_fraction = retained_fraction(available_size.x, DEFAULT_CONTEXT_WIDTH);
+    let composer_fraction = retained_fraction(available_size.y, DEFAULT_COMPOSER_HEIGHT);
+
+    let [main, _sidebar] =
+        surface.split_left(NodeIndex::root(), sidebar_fraction, vec![AppDockTab::Sidebar]);
+    let [main, _composer] =
+        surface.split_below(main, composer_fraction, vec![AppDockTab::Composer]);
+
+    if matches!(view_mode, ViewMode::Avatar) {
+        let [_chat, _avatar] = surface.split_right(main, 0.58, vec![AppDockTab::Avatar]);
+    }
+
+    if show_context_panel {
+        let _ = surface.split_right(NodeIndex::root(), context_fraction, vec![AppDockTab::Context]);
+    }
+
+    dock_state
+}
+
+pub fn sync_app_dock(
+    dock_state: &mut AppDockState,
+    view_mode: ViewMode,
+    show_context_panel: bool,
+    available_size: egui::Vec2,
+) {
+    let has_chat = dock_state.iter_all_tabs().any(|(_, tab)| matches!(tab, AppDockTab::Chat));
+    let has_avatar = dock_state.iter_all_tabs().any(|(_, tab)| matches!(tab, AppDockTab::Avatar));
+    let has_composer = dock_state
+        .iter_all_tabs()
+        .any(|(_, tab)| matches!(tab, AppDockTab::Composer));
+    let has_sidebar = dock_state
+        .iter_all_tabs()
+        .any(|(_, tab)| matches!(tab, AppDockTab::Sidebar));
+    let has_context = dock_state
+        .iter_all_tabs()
+        .any(|(_, tab)| matches!(tab, AppDockTab::Context));
+
+    let should_have_avatar = matches!(view_mode, ViewMode::Avatar);
+
+    if !has_chat
+        || !has_composer
+        || !has_sidebar
+        || has_avatar != should_have_avatar
+        || has_context != show_context_panel
+    {
+        *dock_state = init_app_dock(view_mode, show_context_panel, available_size);
     }
 }
 
-pub fn sync_workspace_dock(dock_state: &mut WorkspaceDockState, view_mode: ViewMode) {
-    let expected_tabs = match view_mode {
-        ViewMode::Chat => 1,
-        ViewMode::Avatar => 2,
-    };
-
-    let current_tabs = dock_state.iter_all_tabs().count();
-    if current_tabs != expected_tabs {
-        *dock_state = init_workspace_dock(view_mode);
+fn retained_fraction(total: f32, panel_pixels: f32) -> f32 {
+    if total <= panel_pixels {
+        0.5
+    } else {
+        ((total - panel_pixels) / total).clamp(0.2, 0.92)
     }
 }
 
-struct WorkspaceTabViewer<'a> {
+struct AppTabViewer<'a> {
     state: &'a mut AppState,
     pending_action: &'a mut Option<UiAction>,
 }
 
-impl TabViewer for WorkspaceTabViewer<'_> {
-    type Tab = WorkspaceTab;
+impl TabViewer for AppTabViewer<'_> {
+    type Tab = AppDockTab;
 
-    fn title(&mut self, tab: &mut WorkspaceTab) -> egui::WidgetText {
+    fn title(&mut self, tab: &mut AppDockTab) -> egui::WidgetText {
         egui::RichText::new(tab.title()).size(13.0).into()
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, tab: &mut WorkspaceTab) {
+    fn ui(&mut self, ui: &mut egui::Ui, tab: &mut AppDockTab) {
         match tab {
-            WorkspaceTab::Chat => {
-                draw_chat_workspace(ui, self.state, self.pending_action);
+            AppDockTab::Sidebar => draw_sidebar_tab(ui, self.state),
+            AppDockTab::Chat => draw_chat_workspace(ui, self.state),
+            AppDockTab::Avatar => crate::ui::panels::avatar::draw(ui, self.state),
+            AppDockTab::Composer => {
+                if composer::draw(ui, self.state, self.pending_action) {
+                    *self.pending_action = Some(UiAction::SendMessage);
+                }
             }
-            WorkspaceTab::Avatar => {
-                crate::ui::panels::avatar::draw(ui, self.state);
-            }
+            AppDockTab::Context => inspector::draw(ui, self.state),
         }
     }
 
-    fn clear_background(&self, _tab: &WorkspaceTab) -> bool {
+    fn clear_background(&self, _tab: &AppDockTab) -> bool {
         true
     }
 }
 
-/// Draw the Chat workspace content (transcript only — composer is in shell)
-fn draw_chat_workspace(ui: &mut egui::Ui, state: &mut AppState, _pending_action: &mut Option<UiAction>) {
-    // Show inline task timeline hint if task is active
+fn draw_sidebar_tab(ui: &mut egui::Ui, state: &mut AppState) {
+    ui.columns(2, |columns| {
+        columns[0].set_min_width(56.0);
+        columns[0].set_max_width(56.0);
+        columns[0].with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+            activity_bar::draw(ui, state);
+        });
+
+        columns[1].with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.add_space(4.0);
+            side_nav::draw(ui, state);
+        });
+    });
+}
+
+fn draw_chat_workspace(ui: &mut egui::Ui, state: &mut AppState) {
     if let Some(task) = &state.task.active_task {
         draw_inline_task_hint(ui, task);
     }
 
-    // Transcript
     if let Some(session) = state.chat.active_session_mut() {
         crate::ui::chat::transcript::draw(ui, session, &state.task.active_task);
     } else {
@@ -104,14 +164,13 @@ fn draw_chat_workspace(ui: &mut egui::Ui, state: &mut AppState, _pending_action:
     }
 }
 
-/// Lightweight task timeline hint embedded in chat flow
 fn draw_inline_task_hint(ui: &mut egui::Ui, task: &crate::state::task_state::TaskExecutionState) {
     use crate::state::task_state::TaskStatus;
 
-    let (icon, label, color) = match task.status {
-        TaskStatus::Running => ("⏳", "Task running...", colors::INFO),
-        TaskStatus::Idle => return, // Don't show if idle
-        _ => ("✓", "Task complete", colors::SUCCESS),
+    let (label, color) = match task.status {
+        TaskStatus::Running => ("Task running...", colors::INFO),
+        TaskStatus::Idle => return,
+        _ => ("Task complete", colors::SUCCESS),
     };
 
     egui::Frame::NONE
@@ -120,9 +179,9 @@ fn draw_inline_task_hint(ui: &mut egui::Ui, task: &crate::state::task_state::Tas
         .inner_margin(egui::Margin::symmetric(12, 6))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.colored_label(color, icon);
+                ui.colored_label(color, "•");
                 ui.colored_label(colors::TEXT_SECONDARY, label);
-                if task.timeline.len() > 0 {
+                if !task.timeline.is_empty() {
                     ui.colored_label(colors::TEXT_MUTED, format!("({} steps)", task.timeline.len()));
                 }
             });
@@ -130,11 +189,10 @@ fn draw_inline_task_hint(ui: &mut egui::Ui, task: &crate::state::task_state::Tas
     ui.add_space(8.0);
 }
 
-/// Draw the workspace dock area
-pub fn draw_workspace(
+pub fn draw_app_dock(
     ui: &mut egui::Ui,
     state: &mut AppState,
-    dock_state: &mut WorkspaceDockState,
+    dock_state: &mut AppDockState,
     pending_action: &mut Option<UiAction>,
 ) {
     let style = Style::from_egui(ui.style().as_ref());
@@ -144,5 +202,11 @@ pub fn draw_workspace(
         .show_leaf_close_all_buttons(false)
         .show_leaf_collapse_buttons(false)
         .show_add_buttons(false)
-        .show_inside(ui, &mut WorkspaceTabViewer { state, pending_action });
+        .show_inside(
+            ui,
+            &mut AppTabViewer {
+                state,
+                pending_action,
+            },
+        );
 }
