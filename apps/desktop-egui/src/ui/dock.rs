@@ -145,14 +145,18 @@ impl TabViewer for AppTabViewer<'_> {
 }
 
 fn draw_sidebar_tab(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.columns(2, |columns| {
-        columns[0].set_min_width(56.0);
-        columns[0].set_max_width(56.0);
-        columns[0].with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-            activity_bar::draw(ui, state);
-        });
-
-        columns[1].with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+    ui.horizontal(|ui| {
+        // Activity icon bar — fixed 56px width
+        let icon_size = egui::vec2(56.0, ui.available_height());
+        let (icon_rect, _) = ui.allocate_exact_size(icon_size, egui::Sense::hover());
+        let mut child_ui = ui.child_ui(
+            icon_rect,
+            egui::Layout::top_down(egui::Align::Min),
+            None,
+        );
+        activity_bar::draw(&mut child_ui, state);
+        // Detail panel — takes remaining width
+        ui.vertical(|ui| {
             ui.add_space(4.0);
             side_nav::draw(ui, state);
         });
