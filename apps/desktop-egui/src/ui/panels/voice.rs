@@ -33,10 +33,10 @@ fn draw_voice_ui(ui: &mut egui::Ui, state: &mut AppState) {
     let vc = &mut state.voice_call;
 
     // ── Connection Status ──────────────────────────────────────────────
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(colors::GRAPHITE_BG)
-        .rounding(egui::Rounding::same(6.0))
-        .inner_margin(egui::Margin::same(12.0))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::same(12))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 let (icon, label_color) = if vc.is_connected {
@@ -184,13 +184,13 @@ fn draw_voice_ui(ui: &mut egui::Ui, state: &mut AppState) {
             ui.cursor().min,
             egui::vec2(150.0, 12.0),
         );
-        ui.painter().rect_filled(bar, egui::Rounding::same(3.0), egui::Color32::from_rgb(60, 60, 60));
+        ui.painter().rect_filled(bar, egui::CornerRadius::same(3), egui::Color32::from_rgb(60, 60, 60));
         if bar_width > 0.0 {
             let filled = egui::Rect::from_min_size(
                 bar.min,
                 egui::vec2(bar_width, 12.0),
             );
-            ui.painter().rect_filled(filled, egui::Rounding::same(3.0), egui::Color32::from_rgb(80, 200, 120));
+            ui.painter().rect_filled(filled, egui::CornerRadius::same(3), egui::Color32::from_rgb(80, 200, 120));
         }
         ui.advance_cursor_after_rect(bar);
     });
@@ -223,13 +223,13 @@ fn draw_voice_ui(ui: &mut egui::Ui, state: &mut AppState) {
             ui.cursor().min,
             egui::vec2(150.0, 12.0),
         );
-        ui.painter().rect_filled(bar, egui::Rounding::same(3.0), egui::Color32::from_rgb(60, 60, 60));
+        ui.painter().rect_filled(bar, egui::CornerRadius::same(3), egui::Color32::from_rgb(60, 60, 60));
         if bar_width > 0.0 {
             let filled = egui::Rect::from_min_size(
                 bar.min,
                 egui::vec2(bar_width, 12.0),
             );
-            ui.painter().rect_filled(filled, egui::Rounding::same(3.0), egui::Color32::from_rgb(80, 150, 220));
+            ui.painter().rect_filled(filled, egui::CornerRadius::same(3), egui::Color32::from_rgb(80, 150, 220));
         }
         ui.advance_cursor_after_rect(bar);
     });

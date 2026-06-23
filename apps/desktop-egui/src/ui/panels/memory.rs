@@ -27,8 +27,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         ui.colored_label(colors::TEXT_MUTED, "No memories loaded. Click Refresh.");
     } else {
         for (idx, m) in items.iter().enumerate() {
-            egui::Frame::none().fill(colors::GRAPHITE_ELEVATED).rounding(egui::Rounding::same(4.0))
-                .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+            egui::Frame::NONE.fill(colors::GRAPHITE_ELEVATED).corner_radius(egui::CornerRadius::same(4))
+                .inner_margin(egui::Margin::symmetric(8, 4))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(m);

@@ -26,8 +26,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         ui.colored_label(colors::TEXT_MUTED, "No documents loaded. Click Refresh.");
     } else {
         for doc in &docs {
-            egui::Frame::none().fill(colors::GRAPHITE_ELEVATED).rounding(egui::Rounding::same(4.0))
-                .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+            egui::Frame::NONE.fill(colors::GRAPHITE_ELEVATED).corner_radius(egui::CornerRadius::same(4))
+                .inner_margin(egui::Margin::symmetric(8, 4))
                 .show(ui, |ui| {
                     ui.label(format!("{} ({} chunks)", doc.filename.as_deref().unwrap_or("?"), doc.chunk_count.unwrap_or(0)));
                 });
@@ -41,8 +41,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         ui.add_space(8.0);
         ui.colored_label(colors::TEXT_SECONDARY, "Results");
         for r in &results {
-            egui::Frame::none().fill(colors::GRAPHITE_ELEVATED).rounding(egui::Rounding::same(4.0))
-                .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+            egui::Frame::NONE.fill(colors::GRAPHITE_ELEVATED).corner_radius(egui::CornerRadius::same(4))
+                .inner_margin(egui::Margin::symmetric(8, 4))
                 .show(ui, |ui| { ui.label(r); });
             ui.add_space(2.0);
         }

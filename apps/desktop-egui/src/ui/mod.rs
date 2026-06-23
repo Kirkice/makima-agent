@@ -3,3 +3,7 @@ pub mod top_bar;
 pub mod side_nav;
 pub mod chat;
 pub mod panels;
+pub mod dock;
+pub mod activity_bar;
+pub mod bottom_drawer;
+pub mod status_bar;

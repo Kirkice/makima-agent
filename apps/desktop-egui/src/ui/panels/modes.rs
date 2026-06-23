@@ -41,8 +41,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         let is_active = Some(&mode.slug) == state.settings.active_mode_slug.as_ref();
         let bg = if is_active { colors::RED_DIM } else { colors::GRAPHITE_ELEVATED };
 
-        egui::Frame::none().fill(bg).rounding(egui::Rounding::same(6.0))
-            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+        egui::Frame::NONE.fill(bg).corner_radius(egui::CornerRadius::same(6))
+            .inner_margin(egui::Margin::symmetric(8, 6))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     if is_active { ui.colored_label(colors::RED_ACCENT, "●"); }

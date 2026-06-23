@@ -56,7 +56,7 @@ pub fn draw(ui: &mut egui::Ui, state: &AppState) {
                     let max = egui::pos2(min.x + pixel_size, min.y + pixel_size);
                     painter.rect_filled(
                         egui::Rect::from_min_max(min, max),
-                        egui::Rounding::ZERO,
+                        egui::CornerRadius::ZERO,
                         color,
                     );
                 }
@@ -66,10 +66,10 @@ pub fn draw(ui: &mut egui::Ui, state: &AppState) {
         ui.add_space(24.0);
 
         // Status section
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(colors::GRAPHITE_ELEVATED)
-            .rounding(egui::Rounding::same(8.0))
-            .inner_margin(egui::Margin::same(16.0))
+            .corner_radius(egui::CornerRadius::same(8))
+            .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
                 ui.set_min_width(200.0);
                 ui.colored_label(colors::TEXT_SECONDARY, "Rendering Engine");
@@ -102,10 +102,10 @@ pub fn draw(ui: &mut egui::Ui, state: &AppState) {
         ui.add_space(20.0);
 
         // Info text
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(colors::GRAPHITE_BG)
-            .rounding(egui::Rounding::same(6.0))
-            .inner_margin(egui::Margin::same(12.0))
+            .corner_radius(egui::CornerRadius::same(6))
+            .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
                 ui.set_min_width(220.0);
                 ui.colored_label(

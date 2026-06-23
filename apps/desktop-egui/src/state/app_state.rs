@@ -8,12 +8,35 @@ pub enum PanelKind {
     Modes, Persona, Memory, Knowledge, Voice, Mcp, Audit, ModelConfig, Diagnostics, Avatar,
 }
 
+/// Activity bar section grouping
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivitySection {
+    Sessions,
+    Resources,
+    Agent,
+    Integrations,
+}
+
+impl Default for ActivitySection {
+    fn default() -> Self { Self::Sessions }
+}
+
+/// Bottom drawer tab
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrawerTab {
+    TaskTimeline,
+    VoiceCall,
+    Audit,
+    Diagnostics,
+    McpActivity,
+}
+
 /// Which main view mode is active
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
-    /// Standard chat view (3-column: nav | transcript+composer | inspector)
+    /// Chat Focus — only Chat in workspace
     Chat,
-    /// Avatar view (4-column: nav | transcript+composer | avatar | inspector)
+    /// Avatar Focus — Chat + Avatar side by side
     Avatar,
 }
 
@@ -84,6 +107,15 @@ pub struct AppState {
     pub show_modal_persona_edit: bool,
     /// Pending API commands to be processed by app.rs
     pub api_commands: Vec<ApiCommand>,
+    // ── New layout state ──────────────────────────────────────────
+    /// Currently selected activity bar section
+    pub activity_section: ActivitySection,
+    /// Whether the bottom drawer is open
+    pub drawer_open: bool,
+    /// Which drawer tab is active
+    pub drawer_tab: Option<DrawerTab>,
+    /// User manually dismissed the drawer — suppress auto-open until conditions change
+    pub drawer_user_dismissed: bool,
 }
 
 impl Default for AppState {
@@ -109,6 +141,10 @@ impl Default for AppState {
             show_persona_default: false,
             show_modal_persona_edit: false,
             api_commands: Vec::new(),
+            activity_section: ActivitySection::default(),
+            drawer_open: false,
+            drawer_tab: None,
+            drawer_user_dismissed: false,
         }
     }
 }

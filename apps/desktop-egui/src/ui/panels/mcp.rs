@@ -31,8 +31,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             McpConnectionStatus::Error => (colors::ERROR, "Error"),
         };
 
-        egui::Frame::none().fill(colors::GRAPHITE_ELEVATED).rounding(egui::Rounding::same(6.0))
-            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+        egui::Frame::NONE.fill(colors::GRAPHITE_ELEVATED).corner_radius(egui::CornerRadius::same(6))
+            .inner_margin(egui::Margin::symmetric(8, 6))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.colored_label(status_color, format!("● {}", server.name));

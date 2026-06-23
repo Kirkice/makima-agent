@@ -1,4 +1,4 @@
-use eframe::egui::{self, Rounding};
+use eframe::egui::{self, CornerRadius};
 
 use crate::app::LoginDialogState;
 use crate::state::app_state::AppState;
@@ -10,11 +10,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState, login_state: &mut LoginDial
     ui.vertical_centered(|ui| {
         ui.add_space(ui.available_height() * 0.2);
 
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(colors::GRAPHITE_ELEVATED)
             .stroke(egui::Stroke::new(1.0, colors::GRAPHITE_BORDER))
-            .rounding(Rounding::same(12.0))
-            .inner_margin(egui::Margin::symmetric(32.0, 24.0))
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(egui::Margin::symmetric(32, 24))
             .show(ui, |ui| {
                 ui.set_max_width(400.0);
                 ui.heading("Makima Agent");
@@ -58,7 +58,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState, login_state: &mut LoginDial
 
 /// Draw the status bar at the bottom of the window
 pub fn draw_status_bar(ui: &mut egui::Ui, state: &AppState) {
-    egui::Frame::none().fill(colors::GRAPHITE_ELEVATED).inner_margin(egui::Margin::symmetric(12.0, 4.0))
+    egui::Frame::NONE.fill(colors::GRAPHITE_ELEVATED).inner_margin(egui::Margin::symmetric(12, 4))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 let auth_color = if state.is_logged_in { colors::SUCCESS } else { colors::WARNING };

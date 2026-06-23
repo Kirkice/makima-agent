@@ -1,13 +1,13 @@
-use eframe::egui::{self, Rounding};
+use eframe::egui;
 
 use crate::state::app_state::AppState;
 use crate::theme::colors;
 
 /// Draw the diagnostics panel for health, connectivity, and error logs
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(colors::GRAPHITE_SURFACE)
-        .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+        .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {
             ui.colored_label(colors::RED_ACCENT, "Diagnostics");
             ui.separator();

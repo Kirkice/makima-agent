@@ -16,6 +16,22 @@ mod voice;
 use eframe::egui::ViewportBuilder;
 
 fn main() -> Result<(), eframe::Error> {
+    // Install panic hook for better crash diagnostics
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        eprintln!("\n=== PANIC OCCURRED ===");
+        if let Some(location) = panic_info.location() {
+            eprintln!("Location: {}:{}:{}", location.file(), location.line(), location.column());
+        }
+        if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            eprintln!("Message: {}", s);
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            eprintln!("Message: {}", s);
+        }
+        eprintln!("=====================\n");
+        default_panic(panic_info);
+    }));
+
     // Initialize tracing/logging
     tracing_subscriber::fmt()
         .with_env_filter(

@@ -19,7 +19,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(8.0);
 
     // Placeholder table header
-    egui::Frame::none().fill(colors::GRAPHITE_ELEVATED).inner_margin(egui::Margin::symmetric(8.0, 4.0))
+    egui::Frame::NONE.fill(colors::GRAPHITE_ELEVATED).inner_margin(egui::Margin::symmetric(8, 4))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.colored_label(colors::TEXT_SECONDARY, "Timestamp");
@@ -37,8 +37,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
     for (ts, severity, action, resource) in &placeholder {
         let color = match *severity { "error" => colors::ERROR, "warn" => colors::WARNING, _ => colors::INFO };
-        egui::Frame::none().fill(colors::GRAPHITE_SURFACE).rounding(egui::Rounding::same(2.0))
-            .inner_margin(egui::Margin::symmetric(8.0, 3.0))
+        egui::Frame::NONE.fill(colors::GRAPHITE_SURFACE).corner_radius(egui::CornerRadius::same(2))
+            .inner_margin(egui::Margin::symmetric(8, 3))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(*ts);

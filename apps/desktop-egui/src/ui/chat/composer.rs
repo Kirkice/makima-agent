@@ -1,16 +1,22 @@
+//! Composer - 聊天输入框 (72px 基准高度)
+//!
+//! 作为 shell 骨架的固定底部组件，不依赖 dock。
+//! 返回 true 表示用户要发送消息。
+
 use eframe::egui::{self, Key};
 
+use crate::app::UiAction;
 use crate::state::app_state::AppState;
 use crate::theme::colors;
 
 /// Draw the chat input composer. Returns true on send.
-pub fn draw(ui: &mut egui::Ui, state: &mut AppState) -> bool {
+pub fn draw(ui: &mut egui::Ui, state: &mut AppState, _pending_action: &mut Option<UiAction>) -> bool {
     let mut should_send = false;
 
-    egui::Frame::none()
-        .fill(colors::GRAPHITE_SURFACE)
-        .rounding(egui::Rounding { nw: 8.0, ne: 8.0, sw: 0.0, se: 0.0 })
-        .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+    egui::Frame::NONE
+        .fill(colors::ELEVATED)
+        .corner_radius(egui::CornerRadius::same(12))
+        .inner_margin(egui::Margin::symmetric(16, 10))
         .show(ui, |ui| {
             // Token estimate + Slash command hint
             ui.horizontal(|ui| {
@@ -34,11 +40,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) -> bool {
             });
 
             let response = ui.add_sized(
-                egui::vec2(ui.available_width(), 60.0),
+                egui::vec2(ui.available_width(), 48.0),
                 egui::TextEdit::multiline(&mut state.chat.composer.input)
-                    .hint_text("Type a message... (Ctrl+Enter to send, drop files supported)")
+                    .hint_text("Type a message... (Ctrl+Enter to send)")
                     .desired_rows(2)
-                    .frame(true),
+                    .frame(false),
             );
 
             ui.horizontal(|ui| {
@@ -79,9 +85,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) -> bool {
                 if !state.chat.composer.input.trim().is_empty() && !state.chat.composer.is_streaming { should_send = true; }
                 response.request_focus();
             }
-
-            // Drag-drop hint (egui 0.28 does not expose dropped_files in PlatformOutput)
-            // Future: when egui 0.29+ is used, check ui.ctx().input(|i| i.raw.dropped_files)
         });
 
     should_send

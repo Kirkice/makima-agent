@@ -32,20 +32,112 @@ pub mod colors {
     pub const BUBBLE_USER_BG: Color32 = Color32::from_rgb(30, 30, 40);
     pub const BUBBLE_ASSISTANT_BG: Color32 = Color32::from_rgb(24, 24, 32);
     pub const BUBBLE_TOOL_BG: Color32 = Color32::from_rgb(20, 20, 28);
+
+    // ── Layout semantic aliases ──────────────────────────────────────
+    /// Main workspace / content background
+    pub const BG: Color32 = GRAPHITE_BG;
+    /// Sidebar / top bar / panel surfaces
+    pub const SURFACE: Color32 = GRAPHITE_SURFACE;
+    /// Elevated cards / inputs
+    pub const ELEVATED: Color32 = GRAPHITE_ELEVATED;
+    /// Weak separator / border
+    pub const BORDER_WEAK: Color32 = GRAPHITE_BORDER;
+    /// Activity bar icon default
+    pub const ICON_DEFAULT: Color32 = TEXT_MUTED;
+    /// Activity bar icon active
+    pub const ICON_ACTIVE: Color32 = RED_ACCENT;
+    /// Transparent background
+    pub const TRANSPARENT: Color32 = Color32::TRANSPARENT;
+}
+
+/// Load CJK + Emoji fonts as fallbacks for proper Chinese and icon rendering.
+///
+/// The default egui fonts handle ASCII characters. CJK and Emoji fonts are appended
+/// as fallbacks, so characters not found in the default fonts will fall back to these.
+fn load_cjk_font(ctx: &egui::Context) {
+    use std::sync::Arc;
+    use std::fs;
+
+    let mut fonts = egui::FontDefinitions::default();
+
+    // ── 1. Load CJK font (for Chinese characters) ──────────────────────
+    let cjk_paths = [
+        r"C:\Windows\Fonts\simhei.ttf",    // SimHei (黑体) - single font file
+        r"C:\Windows\Fonts\msyh.ttc",      // Microsoft YaHei (微软雅黑) - collection
+        r"C:\Windows\Fonts\simsun.ttc",    // SimSun (宋体) - collection
+    ];
+
+    let mut cjk_loaded = false;
+    for path in &cjk_paths {
+        if let Ok(font_data) = fs::read(path) {
+            fonts.font_data.insert("CJK".to_owned(), Arc::new(egui::FontData::from_owned(font_data)));
+
+            // Append AFTER default fonts as fallback (not at position 0)
+            if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                family.push("CJK".to_owned());
+            }
+            if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                family.push("CJK".to_owned());
+            }
+
+            tracing::info!("Loaded CJK font: {}", path);
+            cjk_loaded = true;
+            break;
+        }
+    }
+
+    if !cjk_loaded {
+        tracing::warn!("No CJK font found, Chinese text may display as boxes");
+    }
+
+    // ── 2. Load Emoji font (for emoji icons like 📞 🎙️ ✅ ❌) ──────────
+    let emoji_paths = [
+        r"C:\Windows\Fonts\seguiemj.ttf",  // Segoe UI Emoji (Win10/11)
+    ];
+
+    let mut emoji_loaded = false;
+    for path in &emoji_paths {
+        if let Ok(font_data) = fs::read(path) {
+            fonts.font_data.insert(
+                "Emoji".to_owned(),
+                Arc::new(egui::FontData::from_owned(font_data)),
+            );
+
+            // Append AFTER default fonts (and after CJK) as fallback
+            if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                family.push("Emoji".to_owned());
+            }
+            if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                family.push("Emoji".to_owned());
+            }
+
+            tracing::info!("Loaded Emoji font: {}", path);
+            emoji_loaded = true;
+            break;
+        }
+    }
+
+    if !emoji_loaded {
+        tracing::warn!("No Emoji font found, emoji may display as boxes");
+    }
+
+    ctx.set_fonts(fonts);
 }
 
 /// Apply Makima dark theme to egui
 pub fn apply_theme(ctx: &egui::Context) {
+    // Load CJK font first
+    load_cjk_font(ctx);
+
     let mut style = (*ctx.style()).clone();
 
     style.visuals = Visuals {
         dark_mode: true,
         override_text_color: Some(colors::TEXT_PRIMARY),
-        window_rounding: egui::Rounding::same(8.0),
         window_shadow: egui::epaint::Shadow {
-            offset: egui::vec2(0.0, 4.0),
-            blur: 16.0,
-            spread: 0.0,
+            offset: [0, 4],
+            blur: 16,
+            spread: 0,
             color: Color32::BLACK.gamma_multiply(0.2),
         },
         window_fill: colors::GRAPHITE_BG,
@@ -65,7 +157,7 @@ pub fn apply_theme(ctx: &egui::Context) {
                 bg_fill: colors::GRAPHITE_SURFACE,
                 weak_bg_fill: colors::GRAPHITE_ELEVATED,
                 bg_stroke: egui::Stroke::new(1.0, colors::GRAPHITE_BORDER),
-                rounding: egui::Rounding::same(6.0),
+                corner_radius: 6.0.into(),
                 fg_stroke: egui::Stroke::new(1.0, colors::TEXT_SECONDARY),
                 expansion: 0.0,
             },
@@ -73,7 +165,7 @@ pub fn apply_theme(ctx: &egui::Context) {
                 bg_fill: colors::GRAPHITE_ELEVATED,
                 weak_bg_fill: colors::GRAPHITE_SURFACE,
                 bg_stroke: egui::Stroke::new(1.0, colors::GRAPHITE_BORDER),
-                rounding: egui::Rounding::same(6.0),
+                corner_radius: 6.0.into(),
                 fg_stroke: egui::Stroke::new(1.5, colors::TEXT_PRIMARY),
                 expansion: 0.0,
             },
@@ -81,7 +173,7 @@ pub fn apply_theme(ctx: &egui::Context) {
                 bg_fill: colors::GRAPHITE_ELEVATED,
                 weak_bg_fill: colors::GRAPHITE_SURFACE,
                 bg_stroke: egui::Stroke::new(1.0, colors::RED_DIM),
-                rounding: egui::Rounding::same(6.0),
+                corner_radius: 6.0.into(),
                 fg_stroke: egui::Stroke::new(1.5, colors::TEXT_ACCENT),
                 expansion: 0.0,
             },
@@ -89,7 +181,7 @@ pub fn apply_theme(ctx: &egui::Context) {
                 bg_fill: colors::RED_DIM,
                 weak_bg_fill: colors::RED_DIM,
                 bg_stroke: egui::Stroke::new(1.0, colors::RED_PRIMARY),
-                rounding: egui::Rounding::same(6.0),
+                corner_radius: 6.0.into(),
                 fg_stroke: egui::Stroke::new(2.0, colors::TEXT_PRIMARY),
                 expansion: 0.0,
             },
@@ -97,7 +189,7 @@ pub fn apply_theme(ctx: &egui::Context) {
                 bg_fill: colors::GRAPHITE_ELEVATED,
                 weak_bg_fill: colors::GRAPHITE_SURFACE,
                 bg_stroke: egui::Stroke::new(1.0, colors::RED_ACCENT),
-                rounding: egui::Rounding::same(6.0),
+                corner_radius: 6.0.into(),
                 fg_stroke: egui::Stroke::new(1.5, colors::TEXT_PRIMARY),
                 expansion: 0.0,
             },

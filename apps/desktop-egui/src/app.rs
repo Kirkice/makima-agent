@@ -6,8 +6,9 @@ use uuid::Uuid;
 use crate::api::{auth::AuthApi, health::HealthApi, sessions::SessionsApi, tasks::TasksApi};
 use crate::config::app_config::AppConfig;
 use crate::config::secure_store::SecureStore;
-use crate::state::app_state::AppState;
+use crate::state::app_state::{AppState, ViewMode};
 use crate::ui;
+use crate::ui::dock::{WorkspaceDockState, init_workspace_dock};
 use crate::voice::VoiceManager;
 
 pub struct LoginDialogState {
@@ -41,6 +42,7 @@ pub struct MakimaApp {
     pub login_dialog: LoginDialogState,
     pub pending_action: Option<UiAction>,
     pub voice_manager: VoiceManager,
+    pub workspace_dock: WorkspaceDockState,
 }
 
 impl Default for MakimaApp {
@@ -57,7 +59,7 @@ impl Default for MakimaApp {
         }
         let client = reqwest::Client::builder().user_agent("makima-desktop/0.1.0").build().expect("Failed to create HTTP client");
 
-        Self { state, runtime, client, config, secure_store, initialized: false, login_dialog, pending_action: None, voice_manager: VoiceManager::default() }
+        Self { state, runtime, client, config, secure_store, initialized: false, login_dialog, pending_action: None, voice_manager: VoiceManager::default(), workspace_dock: init_workspace_dock(ViewMode::Chat) }
     }
 }
 
@@ -93,7 +95,7 @@ impl MakimaApp {
 
                     // Fetch sessions
                     let sessions_api = SessionsApi::new(client, server_url, token);
-                    if let Ok(list) = Runtime::new().unwrap().block_on(sessions_api.list()) {
+                    if let Ok(list) = sessions_api.list().await {
                         let mut s = state.lock().unwrap();
                         for api_s in list {
                             let title = api_s.title.unwrap_or_else(|| "Untitled".to_string());
@@ -106,6 +108,9 @@ impl MakimaApp {
                 Err(e) => {
                     let mut s = state.lock().unwrap();
                     s.set_status(format!("Login failed: {}", e));
+                    drop(s);
+                    // Reset loading state on error so user can retry
+                    // Note: we can't access self here, so we signal via state
                 }
             }
         });
@@ -253,6 +258,7 @@ impl eframe::App for MakimaApp {
             self.bootstrap();
         }
 
+        // Process pending actions (these may spawn async tasks)
         if let Some(action) = self.pending_action.take() {
             match action {
                 UiAction::Login => self.exec_login(),
@@ -260,6 +266,7 @@ impl eframe::App for MakimaApp {
                 UiAction::Logout => {
                     let mut s = self.state.lock().unwrap();
                     s.is_logged_in = false; s.auth_token = None; s.show_login = true;
+                    self.login_dialog.loading = false; // Reset loading state
                     let _ = self.secure_store.delete_token();
                 }
                 UiAction::RefreshSessions => {
@@ -286,19 +293,28 @@ impl eframe::App for MakimaApp {
             }
         }
 
-        let mut state = self.state.lock().unwrap();
-
         // Process API commands from panels
-        let commands: Vec<_> = state.api_commands.drain(..).collect();
-        drop(state);
+        let commands: Vec<_> = {
+            let mut state = self.state.lock().unwrap();
+            state.api_commands.drain(..).collect()
+        };
 
         for cmd in commands {
             self.exec_api_command(cmd);
         }
 
-        let mut state = self.state.lock().unwrap();
+        // Render UI - only hold mutex during rendering
+        // Handle potential mutex poisoning from panics
+        let mut state = match self.state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::error!("Mutex was poisoned, recovering...");
+                poisoned.into_inner()
+            }
+        };
+        
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui::shell::draw(ui, &mut state, &mut self.login_dialog, &mut self.pending_action);
+            ui::shell::draw(ui, &mut state, &mut self.login_dialog, &mut self.pending_action, &mut self.workspace_dock);
         });
         ctx.request_repaint();
     }
@@ -531,18 +547,24 @@ impl MakimaApp {
             if let Some(token) = token {
                 let auth_api = AuthApi::new(client.clone(), server_url.clone());
                 let is_valid = matches!(auth_api.verify_token(&token).await, Ok(true));
-                let mut s = state.lock().unwrap();
                 if is_valid {
-                    s.is_logged_in = true; s.set_status("Authenticated".to_string());
+                    {
+                        let mut s = state.lock().unwrap();
+                        s.is_logged_in = true; s.set_status("Authenticated".to_string());
+                    }
                     let sessions_api = SessionsApi::new(client, server_url, token);
-                    if let Ok(list) = Runtime::new().unwrap().block_on(sessions_api.list()) {
+                    if let Ok(list) = sessions_api.list().await {
+                        let mut s = state.lock().unwrap();
                         for api_s in list {
                             let title = api_s.title.unwrap_or_else(|| "Untitled".to_string());
                             s.chat.sessions.push(crate::state::chat_state::Session::new(title, None));
                         }
                         if !s.chat.sessions.is_empty() { s.chat.active_session_id = Some(s.chat.sessions[0].id); }
                     }
-                } else { s.is_logged_in = false; s.show_login = true; }
+                } else {
+                    let mut s = state.lock().unwrap();
+                    s.is_logged_in = false; s.show_login = true;
+                }
             } else { let mut s = state.lock().unwrap(); s.show_login = true; }
         });
 
