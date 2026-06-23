@@ -171,8 +171,7 @@ fn draw_chat_workspace(ui: &mut egui::Ui, state: &mut AppState) {
     if let Some(session) = state.chat.active_session_mut() {
         crate::ui::chat::transcript::draw(ui, session, &state.task.active_task);
     } else {
-        ui.vertical_centered(|ui| {
-            ui.add_space(ui.available_height() * 0.3);
+        ui.centered_and_justified(|ui| {
             ui.colored_label(colors::TEXT_MUTED, "Select or create a conversation.");
         });
     }

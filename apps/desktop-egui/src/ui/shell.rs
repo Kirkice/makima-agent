@@ -171,6 +171,18 @@ fn draw_menu_bar(ui: &mut egui::Ui, state: &mut AppState, pending_action: &mut O
                 {
                     state.view_mode = ViewMode::Chat;
                 }
+
+                // Avatar 按钮
+                let avatar_active = state.view_mode == ViewMode::Avatar;
+                let avatar_btn = egui::Button::new("👤")
+                    .fill(if avatar_active { colors::RED_ACCENT } else { colors::TRANSPARENT });
+                if ui
+                    .add(avatar_btn)
+                    .on_hover_text("Avatar View")
+                    .clicked()
+                {
+                    state.view_mode = ViewMode::Avatar;
+                }
             });
         }
     });

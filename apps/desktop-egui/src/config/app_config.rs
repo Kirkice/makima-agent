@@ -17,6 +17,12 @@ pub struct AppConfig {
     pub last_session_id: Option<String>,
     /// Token cost estimate per 1k tokens (USD)
     pub token_cost_per_1k: f64,
+    /// Layout — persisted dock sizes
+    pub sidebar_width: f32,
+    pub inspector_width: f32,
+    pub drawer_height: f32,
+    pub show_context_panel: bool,
+    pub drawer_open: bool,
 }
 
 impl Default for AppConfig {
@@ -28,6 +34,11 @@ impl Default for AppConfig {
             auto_connect: true,
             last_session_id: None,
             token_cost_per_1k: 0.003,
+            sidebar_width: 280.0,
+            inspector_width: 284.0,
+            drawer_height: 220.0,
+            show_context_panel: true,
+            drawer_open: false,
         }
     }
 }

@@ -43,6 +43,8 @@ pub struct MakimaApp {
     pub pending_action: Option<UiAction>,
     pub voice_manager: VoiceManager,
     pub app_dock: AppDockState,
+    pub layout_changed: bool,
+    pub last_save_frame: u64,
 }
 
 impl Default for MakimaApp {
@@ -53,6 +55,17 @@ impl Default for MakimaApp {
         let secure_store = SecureStore::new();
         let mut login_dialog = LoginDialogState::default();
         login_dialog.server_url = config.server_url.clone();
+
+        // Restore persisted layout
+        {
+            let mut s = state.lock().unwrap();
+            s.conversations_width = config.sidebar_width;
+            s.inspector_width = config.inspector_width;
+            s.drawer_height = config.drawer_height;
+            s.show_context_panel = config.show_context_panel;
+            s.drawer_open = config.drawer_open;
+            s.server_url = config.server_url.clone();
+        }
 
         if let Some(token) = secure_store.get_token() {
             if let Ok(mut s) = state.lock() { s.auth_token = Some(token); s.is_logged_in = true; s.server_url = config.server_url.clone(); }
@@ -67,7 +80,7 @@ impl Default for MakimaApp {
                 state_guard.show_context_panel,
                 state_guard.conversations_width,
                 state_guard.inspector_width,
-                egui::vec2(1440.0, 900.0),
+                egui::vec2(config.window_width, config.window_height),
             )
         };
 
@@ -82,6 +95,8 @@ impl Default for MakimaApp {
             pending_action: None,
             voice_manager: VoiceManager::default(),
             app_dock,
+            layout_changed: false,
+            last_save_frame: 0,
         }
     }
 }
@@ -340,6 +355,44 @@ impl eframe::App for MakimaApp {
             ui::shell::draw(ui, &mut state, &mut self.login_dialog, &mut self.pending_action, &mut self.app_dock);
         });
         ctx.request_repaint();
+
+        // Persist layout changes (throttled to ~1 save per second)
+        self.last_save_frame += 1;
+        if self.last_save_frame % 60 == 0 {
+            let mut need_save = self.layout_changed;
+            self.layout_changed = false;
+
+            let sidebar_w = state.conversations_width;
+            let inspector_w = state.inspector_width;
+            let drawer_h = state.drawer_height;
+            let show_ctx = state.show_context_panel;
+            let drawer_open = state.drawer_open;
+
+            if (self.config.sidebar_width - sidebar_w).abs() > 1.0 {
+                self.config.sidebar_width = sidebar_w;
+                need_save = true;
+            }
+            if (self.config.inspector_width - inspector_w).abs() > 1.0 {
+                self.config.inspector_width = inspector_w;
+                need_save = true;
+            }
+            if (self.config.drawer_height - drawer_h).abs() > 1.0 {
+                self.config.drawer_height = drawer_h;
+                need_save = true;
+            }
+            if self.config.show_context_panel != show_ctx {
+                self.config.show_context_panel = show_ctx;
+                need_save = true;
+            }
+            if self.config.drawer_open != drawer_open {
+                self.config.drawer_open = drawer_open;
+                need_save = true;
+            }
+
+            if need_save {
+                let _ = self.config.save();
+            }
+        }
     }
 }
 
