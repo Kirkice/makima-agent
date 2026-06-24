@@ -175,10 +175,19 @@ impl MakimaApp {
             s.chat.create_session(format!("Chat {}", n + 1));
         }
 
-        let session_id = match s.chat.active_session_id {
-            Some(id) => id.to_string(),
+        let local_session_id = match s.chat.active_session_id {
+            Some(id) => id,
             None => { s.set_status("No active session".to_string()); return; }
         };
+        let backend_session_id = s
+            .chat
+            .active_session()
+            .and_then(|session| session.backend_id.clone());
+        let session_title = s
+            .chat
+            .active_session()
+            .map(|session| session.title.clone())
+            .unwrap_or_else(|| "New Chat".to_string());
         let token = match &s.auth_token {
             Some(t) => t.clone(),
             None => { s.set_status("Not authenticated".to_string()); return; }
@@ -207,8 +216,30 @@ impl MakimaApp {
         let client = self.client.clone();
 
         self.runtime.spawn(async move {
+            let resolved_session_id = if let Some(backend_id) = backend_session_id {
+                backend_id
+            } else {
+                let sessions_api = SessionsApi::new(client.clone(), server_url.clone(), token.clone());
+                match sessions_api.create(Some(session_title)).await {
+                    Ok(api_session) => {
+                        let backend_id = api_session.id;
+                        let mut s = state.lock().unwrap();
+                        if let Some(session) = s.chat.sessions.iter_mut().find(|session| session.id == local_session_id) {
+                            session.backend_id = Some(backend_id.clone());
+                        }
+                        backend_id
+                    }
+                    Err(e) => {
+                        let mut s = state.lock().unwrap();
+                        s.set_status(format!("Failed to create session: {}", e));
+                        s.chat.composer.is_streaming = false;
+                        return;
+                    }
+                }
+            };
+
             let tasks_api = TasksApi::new(client, server_url, token);
-            match tasks_api.stream(session_id, text).await {
+            match tasks_api.stream(resolved_session_id, text).await {
                 Ok(mut rx) => {
                     while let Some(event_result) = rx.recv().await {
                         let mut s = state.lock().unwrap();
@@ -254,7 +285,15 @@ fn handle_sse_event(state: &mut AppState, event: crate::state::task_state::TaskE
             }
         }
         TaskEvent::Message { message, action, .. } => {
-            let text = message.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let text = if let Some(s) = message.as_str() {
+                s.to_string()
+            } else {
+                message
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            };
             let is_partial = action == "updated";
             if let Some(session) = state.chat.active_session_mut() {
                 if is_partial {
