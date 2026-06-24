@@ -74,54 +74,53 @@ fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
 
                 let selected = Some(session.id) == active_id;
 
-                // Use a sense(click) to ensure the whole row area is clickable
-                let (row_id, row_rect) = ui.allocate_space(egui::vec2(ui.available_width(), 52.0));
-                let _row_response = ui.interact(row_rect, row_id, egui::Sense::click());
-
-                // Paint selection highlight first (behind the content)
-                if selected {
-                    ui.painter().rect_filled(row_rect, CornerRadius::same(8), colors::SELECTION_SOFT);
-                }
-
-                // Draw the visual content on top of the highlight
-                let _result = ui.allocate_ui_at_rect(row_rect.shrink2(egui::vec2(2.0, 2.0)), |ui| {
-                    ui.horizontal(|ui| {
-                        if session.unread {
-                            let (dot_rect, _) = ui.allocate_exact_size(
-                                egui::vec2(8.0, 8.0),
-                                egui::Sense::hover(),
-                            );
-                            ui.painter().circle_filled(dot_rect.center(), 4.0, colors::RED_ACCENT);
-                        } else {
-                            ui.add_sized(egui::vec2(8.0, 8.0), egui::Label::new(""));
-                        }
-                        ui.add_space(4.0);
-                        let text_width = (ui.available_width() - 44.0).max(60.0);
-                        ui.vertical(|ui| {
-                            ui.set_width(text_width);
-                            ui.colored_label(
-                                colors::TEXT_PRIMARY,
-                                egui::RichText::new(truncate_to_width(&session.title, text_width)).size(13.0),
-                            );
-                            ui.colored_label(
-                                colors::TEXT_MUTED,
-                                format!("{} msg{}", session.messages.len(), if session.messages.len() == 1 { "" } else { "s" }),
-                            );
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                            if ui.small_button("🗑").on_hover_text("Delete conversation").clicked() {
-                                to_delete = Some(session.id);
+                // Use Frame for proper layering: fill draws behind content
+                let response = egui::Frame::NONE
+                    .fill(if selected { colors::SELECTION_SOFT } else { colors::TRANSPARENT })
+                    .corner_radius(CornerRadius::same(8))
+                    .inner_margin(egui::Margin::symmetric(10, 6))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            // Unread dot — only show indicator when unread
+                            if session.unread {
+                                let (dot_rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(6.0, 6.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().circle_filled(dot_rect.center(), 3.0, colors::RED_ACCENT);
+                                ui.add_space(6.0);
+                            } else {
+                                // Small reserved space for visual alignment (narrower)
+                                ui.add_sized(egui::vec2(6.0, 6.0), egui::Label::new(""));
+                                ui.add_space(6.0);
                             }
+
+                            // Title + message count
+                            ui.vertical(|ui| {
+                                ui.colored_label(
+                                    colors::TEXT_PRIMARY,
+                                    egui::RichText::new(truncate_to_width(&session.title, ui.available_width() - 40.0)).size(13.0),
+                                );
+                                ui.colored_label(
+                                    colors::TEXT_MUTED,
+                                    egui::RichText::new(format!("{} msg", session.messages.len())).size(11.0),
+                                );
+                            });
+
+                            // Push delete button to the right edge
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.small_button("🗑").on_hover_text("Delete conversation").clicked() {
+                                    to_delete = Some(session.id);
+                                }
+                            });
                         });
                     });
-                });
 
-                // Check if the row was clicked (use the intersect from allocate_space)
-                if _row_response.clicked() {
+                if response.response.clicked() {
                     to_select = Some(session.id);
                 }
 
-                ui.add_space(4.0);
+                ui.add_space(2.0);
             }
 
             if let Some(delete_id) = to_delete {
