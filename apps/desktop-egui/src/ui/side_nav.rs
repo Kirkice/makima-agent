@@ -113,7 +113,7 @@ fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
                                     colors::TEXT_MUTED,
                                     egui::RichText::new(format!("{} msg", session.messages.len())).size(11.0),
                                 );
-                                if ui.small_button("✕").on_hover_text("Delete conversation").clicked() {
+                                if ui.small_button("🗑").on_hover_text("Delete conversation").clicked() {
                                     to_delete = Some(session.id);
                                 }
                             });
@@ -146,7 +146,7 @@ fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
                                 });
 
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.small_button("✕").on_hover_text("Delete conversation").clicked() {
+                                    if ui.small_button("🗑").on_hover_text("Delete conversation").clicked() {
                                         to_delete = Some(session.id);
                                     }
                                 });
