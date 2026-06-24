@@ -145,22 +145,33 @@ impl TabViewer for AppTabViewer<'_> {
 }
 
 fn draw_sidebar_tab(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.horizontal(|ui| {
-        // Activity icon bar — fixed 56px width
-        let icon_size = egui::vec2(56.0, ui.available_height());
-        let (icon_rect, _) = ui.allocate_exact_size(icon_size, egui::Sense::hover());
-        let mut child_ui = ui.child_ui(
-            icon_rect,
-            egui::Layout::top_down(egui::Align::Min),
-            None,
-        );
-        activity_bar::draw(&mut child_ui, state);
-        // Detail panel — takes remaining width
-        ui.vertical(|ui| {
-            ui.add_space(4.0);
-            side_nav::draw(ui, state);
-        });
-    });
+    let full_rect = ui.available_rect_before_wrap();
+    let spacing = ui.spacing().item_spacing.x;
+    let icon_width = 56.0;
+
+    let icon_rect =
+        egui::Rect::from_min_size(full_rect.min, egui::vec2(icon_width, full_rect.height()));
+    let detail_min = egui::pos2(icon_rect.max.x + spacing, full_rect.min.y);
+    let detail_rect = egui::Rect::from_min_max(detail_min, full_rect.max);
+
+    ui.allocate_rect(full_rect, egui::Sense::hover());
+
+    let mut icon_ui = ui.child_ui(
+        icon_rect,
+        egui::Layout::top_down(egui::Align::Min),
+        None,
+    );
+    activity_bar::draw(&mut icon_ui, state);
+
+    let mut detail_ui = ui.child_ui(
+        detail_rect,
+        egui::Layout::top_down(egui::Align::Min),
+        None,
+    );
+    detail_ui.set_clip_rect(detail_rect);
+    detail_ui.set_min_height(detail_rect.height());
+    detail_ui.add_space(4.0);
+    side_nav::draw(&mut detail_ui, state);
 }
 
 fn draw_chat_workspace(ui: &mut egui::Ui, state: &mut AppState) {
@@ -192,7 +203,7 @@ fn draw_inline_task_hint(ui: &mut egui::Ui, task: &crate::state::task_state::Tas
         .inner_margin(egui::Margin::symmetric(12, 6))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.colored_label(color, "•");
+                ui.colored_label(color, "...");
                 ui.colored_label(colors::TEXT_SECONDARY, label);
                 if !task.timeline.is_empty() {
                     ui.colored_label(colors::TEXT_MUTED, format!("({} steps)", task.timeline.len()));
