@@ -33,7 +33,15 @@ impl AppDockTab {
 
 pub type AppDockState = DockState<AppDockTab>;
 
-const DEFAULT_COMPOSER_HEIGHT: f32 = 180.0;
+const DEFAULT_SIDEBAR_WIDTH: f32 = 300.0;
+const DEFAULT_CONTEXT_WIDTH: f32 = 210.0;
+const DEFAULT_COMPOSER_HEIGHT: f32 = 155.0;
+const MIN_SIDEBAR_PIXELS: f32 = 260.0;
+const MAX_SIDEBAR_PIXELS: f32 = 340.0;
+const MIN_CONTEXT_PIXELS: f32 = 180.0;
+const MAX_CONTEXT_PIXELS: f32 = 240.0;
+const MIN_COMPOSER_PIXELS: f32 = 140.0;
+const MAX_COMPOSER_PIXELS: f32 = 220.0;
 
 pub fn init_app_dock(
     view_mode: ViewMode,
@@ -45,21 +53,35 @@ pub fn init_app_dock(
     let mut dock_state = DockState::new(vec![AppDockTab::Chat]);
     let surface = dock_state.main_surface_mut();
 
-    let sidebar_fraction = retained_fraction(available_size.x, sidebar_width);
-    let context_fraction = retained_fraction(available_size.x, context_width);
-    let composer_fraction = retained_fraction(available_size.y, DEFAULT_COMPOSER_HEIGHT);
+    let sidebar_pixels = normalize_pixels(sidebar_width, MIN_SIDEBAR_PIXELS, MAX_SIDEBAR_PIXELS);
+    let context_pixels = normalize_pixels(context_width, MIN_CONTEXT_PIXELS, MAX_CONTEXT_PIXELS);
+    let composer_pixels =
+        normalize_pixels(DEFAULT_COMPOSER_HEIGHT, MIN_COMPOSER_PIXELS, MAX_COMPOSER_PIXELS);
+
+    let total_width = available_size.x.max(1.0);
+    let total_height = available_size.y.max(1.0);
+    let sidebar_fraction = (sidebar_pixels / total_width).clamp(0.16, 0.32);
 
     let [main, _sidebar] =
         surface.split_left(NodeIndex::root(), sidebar_fraction, vec![AppDockTab::Sidebar]);
+
+    let main_width = (total_width - sidebar_pixels).max(1.0);
+    let composer_fraction = ((total_height - composer_pixels) / total_height).clamp(0.62, 0.9);
+
+    let main = if show_context_panel {
+        let context_fraction = ((main_width - context_pixels) / main_width).clamp(0.68, 0.9);
+        let [chat_stack, _context] =
+            surface.split_right(main, context_fraction, vec![AppDockTab::Context]);
+        chat_stack
+    } else {
+        main
+    };
+
     let [main, _composer] =
         surface.split_below(main, composer_fraction, vec![AppDockTab::Composer]);
 
     if matches!(view_mode, ViewMode::Avatar) {
         let [_chat, _avatar] = surface.split_right(main, 0.58, vec![AppDockTab::Avatar]);
-    }
-
-    if show_context_panel {
-        let _ = surface.split_right(NodeIndex::root(), context_fraction, vec![AppDockTab::Context]);
     }
 
     dock_state
@@ -105,12 +127,42 @@ pub fn sync_app_dock(
     }
 }
 
-fn retained_fraction(total: f32, panel_pixels: f32) -> f32 {
-    if total <= panel_pixels {
-        0.5
+pub fn normalize_layout(state: &mut AppState) {
+    state.conversations_width = normalized_panel_pixels(
+        state.conversations_width,
+        DEFAULT_SIDEBAR_WIDTH,
+        MIN_SIDEBAR_PIXELS,
+        MAX_SIDEBAR_PIXELS,
+    );
+    state.inspector_width = normalized_panel_pixels(
+        state.inspector_width,
+        DEFAULT_CONTEXT_WIDTH,
+        MIN_CONTEXT_PIXELS,
+        MAX_CONTEXT_PIXELS,
+    );
+    state.drawer_height = normalized_panel_pixels(
+        state.drawer_height,
+        DEFAULT_COMPOSER_HEIGHT,
+        MIN_COMPOSER_PIXELS,
+        MAX_COMPOSER_PIXELS,
+    );
+}
+
+fn normalized_panel_pixels(
+    current: f32,
+    default_pixels: f32,
+    min_pixels: f32,
+    max_pixels: f32,
+) -> f32 {
+    if current <= 0.0 {
+        default_pixels
     } else {
-        ((total - panel_pixels) / total).clamp(0.2, 0.92)
+        current.clamp(min_pixels, max_pixels)
     }
+}
+
+fn normalize_pixels(current: f32, min_pixels: f32, max_pixels: f32) -> f32 {
+    current.clamp(min_pixels, max_pixels)
 }
 
 struct AppTabViewer<'a> {

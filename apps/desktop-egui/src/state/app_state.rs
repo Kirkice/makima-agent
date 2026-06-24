@@ -150,9 +150,9 @@ impl Default for AppState {
             drawer_tab: None,
             drawer_user_dismissed: false,
             show_context_panel: true,
-            conversations_width: 280.0,
-            inspector_width: 284.0,
-            drawer_height: 220.0,
+            conversations_width: 300.0,
+            inspector_width: 210.0,
+            drawer_height: 155.0,
         }
     }
 }

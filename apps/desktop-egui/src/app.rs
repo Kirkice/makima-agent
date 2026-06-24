@@ -8,7 +8,7 @@ use crate::config::app_config::AppConfig;
 use crate::config::secure_store::SecureStore;
 use crate::state::app_state::{AppState, ViewMode};
 use crate::ui;
-use crate::ui::dock::{AppDockState, init_app_dock};
+use crate::ui::dock::{normalize_layout, AppDockState, init_app_dock};
 use crate::voice::VoiceManager;
 
 pub struct LoginDialogState {
@@ -65,6 +65,7 @@ impl Default for MakimaApp {
             s.show_context_panel = config.show_context_panel;
             s.drawer_open = config.drawer_open;
             s.server_url = config.server_url.clone();
+            normalize_layout(&mut s);
         }
 
         if let Some(token) = secure_store.get_token() {
