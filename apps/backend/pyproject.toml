@@ -31,6 +31,9 @@ dependencies = [
     "passlib[bcrypt]>=1.7.4",
     # File upload
     "python-multipart>=0.0.9",
+    # gRPC (Rust tool runtime)
+    "grpcio>=1.60.0",
+    "grpcio-tools>=1.60.0",
     # Task queue
     "celery[redis]>=5.3.0",
     "redis>=5.0.0",

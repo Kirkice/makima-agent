@@ -2,18 +2,22 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-/// Matches backend /memories response
+/// Matches backend MemoryResponse: {id, memory, score, metadata}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiMemory {
-    pub id: Option<String>,
-    pub content: String,
-    pub metadata: Option<serde_json::Value>,
-    pub created_at: Option<String>,
+    pub id: String,
+    /// Backend field is "memory", not "content"
+    pub memory: String,
+    pub score: Option<f64>,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
 }
 
+/// Backend wraps list: {"memories": [...], "count": N}
 #[derive(Debug, Deserialize)]
 struct MemoryListResponse {
-    items: Vec<ApiMemory>,
+    pub memories: Vec<ApiMemory>,
+    pub count: u64,
 }
 
 pub struct MemoryApi {
@@ -27,23 +31,27 @@ impl MemoryApi {
         Self { client, base_url, token }
     }
 
-    /// GET /memories
+    /// GET /memories → {memories: [...], count: N}
     pub async fn list(&self) -> Result<Vec<ApiMemory>> {
         let url = format!("{}/memories", self.base_url);
         let resp = self.client.get(&url).bearer_auth(&self.token).send().await
             .context("Failed to fetch memories")?;
         if !resp.status().is_success() { anyhow::bail!("Failed: {}", resp.status()); }
-        Ok(resp.json::<MemoryListResponse>().await.map(|l| l.items).unwrap_or_default())
+        let wrapper: MemoryListResponse = resp.json().await
+            .context("Failed to parse memories")?;
+        Ok(wrapper.memories)
     }
 
-    /// POST /memories/search
+    /// POST /memories/search → {memories: [...], count: N}
     pub async fn search(&self, query: &str) -> Result<Vec<ApiMemory>> {
         let url = format!("{}/memories/search", self.base_url);
         let resp = self.client.post(&url).bearer_auth(&self.token)
             .json(&serde_json::json!({ "query": query })).send().await
             .context("Failed to search memories")?;
         if !resp.status().is_success() { anyhow::bail!("Failed: {}", resp.status()); }
-        Ok(resp.json::<MemoryListResponse>().await.map(|l| l.items).unwrap_or_default())
+        let wrapper: MemoryListResponse = resp.json().await
+            .context("Failed to parse search results")?;
+        Ok(wrapper.memories)
     }
 
     /// DELETE /memories/{id}

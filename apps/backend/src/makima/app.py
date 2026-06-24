@@ -7,15 +7,49 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import select
 
 from makima import __version__
+from makima.auth.models import User
+from makima.auth.service import hash_password, verify_password
 from makima.modes import load_all_custom_modes
-from makima.routes import admin, audit, auth, health, knowledge, memory, modes, persona, sessions, tasks
+from makima.routes import admin, audit, auth, health, knowledge, mcp, memory, modes, persona, sessions, tasks, voice
 from makima.core.middleware import setup_middleware
 from makima.observability.metrics import setup_metrics
 from makima.observability.tracing import setup_tracing
 from makima_common.config import get_settings
-from makima_common.logging import setup_logging
+from makima_common.logging import get_logger, setup_logging
+
+
+async def ensure_local_cli_user() -> None:
+    """Create or update the local desktop login user from env config."""
+    settings = get_settings()
+    if not settings.cli_username or not settings.cli_password:
+        return
+
+    from makima.core.db import async_session_factory
+
+    logger = get_logger(__name__)
+    async with async_session_factory() as session:
+        result = await session.execute(select(User).where(User.username == settings.cli_username))
+        user = result.scalar_one_or_none()
+
+        if user is None:
+            user = User(
+                username=settings.cli_username,
+                email=f"{settings.cli_username}@local.makima",
+                hashed_password=hash_password(settings.cli_password),
+                role="admin",
+            )
+            session.add(user)
+            await session.commit()
+            logger.info("Created local CLI user", username=settings.cli_username)
+            return
+
+        if not user.hashed_password or not verify_password(settings.cli_password, user.hashed_password):
+            user.hashed_password = hash_password(settings.cli_password)
+            await session.commit()
+            logger.info("Updated local CLI user password", username=settings.cli_username)
 
 
 @asynccontextmanager
@@ -35,6 +69,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    await ensure_local_cli_user()
+
     # Initialize config center
     from makima.config_center.service import config_center
     await config_center.initialize()
@@ -43,11 +79,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         custom_modes = load_all_custom_modes()
         if custom_modes:
-            from makima_common.logging import get_logger
             logger = get_logger(__name__)
             logger.info(f"Loaded {len(custom_modes)} custom modes")
     except Exception as e:
-        from makima_common.logging import get_logger
         logger = get_logger(__name__)
         logger.warning(f"Failed to load custom modes: {e}")
 
@@ -91,6 +125,8 @@ def create_app() -> FastAPI:
     app.include_router(persona.router)
     app.include_router(audit.router)
     app.include_router(admin.router)
+    app.include_router(mcp.router)
+    app.include_router(voice.router)
 
     return app
 

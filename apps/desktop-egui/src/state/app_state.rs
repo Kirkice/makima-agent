@@ -75,6 +75,8 @@ pub enum ApiCommand {
     },
     StopVoiceCall,
     ToggleVoiceMute,
+    /// Delete a conversation by its ID (UUID string)
+    DeleteSession(String),
 }
 
 pub struct AppState {
@@ -87,6 +89,8 @@ pub struct AppState {
     pub server_url: String,
     pub app_config_path: Option<String>,
     pub status_message: Option<String>,
+    pub login_error: Option<String>,
+    pub login_in_progress: bool,
     pub show_login: bool,
     pub show_settings: bool,
     pub show_diagnostics: bool,
@@ -124,6 +128,8 @@ impl Default for AppState {
             server_url: "http://localhost:8000".to_string(),
             app_config_path: None,
             status_message: None,
+            login_error: None,
+            login_in_progress: false,
             show_login: false,
             show_settings: false,
             show_diagnostics: false,

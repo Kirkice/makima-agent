@@ -38,7 +38,7 @@ impl TaskStatus {
     }
 }
 
-/// SSE event types from Makima backend - mirrors Zoo-Code's RooCodeEvents
+/// SSE event types from Makima backend - aligned with AgentEventType in makima_schemas
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", content = "data")]
 pub enum TaskEvent {
@@ -81,6 +81,52 @@ pub enum TaskEvent {
         tokens_out: u64,
         cost: f64,
     },
+    /// Mode was switched during task execution
+    #[serde(rename = "mode_switch")]
+    ModeSwitch {
+        from_mode: String,
+        to_mode: String,
+        mode_name: String,
+    },
+    /// Agent requested human approval for a tool/action
+    #[serde(rename = "approval_requested")]
+    ApprovalRequested {
+        request_id: String,
+        tool_name: String,
+        arguments: serde_json::Value,
+        risk_level: String,
+    },
+    /// Approval was responded to
+    #[serde(rename = "approval_responded")]
+    ApprovalResponded {
+        request_id: String,
+        approved: bool,
+    },
+    /// A checkpoint was saved
+    #[serde(rename = "checkpoint_saved")]
+    CheckpointSaved {
+        checkpoint_id: String,
+        label: String,
+    },
+    /// A checkpoint was restored
+    #[serde(rename = "checkpoint_restored")]
+    CheckpointRestored {
+        checkpoint_id: String,
+        label: String,
+    },
+    /// Context was compressed to save tokens
+    #[serde(rename = "context_compressed")]
+    ContextCompressed {
+        original_tokens: u64,
+        compressed_tokens: u64,
+    },
+    /// Retry after delay due to rate limiting or transient error
+    #[serde(rename = "retry_delayed")]
+    RetryDelayed {
+        attempt: u32,
+        delay_seconds: f64,
+        reason: String,
+    },
 }
 
 /// A timeline entry for the task execution display
@@ -105,6 +151,11 @@ pub enum TimelinePhase {
     ToolResult,
     Completion,
     Error,
+    ModeSwitch,
+    ApprovalRequested,
+    Checkpoint,
+    ContextCompressed,
+    RetryDelayed,
 }
 
 impl TimelinePhase {
@@ -117,6 +168,11 @@ impl TimelinePhase {
             TimelinePhase::ToolResult => "✅",
             TimelinePhase::Completion => "🎯",
             TimelinePhase::Error => "❌",
+            TimelinePhase::ModeSwitch => "🔄",
+            TimelinePhase::ApprovalRequested => "⏳",
+            TimelinePhase::Checkpoint => "📌",
+            TimelinePhase::ContextCompressed => "📦",
+            TimelinePhase::RetryDelayed => "🔁",
         }
     }
 
@@ -129,6 +185,11 @@ impl TimelinePhase {
             TimelinePhase::ToolResult => "Tool Result",
             TimelinePhase::Completion => "Completed",
             TimelinePhase::Error => "Error",
+            TimelinePhase::ModeSwitch => "Mode Switch",
+            TimelinePhase::ApprovalRequested => "Awaiting Approval",
+            TimelinePhase::Checkpoint => "Checkpoint",
+            TimelinePhase::ContextCompressed => "Context Compressed",
+            TimelinePhase::RetryDelayed => "Retry Delayed",
         }
     }
 }

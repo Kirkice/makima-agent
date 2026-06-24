@@ -106,14 +106,19 @@ impl MakimaApp {
         self.login_dialog.loading = true;
         self.login_dialog.error = None;
 
-        let username = std::mem::take(&mut self.login_dialog.username);
-        let password = std::mem::take(&mut self.login_dialog.password);
+        let username = self.login_dialog.username.clone();
+        let password = self.login_dialog.password.clone();
         let server_url = self.login_dialog.server_url.clone();
         let state = self.state.clone();
         let client = self.client.clone();
 
         self.config.server_url = server_url.clone();
         let _ = self.config.save();
+
+        if let Ok(mut s) = self.state.lock() {
+            s.login_in_progress = true;
+            s.login_error = None;
+        }
 
         self.runtime.spawn(async move {
             let auth_api = AuthApi::new(client.clone(), server_url.clone());
@@ -127,6 +132,8 @@ impl MakimaApp {
                         s.server_url = server_url.clone();
                         s.auth_token = Some(token.clone());
                         s.is_logged_in = true;
+                        s.login_in_progress = false;
+                        s.login_error = None;
                         s.show_login = false;
                         s.set_status("Logged in".to_string());
                     }
@@ -137,7 +144,11 @@ impl MakimaApp {
                         let mut s = state.lock().unwrap();
                         for api_s in list {
                             let title = api_s.title.unwrap_or_else(|| "Untitled".to_string());
-                            s.chat.sessions.push(crate::state::chat_state::Session::new(title, None));
+                            let backend_id = Some(api_s.id.clone());
+                            let mut session = crate::state::chat_state::Session::new(title, backend_id);
+                            // Preserve the backend session ID so we can use it for /tasks
+                            session.id = Uuid::parse_str(&api_s.id).unwrap_or_else(|_| session.id);
+                            s.chat.sessions.push(session);
                         }
                         if !s.chat.sessions.is_empty() { s.chat.active_session_id = Some(s.chat.sessions[0].id); }
                         s.set_status("Sessions loaded".to_string());
@@ -145,10 +156,9 @@ impl MakimaApp {
                 }
                 Err(e) => {
                     let mut s = state.lock().unwrap();
+                    s.login_in_progress = false;
+                    s.login_error = Some(e.to_string());
                     s.set_status(format!("Login failed: {}", e));
-                    drop(s);
-                    // Reset loading state on error so user can retry
-                    // Note: we can't access self here, so we signal via state
                 }
             }
         });
@@ -221,7 +231,7 @@ impl MakimaApp {
 }
 
 fn handle_sse_event(state: &mut AppState, event: crate::state::task_state::TaskEvent) {
-    use crate::state::chat_state::{ChatMessage, MessageType, SayKind, TokenUsage};
+    use crate::state::chat_state::{AskKind, ChatMessage, MessageType, SayKind, TokenUsage};
     use crate::state::task_state::{TaskEvent, TaskStatus, TimelinePhase};
     use chrono::Utc;
 
@@ -280,6 +290,60 @@ fn handle_sse_event(state: &mut AppState, event: crate::state::task_state::TaskE
             }
             state.set_status(format!("Tokens: ↑{} ↓{} ${:.5}", tokens_in, tokens_out, cost));
         }
+        TaskEvent::ModeSwitch { from_mode, to_mode, mode_name } => {
+            if let Some(t) = state.task.active_task.as_mut() {
+                t.add_timeline_entry(TimelinePhase::ModeSwitch, format!("{} → {}", from_mode, to_mode), Some(mode_name.clone()));
+            }
+            if let Some(session) = state.chat.active_session_mut() {
+                session.messages.push(ChatMessage { ts: Utc::now().timestamp_millis(), msg_type: MessageType::Say, ask: None, say: Some(SayKind::Text), text: Some(format!("🔄 Mode switched: {} → {} ({})", from_mode, to_mode, mode_name)), partial: false, reasoning: None, token_usage: None, tool_call_id: None, error: None, id: Uuid::new_v4(), session_id });
+                session.updated_at = Utc::now();
+            }
+        }
+        TaskEvent::ApprovalRequested { request_id, tool_name, risk_level, .. } => {
+            if let Some(t) = state.task.active_task.as_mut() {
+                t.status = TaskStatus::Interactive;
+                t.add_timeline_entry(TimelinePhase::ApprovalRequested, format!("Approval: {}", tool_name), Some(format!("Risk: {}, ID: {}", risk_level, request_id)));
+            }
+            if let Some(session) = state.chat.active_session_mut() {
+                session.messages.push(ChatMessage { ts: Utc::now().timestamp_millis(), msg_type: MessageType::Ask, ask: Some(AskKind::Followup), say: None, text: Some(format!("⏳ Approval requested for `{}` (risk: {})", tool_name, risk_level)), partial: false, reasoning: None, token_usage: None, tool_call_id: None, error: None, id: Uuid::new_v4(), session_id });
+                session.updated_at = Utc::now();
+            }
+        }
+        TaskEvent::ApprovalResponded { approved, .. } => {
+            if let Some(t) = state.task.active_task.as_mut() {
+                t.status = TaskStatus::Running;
+            }
+            if let Some(session) = state.chat.active_session_mut() {
+                let status_text = if approved { "✅ Approved" } else { "❌ Rejected" };
+                session.messages.push(ChatMessage { ts: Utc::now().timestamp_millis(), msg_type: MessageType::Say, ask: None, say: Some(SayKind::Text), text: Some(format!("Approval response: {}", status_text)), partial: false, reasoning: None, token_usage: None, tool_call_id: None, error: None, id: Uuid::new_v4(), session_id });
+                session.updated_at = Utc::now();
+            }
+        }
+        TaskEvent::CheckpointSaved { checkpoint_id, label } => {
+            if let Some(t) = state.task.active_task.as_mut() {
+                t.add_timeline_entry(TimelinePhase::Checkpoint, format!("Checkpoint: {}", label), Some(checkpoint_id.clone()));
+            }
+        }
+        TaskEvent::CheckpointRestored { checkpoint_id, label } => {
+            if let Some(t) = state.task.active_task.as_mut() {
+                t.add_timeline_entry(TimelinePhase::Checkpoint, format!("Restored: {}", label), Some(checkpoint_id.clone()));
+            }
+            if let Some(session) = state.chat.active_session_mut() {
+                session.messages.push(ChatMessage { ts: Utc::now().timestamp_millis(), msg_type: MessageType::Say, ask: None, say: Some(SayKind::Text), text: Some(format!("📌 Restored checkpoint: {}", label)), partial: false, reasoning: None, token_usage: None, tool_call_id: None, error: None, id: Uuid::new_v4(), session_id });
+                session.updated_at = Utc::now();
+            }
+        }
+        TaskEvent::ContextCompressed { original_tokens, compressed_tokens } => {
+            if let Some(t) = state.task.active_task.as_mut() {
+                t.add_timeline_entry(TimelinePhase::ContextCompressed, "Context Compressed".to_string(), Some(format!("{} → {} tokens", original_tokens, compressed_tokens)));
+            }
+        }
+        TaskEvent::RetryDelayed { attempt, delay_seconds, reason } => {
+            if let Some(t) = state.task.active_task.as_mut() {
+                t.add_timeline_entry(TimelinePhase::RetryDelayed, format!("Retry #{}", attempt), Some(format!("Delay: {:.1}s, Reason: {}", delay_seconds, reason)));
+            }
+            state.set_status(format!("Retrying in {:.1}s (attempt {}): {}", delay_seconds, attempt, reason));
+        }
         _ => {}
     }
 }
@@ -300,7 +364,10 @@ async fn load_sessions_into_state(
         s.chat.sessions.clear();
         for api_s in list {
             let title = api_s.title.unwrap_or_else(|| "Untitled".to_string());
-            s.chat.sessions.push(crate::state::chat_state::Session::new(title, None));
+            let backend_id = Some(api_s.id.clone());
+            let mut session = crate::state::chat_state::Session::new(title, backend_id);
+            session.id = Uuid::parse_str(&api_s.id).unwrap_or_else(|_| session.id);
+            s.chat.sessions.push(session);
         }
         if !s.chat.sessions.is_empty() {
             s.chat.active_session_id = Some(s.chat.sessions[0].id);
@@ -355,6 +422,8 @@ impl eframe::App for MakimaApp {
                 UiAction::Logout => {
                     let mut s = self.state.lock().unwrap();
                     s.is_logged_in = false; s.auth_token = None; s.show_login = true;
+                    s.login_in_progress = false;
+                    s.login_error = None;
                     self.login_dialog.loading = false; // Reset loading state
                     let _ = self.secure_store.delete_token();
                 }
@@ -372,7 +441,10 @@ impl eframe::App for MakimaApp {
                                 let mut s = state.lock().unwrap();
                                 for api_s in list {
                                     let title = api_s.title.unwrap_or_else(|| "Untitled".to_string());
-                                    s.chat.sessions.push(crate::state::chat_state::Session::new(title, None));
+                                    let backend_id = Some(api_s.id.clone());
+                                    let mut session = crate::state::chat_state::Session::new(title, backend_id);
+                                    session.id = Uuid::parse_str(&api_s.id).unwrap_or_else(|_| session.id);
+                                    s.chat.sessions.push(session);
                                 }
                                 s.set_status("Sessions refreshed".to_string());
                             }
@@ -401,6 +473,9 @@ impl eframe::App for MakimaApp {
                 poisoned.into_inner()
             }
         };
+
+        self.login_dialog.loading = state.login_in_progress;
+        self.login_dialog.error = state.login_error.clone();
         
         egui::CentralPanel::default().show(ctx, |ui| {
             ui::shell::draw(ui, &mut state, &mut self.login_dialog, &mut self.pending_action, &mut self.app_dock);
@@ -511,16 +586,16 @@ impl MakimaApp {
             match cmd {
                 ApiCommand::FetchModes => {
                     let api = ModesApi::new(client, server_url, token);
-                    if let Ok(modes) = api.list().await {
+                    if let Ok(resp) = api.list().await {
                         let mut s = state.lock().unwrap();
-                        s.settings.modes = modes.into_iter().map(|m| crate::state::settings_state::ModeConfig {
+                        s.settings.modes = resp.modes.into_iter().map(|m| crate::state::settings_state::ModeConfig {
                             slug: m.slug, name: m.name,
                             role_definition: m.role_definition.unwrap_or_default(),
                             when_to_use: m.when_to_use,
                             description: m.description,
                             custom_instructions: m.custom_instructions,
-                            groups: m.groups.unwrap_or_default(),
-                            source: m.source,
+                            groups: m.tool_groups.iter().map(|tg| tg.group.clone()).collect(),
+                            source: Some(m.source),
                         }).collect();
                         if s.settings.active_mode_slug.is_none() {
                             s.settings.active_mode_slug = s.settings.modes.first().map(|m| m.slug.clone());
@@ -532,9 +607,12 @@ impl MakimaApp {
                     let api = PersonaApi::new(client, server_url, token);
                     if let Ok(p) = api.get_current().await {
                         let mut s = state.lock().unwrap();
-                        s.settings.persona_name = p.name;
-                        s.settings.persona_is_default = p.is_default.unwrap_or(false);
-                        s.settings.persona_default_preview = p.content.clone().unwrap_or_default();
+                        s.settings.persona_name = p.name.clone();
+                        s.settings.persona_is_default = true; // backend doesn't track this
+                        s.settings.persona_default_preview = format!(
+                            "Identity: {}\nPersonality: {}\nStyle: {}",
+                            p.identity, p.personality, p.speaking_style
+                        );
                         s.set_status("Persona loaded".to_string());
                     }
                 }
@@ -542,8 +620,12 @@ impl MakimaApp {
                     let api = PersonaApi::new(client, server_url, token);
                     if let Ok(p) = api.reload().await {
                         let mut s = state.lock().unwrap();
-                        s.settings.persona_name = p.name;
+                        s.settings.persona_name = p.name.clone();
                         s.settings.persona_modified = false;
+                        s.settings.persona_default_preview = format!(
+                            "Identity: {}\nPersonality: {}\nStyle: {}",
+                            p.identity, p.personality, p.speaking_style
+                        );
                         s.set_status("Persona reloaded".to_string());
                     }
                 }
@@ -551,7 +633,7 @@ impl MakimaApp {
                     let api = MemoryApi::new(client, server_url, token);
                     if let Ok(list) = api.list().await {
                         let mut s = state.lock().unwrap();
-                        s.settings.memory_items = list.into_iter().map(|m| m.content).collect();
+                        s.settings.memory_items = list.into_iter().map(|m| m.memory).collect();
                         let count = s.settings.memory_items.len();
                         s.set_status(format!("{} memories loaded", count));
                     }
@@ -560,7 +642,7 @@ impl MakimaApp {
                     let api = MemoryApi::new(client, server_url, token);
                     if let Ok(list) = api.search(&q).await {
                         let mut s = state.lock().unwrap();
-                        s.settings.memory_items = list.into_iter().map(|m| m.content).collect();
+                        s.settings.memory_items = list.into_iter().map(|m| m.memory).collect();
                         let count = s.settings.memory_items.len();
                         s.set_status(format!("{} results", count));
                     }
@@ -570,6 +652,13 @@ impl MakimaApp {
                     let _ = api.delete(&id).await;
                     let mut s = state.lock().unwrap();
                     s.set_status("Memory deleted".to_string());
+                }
+                ApiCommand::DeleteSession(id) => {
+                    let api = SessionsApi::new(client.clone(), server_url.clone(), token.clone());
+                    let _ = api.delete(&id).await;
+                    let mut s = state.lock().unwrap();
+                    s.chat.delete_session(uuid::Uuid::parse_str(&id).unwrap_or_default());
+                    s.set_status("Conversation deleted".to_string());
                 }
                 ApiCommand::FetchDocuments => {
                     let api = KnowledgeApi::new(client, server_url, token);
@@ -584,8 +673,8 @@ impl MakimaApp {
                     let api = KnowledgeApi::new(client, server_url, token);
                     if let Ok(result) = api.retrieve(&q).await {
                         let mut s = state.lock().unwrap();
-                        s.settings.knowledge_results = result.chunks.into_iter().map(|c| c.content).collect();
-                        s.set_status("Retrieval done".to_string());
+                        s.settings.knowledge_results = result.results.into_iter().map(|c| c.content).collect();
+                        s.set_status(format!("{} results", result.count));
                     }
                 }
                 ApiCommand::FetchMcpServers => {
@@ -687,6 +776,7 @@ impl MakimaApp {
                         let mut s = state.lock().unwrap();
                         s.auth_token = None;
                         s.is_logged_in = false;
+                        s.login_in_progress = false;
                     }
                     if !try_env_auto_login(state.clone(), client.clone(), server_url.clone()).await {
                         let mut s = state.lock().unwrap();
@@ -696,6 +786,7 @@ impl MakimaApp {
             } else {
                 if !try_env_auto_login(state.clone(), client.clone(), server_url.clone()).await {
                     let mut s = state.lock().unwrap();
+                    s.login_in_progress = false;
                     s.show_login = true;
                 }
             }

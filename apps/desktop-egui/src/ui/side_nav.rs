@@ -17,10 +17,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     });
 }
 
-// ── Sessions ──────────────────────────────────────────────────────────
-
 fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
-    // "Recent" title + "+ New" button in a card header style
     egui::Frame::NONE
         .fill(colors::ELEVATED)
         .corner_radius(CornerRadius::same(8))
@@ -37,10 +34,9 @@ fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
                         .stroke(egui::Stroke::NONE)
                         .min_size(egui::vec2(64.0, 26.0));
                     if ui.add(button).clicked() {
-                        state.chat.create_session(format!(
-                            "Chat {}",
-                            state.chat.sessions.len() + 1
-                        ));
+                        state
+                            .chat
+                            .create_session(format!("Chat {}", state.chat.sessions.len() + 1));
                         state.set_status("New session created".to_string());
                     }
                 });
@@ -48,16 +44,24 @@ fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
         });
     ui.add_space(8.0);
 
-    draw_search(ui, &mut state.chat.search_query, "Search conversations");
-    ui.add_space(10.0);
-
     let active_id = state.chat.active_session_id;
     let is_empty = state.chat.sessions.is_empty();
     let mut to_select = None;
 
+    if !is_empty {
+        draw_search(ui, &mut state.chat.search_query, "Search conversations");
+        ui.add_space(10.0);
+    }
+
+    // Use remaining vertical space for the session list
+    let available = ui.available_size_before_wrap();
+    let scroll_h = (available.y - 4.0).max(0.0);
     egui::ScrollArea::vertical()
         .id_salt("conversation_sidebar_list")
+        .auto_shrink([false, false])
+        .max_height(scroll_h)
         .show(ui, |ui| {
+            let mut to_delete = None;
             for session in &state.chat.sessions {
                 let matches = state.chat.search_query.is_empty()
                     || session
@@ -78,26 +82,35 @@ fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
                     .corner_radius(CornerRadius::same(8))
                     .inner_margin(egui::Margin::symmetric(10, 8))
                     .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
                         ui.horizontal(|ui| {
-                            // Unread dot
                             if session.unread {
-                                let (rect, _) =
-                                    ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(8.0, 8.0),
+                                    egui::Sense::hover(),
+                                );
                                 ui.painter()
                                     .circle_filled(rect.center(), 4.0, colors::RED_ACCENT);
                             } else {
                                 ui.add_sized(egui::vec2(8.0, 8.0), egui::Label::new(""));
                             }
                             ui.add_space(4.0);
+                            let text_width = (ui.available_width() - 44.0).max(60.0);
                             ui.vertical(|ui| {
+                                ui.set_width(text_width);
                                 ui.colored_label(
                                     colors::TEXT_PRIMARY,
-                                    egui::RichText::new(truncate(&session.title, 28)).size(13.0),
+                                    egui::RichText::new(truncate_to_width(&session.title, text_width)).size(13.0),
                                 );
                                 ui.colored_label(
                                     colors::TEXT_MUTED,
                                     format!("{} msg{}", session.messages.len(), if session.messages.len() == 1 { "" } else { "s" }),
                                 );
+                            });
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                                if ui.small_button("🗑").on_hover_text("Delete conversation").clicked() {
+                                    to_delete = Some(session.id);
+                                }
                             });
                         });
                     });
@@ -105,15 +118,18 @@ fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
                 if response.response.clicked() {
                     to_select = Some(session.id);
                 }
-                ui.add_space(2.0);
+                ui.add_space(4.0);
+            }
+
+            if let Some(delete_id) = to_delete {
+                let id_str = delete_id.to_string();
+                state.api_commands.push(ApiCommand::DeleteSession(id_str));
+                state.chat.delete_session(delete_id);
+                state.set_status("Conversation deleted".to_string());
             }
 
             if is_empty {
-                empty_state(
-                    ui,
-                    "No conversations yet",
-                    "Start a new chat to build your workspace.",
-                );
+                empty_state(ui, "No conversations yet", "Start a new chat to build your workspace.");
             }
         });
 
@@ -125,26 +141,22 @@ fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-// ── Resources ─────────────────────────────────────────────────────────
-
 fn draw_resources(ui: &mut egui::Ui, state: &mut AppState) {
     kv_card(
         ui,
-        "🧠  Memory",
+        "Memory",
         &format!("{} items cached", state.settings.memory_items.len()),
         colors::INFO,
         Some(|| state.api_commands.push(ApiCommand::FetchMemories)),
     );
     kv_card(
         ui,
-        "📚  Knowledge",
+        "Knowledge",
         &format!("{} docs indexed", state.settings.knowledge_docs.len()),
         colors::SUCCESS,
         Some(|| state.api_commands.push(ApiCommand::FetchDocuments)),
     );
 }
-
-// ── Agent ─────────────────────────────────────────────────────────────
 
 fn draw_agent(ui: &mut egui::Ui, state: &mut AppState) {
     let mode_name = state
@@ -163,20 +175,18 @@ fn draw_agent(ui: &mut egui::Ui, state: &mut AppState) {
         "Model not configured".to_string()
     };
 
-    kv_card_static(ui, "🤖  Mode", &mode_name, colors::RED_ACCENT);
-    kv_card_static(ui, "🎭  Persona", &persona_name, colors::WARNING);
-    kv_card_static(ui, "🧠  Model", &model_name, colors::INFO);
+    kv_card_static(ui, "Mode", &mode_name, colors::RED_ACCENT);
+    kv_card_static(ui, "Persona", &persona_name, colors::WARNING);
+    kv_card_static(ui, "Model", &model_name, colors::INFO);
 }
-
-// ── Integrations ──────────────────────────────────────────────────────
 
 fn draw_integrations(ui: &mut egui::Ui, state: &mut AppState) {
     let (voice_label, voice_color) = if state.voice_call.is_connected {
-        ("●  Connected", colors::SUCCESS)
+        ("Connected", colors::SUCCESS)
     } else if state.voice_call.is_connecting {
-        ("◌  Connecting", colors::WARNING)
+        ("Connecting", colors::WARNING)
     } else {
-        ("○  Idle", colors::TEXT_MUTED)
+        ("Idle", colors::TEXT_MUTED)
     };
     let mcp_connected = state
         .settings
@@ -191,10 +201,10 @@ fn draw_integrations(ui: &mut egui::Ui, state: &mut AppState) {
         .count();
     let mcp_total = state.settings.mcp_servers.len();
 
-    kv_card_static(ui, "🎙  Voice", voice_label, voice_color);
+    kv_card_static(ui, "Voice", voice_label, voice_color);
     kv_card_static(
         ui,
-        "🔗  MCP",
+        "MCP",
         &format!("{} / {} connected", mcp_connected, mcp_total),
         if mcp_total > 0 && mcp_connected == mcp_total {
             colors::SUCCESS
@@ -206,13 +216,11 @@ fn draw_integrations(ui: &mut egui::Ui, state: &mut AppState) {
     );
 
     ui.add_space(8.0);
-    if ui.button("📋  Open diagnostics").clicked() {
+    if ui.button("Open diagnostics").clicked() {
         state.drawer_open = true;
         state.drawer_tab = Some(crate::state::app_state::DrawerTab::Diagnostics);
     }
 }
-
-// ── Shared Components ─────────────────────────────────────────────────
 
 fn section_header(ui: &mut egui::Ui, section: ActivitySection) {
     let (title, subtitle) = match section {
@@ -229,7 +237,6 @@ fn section_header(ui: &mut egui::Ui, section: ActivitySection) {
         );
         ui.colored_label(colors::TEXT_MUTED, subtitle);
 
-        // Subtle separator line
         let sep_rect = egui::Rect::from_min_size(
             ui.cursor().min + egui::vec2(0.0, 4.0),
             egui::vec2(ui.available_width(), 1.0),
@@ -247,7 +254,8 @@ fn draw_search(ui: &mut egui::Ui, value: &mut String, hint: &str) {
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.colored_label(colors::TEXT_MUTED, "⌕");
+                ui.colored_label(colors::TEXT_MUTED, "Search");
+                ui.add_space(8.0);
                 ui.add(
                     egui::TextEdit::singleline(value)
                         .hint_text(hint)
@@ -258,7 +266,6 @@ fn draw_search(ui: &mut egui::Ui, value: &mut String, hint: &str) {
         });
 }
 
-/// Key-value card with left accent bar. Optionally shows a refresh button.
 fn kv_card<F: FnOnce()>(
     ui: &mut egui::Ui,
     label: &str,
@@ -277,7 +284,6 @@ fn kv_card<F: FnOnce()>(
             bottom: 9,
         })
         .show(ui, |ui| {
-            // Left accent bar
             let bar_rect = egui::Rect::from_min_size(
                 ui.min_rect().min,
                 egui::vec2(3.0, ui.min_rect().height()),
@@ -288,12 +294,9 @@ fn kv_card<F: FnOnce()>(
             ui.horizontal(|ui| {
                 ui.colored_label(colors::TEXT_SECONDARY, label);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.colored_label(
-                        accent,
-                        egui::RichText::new(value).size(13.0),
-                    );
+                    ui.colored_label(accent, egui::RichText::new(value).size(13.0));
                     if let Some(f) = cb.take() {
-                        if ui.small_button("↻").on_hover_text("Refresh").clicked() {
+                        if ui.small_button("Refresh").on_hover_text("Refresh").clicked() {
                             f();
                         }
                     }
@@ -303,7 +306,6 @@ fn kv_card<F: FnOnce()>(
     ui.add_space(6.0);
 }
 
-/// Key-value card without refresh button (simpler signature).
 fn kv_card_static(ui: &mut egui::Ui, label: &str, value: &str, accent: egui::Color32) {
     kv_card::<fn()>(ui, label, value, accent, None);
 }
@@ -312,18 +314,19 @@ fn empty_state(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     ui.add_space(32.0);
     ui.centered_and_justified(|ui| {
         ui.vertical(|ui| {
-            ui.colored_label(colors::TEXT_MUTED, egui::RichText::new("○").size(28.0));
             ui.colored_label(colors::TEXT_PRIMARY, egui::RichText::new(title).strong());
             ui.colored_label(colors::TEXT_MUTED, subtitle);
         });
     });
 }
 
-fn truncate(s: &str, max_chars: usize) -> String {
+fn truncate_to_width(s: &str, max_width: f32) -> String {
+    let avg_char_w = 8.0;
+    let max_chars = (max_width / avg_char_w).max(1.0) as usize;
     if s.chars().count() <= max_chars {
         s.to_string()
     } else {
         let truncated: String = s.chars().take(max_chars).collect();
-        format!("{truncated}…")
+        format!("{}...", truncated)
     }
 }

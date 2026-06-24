@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +30,8 @@ class Settings(BaseSettings):
     environment: Literal["development", "staging", "production"] = "development"
     api_secret_key: str = "change-me-to-a-random-string"
     api_cors_origins: list[str] = ["http://localhost:3000", "http://localhost:8000"]
+    cli_username: str = ""
+    cli_password: str = ""
 
     # ── Database ─────────────────────────────────────────────────────
     database_url: str = "postgresql+asyncpg://makima:makima@localhost:5432/makima"
@@ -74,6 +78,19 @@ class Settings(BaseSettings):
     otel_service_name: str = "makima-agent"
     otel_exporter_endpoint: str = "http://localhost:4317"
     prometheus_enabled: bool = True
+
+    @field_validator("api_cors_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, value: Any) -> Any:
+        """Accept either JSON arrays or simple comma-separated origin lists."""
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return []
+            if raw.startswith("["):
+                return json.loads(raw)
+            return [origin.strip() for origin in raw.split(",") if origin.strip()]
+        return value
 
 
 @lru_cache

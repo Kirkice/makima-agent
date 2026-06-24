@@ -2,32 +2,42 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-/// Matches backend DocumentResponse
+/// Matches backend DocumentResponse: {id, title, file_type, file_size, status, chunk_count, error, created_at}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiDocument {
     pub id: String,
-    pub filename: Option<String>,
-    pub status: Option<String>,
-    pub chunk_count: Option<u32>,
-    pub created_at: Option<String>,
+    pub title: String,
+    pub file_type: String,
+    pub file_size: u64,
+    pub status: String,
+    #[serde(default)]
+    pub chunk_count: u32,
+    pub error: Option<String>,
+    pub created_at: String,
 }
 
+/// Backend wraps document list: {"documents": [...], "count": N}
 #[derive(Debug, Deserialize)]
 struct DocumentListResponse {
-    items: Vec<ApiDocument>,
+    pub documents: Vec<ApiDocument>,
+    pub count: u64,
 }
 
+/// Backend retrieval response: {"results": [...], "count": N}
 #[derive(Debug, Deserialize)]
 pub struct RetrievalResult {
-    pub query: String,
-    pub chunks: Vec<RetrievalChunk>,
+    pub results: Vec<RetrievalChunk>,
+    pub count: u64,
 }
 
-#[derive(Debug, Deserialize)]
+/// Matches backend RetrievalResponse: {content, document_id, document_title, chunk_index, score}
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrievalChunk {
     pub content: String,
-    pub score: Option<f32>,
-    pub source: Option<String>,
+    pub document_id: String,
+    pub document_title: String,
+    pub chunk_index: u32,
+    pub score: f32,
 }
 
 pub struct KnowledgeApi {
@@ -41,13 +51,15 @@ impl KnowledgeApi {
         Self { client, base_url, token }
     }
 
-    /// GET /knowledge/documents
+    /// GET /knowledge/documents → {documents: [...], count: N}
     pub async fn list(&self) -> Result<Vec<ApiDocument>> {
         let url = format!("{}/knowledge/documents", self.base_url);
         let resp = self.client.get(&url).bearer_auth(&self.token).send().await
             .context("Failed to fetch documents")?;
         if !resp.status().is_success() { anyhow::bail!("Failed: {}", resp.status()); }
-        Ok(resp.json::<DocumentListResponse>().await.map(|l| l.items).unwrap_or_default())
+        let wrapper: DocumentListResponse = resp.json().await
+            .context("Failed to parse documents")?;
+        Ok(wrapper.documents)
     }
 
     /// DELETE /knowledge/documents/{id}
@@ -58,7 +70,7 @@ impl KnowledgeApi {
         Ok(())
     }
 
-    /// POST /knowledge/retrieve
+    /// POST /knowledge/retrieve → {results: [...], count: N}
     pub async fn retrieve(&self, query: &str) -> Result<RetrievalResult> {
         let url = format!("{}/knowledge/retrieve", self.base_url);
         let body = serde_json::json!({ "query": query });

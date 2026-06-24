@@ -23,7 +23,12 @@ pub struct AppConfig {
     pub drawer_height: f32,
     pub show_context_panel: bool,
     pub drawer_open: bool,
+    /// Whether to auto-start the backend on app launch
+    #[serde(default = "default_true")]
+    pub auto_start_backend: bool,
 }
+
+fn default_true() -> bool { true }
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -39,6 +44,7 @@ impl Default for AppConfig {
             drawer_height: 220.0,
             show_context_panel: true,
             drawer_open: false,
+            auto_start_backend: true,
         }
     }
 }

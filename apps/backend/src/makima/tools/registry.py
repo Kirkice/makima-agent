@@ -1,16 +1,36 @@
-"""Tool registry — manages all available tools."""
+"""Tool registry — manages all available tools.
+
+When the Rust tool runtime is available, Rust-accelerated wrappers are used
+for shell/file/http tools. These wrappers try Rust first and fall back to
+Python implementations if the Rust gRPC service is unreachable.
+"""
 
 from __future__ import annotations
 
 from langchain_core.tools import BaseTool
 
-from makima.tools.file_tool import read_file, write_file, list_directory
-from makima.tools.shell_tool import execute_shell
-from makima.tools.http_tool import http_request
 from makima.tools.switch_mode import switch_mode
 from makima_common.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Try to import Rust-accelerated tools; fall back to pure Python
+try:
+    from makima.tools.rust_tools import (
+        read_file,
+        write_file,
+        list_directory,
+        execute_shell,
+        http_request,
+    )
+    _USING_RUST_TOOLS = True
+    logger.info("Using Rust-accelerated tool wrappers")
+except ImportError:
+    from makima.tools.file_tool import read_file, write_file, list_directory
+    from makima.tools.shell_tool import execute_shell
+    from makima.tools.http_tool import http_request
+    _USING_RUST_TOOLS = False
+    logger.info("Rust tool wrappers not available, using Python tools")
 
 # All available tools
 _AVAILABLE_TOOLS: list[BaseTool] = [

@@ -29,7 +29,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             egui::Frame::NONE.fill(colors::GRAPHITE_ELEVATED).corner_radius(egui::CornerRadius::same(4))
                 .inner_margin(egui::Margin::symmetric(8, 4))
                 .show(ui, |ui| {
-                    ui.label(format!("{} ({} chunks)", doc.filename.as_deref().unwrap_or("?"), doc.chunk_count.unwrap_or(0)));
+                    ui.label(format!("{} ({} chunks)", doc.title, doc.chunk_count));
                 });
             ui.add_space(2.0);
         }
