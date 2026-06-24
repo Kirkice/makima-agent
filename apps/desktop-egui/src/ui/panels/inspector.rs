@@ -8,8 +8,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         header(ui);
         ui.add_space(14.0);
 
-        // ── Agent ──
-        section_title(ui, "🤖  Agent");
+        section_title(ui, "Agent");
         ui.add_space(6.0);
 
         kv_card(
@@ -33,10 +32,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             colors::INFO,
         );
 
-        // ── Session ──
         if let Some(session) = state.chat.active_session() {
             ui.add_space(12.0);
-            section_title(ui, "📊  Session");
+            section_title(ui, "Session");
             ui.add_space(6.0);
 
             kv_card(
@@ -51,9 +49,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             kv_card(ui, "Est. Cost", &format!("${:.5}", cost), colors::TEXT_MUTED);
         }
 
-        // ── Task ──
         ui.add_space(12.0);
-        section_title(ui, "⚡  Task");
+        section_title(ui, "Task");
         ui.add_space(6.0);
 
         if let Some(task) = &state.task.active_task {
@@ -66,27 +63,34 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             kv_card(
                 ui,
                 "Timeline",
-                &format!("{} step{}", task.timeline.len(), if task.timeline.len() == 1 { "" } else { "s" }),
+                &format!(
+                    "{} step{}",
+                    task.timeline.len(),
+                    if task.timeline.len() == 1 { "" } else { "s" }
+                ),
                 colors::TEXT_MUTED,
             );
         } else {
             kv_card(ui, "Status", "Idle", colors::TEXT_MUTED);
         }
 
-        // ── Voice ──
         ui.add_space(12.0);
-        section_title(ui, "🎙  Voice");
+        section_title(ui, "Voice");
         ui.add_space(6.0);
 
         let (voice_label, voice_color) = if state.voice_call.is_connected {
-            ("●  Connected", colors::SUCCESS)
+            ("Connected", colors::SUCCESS)
         } else if state.voice_call.is_connecting {
-            ("◌  Connecting", colors::WARNING)
+            ("Connecting", colors::WARNING)
         } else {
-            ("○  Idle", colors::TEXT_MUTED)
+            ("Idle", colors::TEXT_MUTED)
         };
         kv_card(ui, "Status", voice_label, voice_color);
     });
+}
+
+fn is_narrow(ui: &egui::Ui) -> bool {
+    ui.available_width() < 210.0
 }
 
 fn header(ui: &mut egui::Ui) {
@@ -94,9 +98,8 @@ fn header(ui: &mut egui::Ui) {
         colors::TEXT_PRIMARY,
         egui::RichText::new("Context").size(16.0).strong(),
     );
-    ui.colored_label(colors::TEXT_MUTED, "Current session summary");
+    ui.add(egui::Label::new(egui::RichText::new("Current session summary").color(colors::TEXT_MUTED)).wrap());
 
-    // Subtle separator line
     let sep_rect = egui::Rect::from_min_size(
         ui.cursor().min + egui::vec2(0.0, 4.0),
         egui::vec2(ui.available_width(), 1.0),
@@ -107,13 +110,17 @@ fn header(ui: &mut egui::Ui) {
 }
 
 fn section_title(ui: &mut egui::Ui, title: &str) {
-    ui.colored_label(
-        colors::TEXT_SECONDARY,
-        egui::RichText::new(title).size(12.0).strong(),
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(title)
+                .size(if is_narrow(ui) { 11.0 } else { 12.0 })
+                .strong()
+                .color(colors::TEXT_SECONDARY),
+        )
+        .wrap(),
     );
 }
 
-/// Key-value info card with left accent border and horizontal label-value layout.
 fn kv_card(ui: &mut egui::Ui, label: &str, value: &str, accent: egui::Color32) {
     egui::Frame::NONE
         .fill(colors::ELEVATED)
@@ -125,7 +132,6 @@ fn kv_card(ui: &mut egui::Ui, label: &str, value: &str, accent: egui::Color32) {
             bottom: 9,
         })
         .show(ui, |ui| {
-            // Left accent bar
             let bar_rect = egui::Rect::from_min_size(
                 ui.min_rect().min,
                 egui::vec2(3.0, ui.min_rect().height()),
@@ -133,15 +139,33 @@ fn kv_card(ui: &mut egui::Ui, label: &str, value: &str, accent: egui::Color32) {
             ui.painter()
                 .rect_filled(bar_rect, CornerRadius::same(2), accent);
 
-            ui.horizontal(|ui| {
-                ui.colored_label(colors::TEXT_MUTED, label);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.colored_label(
-                        egui::Color32::WHITE,
-                        egui::RichText::new(value).size(13.0),
+            if is_narrow(ui) {
+                ui.vertical(|ui| {
+                    ui.colored_label(colors::TEXT_MUTED, label);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(value)
+                                .size(13.0)
+                                .color(egui::Color32::WHITE),
+                        )
+                        .wrap(),
                     );
                 });
-            });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.colored_label(colors::TEXT_MUTED, label);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(value)
+                                    .size(13.0)
+                                    .color(egui::Color32::WHITE),
+                            )
+                            .wrap(),
+                        );
+                    });
+                });
+            }
         });
     ui.add_space(6.0);
 }

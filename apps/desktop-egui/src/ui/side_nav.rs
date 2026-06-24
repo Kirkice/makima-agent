@@ -17,30 +17,50 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     });
 }
 
+fn is_narrow(ui: &egui::Ui) -> bool {
+    ui.available_width() < 220.0
+}
+
 fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Frame::NONE
         .fill(colors::ELEVATED)
         .corner_radius(CornerRadius::same(8))
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.colored_label(
-                    colors::TEXT_PRIMARY,
-                    egui::RichText::new("Recent").size(13.0).strong(),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let button = egui::Button::new("+ New")
-                        .fill(colors::RED_ACCENT)
-                        .stroke(egui::Stroke::NONE)
-                        .min_size(egui::vec2(64.0, 26.0));
-                    if ui.add(button).clicked() {
+            let new_button = egui::Button::new("+ New")
+                .fill(colors::RED_ACCENT)
+                .stroke(egui::Stroke::NONE)
+                .min_size(egui::vec2(64.0, 26.0));
+
+            if is_narrow(ui) {
+                ui.vertical(|ui| {
+                    ui.colored_label(
+                        colors::TEXT_PRIMARY,
+                        egui::RichText::new("Recent").size(13.0).strong(),
+                    );
+                    if ui.add_sized([ui.available_width(), 26.0], new_button).clicked() {
                         state
                             .chat
                             .create_session(format!("Chat {}", state.chat.sessions.len() + 1));
                         state.set_status("New session created".to_string());
                     }
                 });
-            });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        colors::TEXT_PRIMARY,
+                        egui::RichText::new("Recent").size(13.0).strong(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(new_button).clicked() {
+                            state
+                                .chat
+                                .create_session(format!("Chat {}", state.chat.sessions.len() + 1));
+                            state.set_status("New session created".to_string());
+                        }
+                    });
+                });
+            }
         });
     ui.add_space(8.0);
 
@@ -53,7 +73,6 @@ fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
         ui.add_space(10.0);
     }
 
-    // Use remaining vertical space for the session list
     let available = ui.available_size_before_wrap();
     let scroll_h = (available.y - 4.0).max(0.0);
     egui::ScrollArea::vertical()
@@ -62,6 +81,7 @@ fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
         .max_height(scroll_h)
         .show(ui, |ui| {
             let mut to_delete = None;
+
             for session in &state.chat.sessions {
                 let matches = state.chat.search_query.is_empty()
                     || session
@@ -73,54 +93,71 @@ fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
                 }
 
                 let selected = Some(session.id) == active_id;
-
-                // Use Frame for proper layering: fill draws behind content
                 let response = egui::Frame::NONE
-                    .fill(if selected { colors::SELECTION_SOFT } else { colors::TRANSPARENT })
+                    .fill(if selected {
+                        colors::SELECTION_SOFT
+                    } else {
+                        colors::TRANSPARENT
+                    })
                     .corner_radius(CornerRadius::same(8))
                     .inner_margin(egui::Margin::symmetric(10, 6))
                     .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            // Unread dot — only show indicator when unread
-                            if session.unread {
-                                let (dot_rect, _) = ui.allocate_exact_size(
-                                    egui::vec2(6.0, 6.0),
-                                    egui::Sense::hover(),
-                                );
-                                ui.painter().circle_filled(dot_rect.center(), 3.0, colors::RED_ACCENT);
-                                ui.add_space(6.0);
-                            } else {
-                                // Small reserved space for visual alignment (narrower)
-                                ui.add_sized(egui::vec2(6.0, 6.0), egui::Label::new(""));
-                                ui.add_space(6.0);
-                            }
-
-                            // Title + message count
+                        if ui.available_width() < 170.0 {
                             ui.vertical(|ui| {
+                                let label_w = ui.available_width().max(60.0);
                                 ui.colored_label(
                                     colors::TEXT_PRIMARY,
-                                    egui::RichText::new(truncate_to_width(&session.title, ui.available_width() - 40.0)).size(13.0),
+                                    egui::RichText::new(truncate_to_width(&session.title, label_w)).size(13.0),
                                 );
                                 ui.colored_label(
                                     colors::TEXT_MUTED,
                                     egui::RichText::new(format!("{} msg", session.messages.len())).size(11.0),
                                 );
-                            });
-
-                            // Push delete button to the right edge
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("🗑").on_hover_text("Delete conversation").clicked() {
+                                if ui.small_button("Delete").on_hover_text("Delete conversation").clicked() {
                                     to_delete = Some(session.id);
                                 }
                             });
-                        });
+                        } else {
+                            ui.horizontal(|ui| {
+                                if session.unread {
+                                    let (dot_rect, _) = ui.allocate_exact_size(
+                                        egui::vec2(6.0, 6.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    ui.painter()
+                                        .circle_filled(dot_rect.center(), 3.0, colors::RED_ACCENT);
+                                    ui.add_space(6.0);
+                                } else {
+                                    ui.add_sized(egui::vec2(6.0, 6.0), egui::Label::new(""));
+                                    ui.add_space(6.0);
+                                }
+
+                                let label_w = (ui.available_width() - 52.0).max(40.0);
+                                ui.vertical(|ui| {
+                                    ui.set_width(label_w);
+                                    ui.colored_label(
+                                        colors::TEXT_PRIMARY,
+                                        egui::RichText::new(truncate_to_width(&session.title, label_w)).size(13.0),
+                                    );
+                                    ui.colored_label(
+                                        colors::TEXT_MUTED,
+                                        egui::RichText::new(format!("{} msg", session.messages.len())).size(11.0),
+                                    );
+                                });
+
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.small_button("Del").on_hover_text("Delete conversation").clicked() {
+                                        to_delete = Some(session.id);
+                                    }
+                                });
+                            });
+                        }
                     });
 
                 if response.response.clicked() {
                     to_select = Some(session.id);
                 }
-
-                ui.add_space(2.0);
+                ui.add_space(4.0);
             }
 
             if let Some(delete_id) = to_delete {
@@ -214,7 +251,10 @@ fn draw_integrations(ui: &mut egui::Ui, state: &mut AppState) {
     );
 
     ui.add_space(8.0);
-    if ui.button("Open diagnostics").clicked() {
+    if ui
+        .add_sized([ui.available_width(), 28.0], egui::Button::new("Open diagnostics"))
+        .clicked()
+    {
         state.drawer_open = true;
         state.drawer_tab = Some(crate::state::app_state::DrawerTab::Diagnostics);
     }
@@ -233,7 +273,7 @@ fn section_header(ui: &mut egui::Ui, section: ActivitySection) {
             colors::TEXT_PRIMARY,
             egui::RichText::new(title).size(16.0).strong(),
         );
-        ui.colored_label(colors::TEXT_MUTED, subtitle);
+        ui.add(egui::Label::new(egui::RichText::new(subtitle).color(colors::TEXT_MUTED)).wrap());
 
         let sep_rect = egui::Rect::from_min_size(
             ui.cursor().min + egui::vec2(0.0, 4.0),
@@ -251,16 +291,28 @@ fn draw_search(ui: &mut egui::Ui, value: &mut String, hint: &str) {
         .corner_radius(CornerRadius::same(8))
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.colored_label(colors::TEXT_MUTED, "Search");
-                ui.add_space(8.0);
-                ui.add(
-                    egui::TextEdit::singleline(value)
-                        .hint_text(hint)
-                        .frame(false)
-                        .desired_width(f32::INFINITY),
-                );
-            });
+            if is_narrow(ui) {
+                ui.vertical(|ui| {
+                    ui.colored_label(colors::TEXT_MUTED, "Search");
+                    ui.add(
+                        egui::TextEdit::singleline(value)
+                            .hint_text(hint)
+                            .frame(false)
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.colored_label(colors::TEXT_MUTED, "Search");
+                    ui.add_space(8.0);
+                    ui.add(
+                        egui::TextEdit::singleline(value)
+                            .hint_text(hint)
+                            .frame(false)
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+            }
         });
 }
 
@@ -289,17 +341,29 @@ fn kv_card<F: FnOnce()>(
             ui.painter()
                 .rect_filled(bar_rect, CornerRadius::same(2), accent);
 
-            ui.horizontal(|ui| {
-                ui.colored_label(colors::TEXT_SECONDARY, label);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.colored_label(accent, egui::RichText::new(value).size(13.0));
+            if is_narrow(ui) {
+                ui.vertical(|ui| {
+                    ui.colored_label(colors::TEXT_SECONDARY, label);
+                    ui.add(egui::Label::new(egui::RichText::new(value).size(13.0).color(accent)).wrap());
                     if let Some(f) = cb.take() {
                         if ui.small_button("Refresh").on_hover_text("Refresh").clicked() {
                             f();
                         }
                     }
                 });
-            });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.colored_label(colors::TEXT_SECONDARY, label);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.colored_label(accent, egui::RichText::new(value).size(13.0));
+                        if let Some(f) = cb.take() {
+                            if ui.small_button("Refresh").on_hover_text("Refresh").clicked() {
+                                f();
+                            }
+                        }
+                    });
+                });
+            }
         });
     ui.add_space(6.0);
 }
