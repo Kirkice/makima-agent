@@ -1,10 +1,11 @@
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 
 use crate::api::{auth::AuthApi, health::HealthApi, sessions::SessionsApi, tasks::TasksApi};
-use crate::config::app_config::AppConfig;
+use crate::config::app_config::{AppConfig, DEFAULT_SERVER_URL, normalize_server_url};
 use crate::config::secure_store::SecureStore;
 use crate::state::app_state::{AppState, ViewMode};
 use crate::ui;
@@ -21,7 +22,7 @@ pub struct LoginDialogState {
 
 impl Default for LoginDialogState {
     fn default() -> Self {
-        Self { username: String::new(), password: String::new(), server_url: "http://localhost:8000".to_string(), error: None, loading: false }
+        Self { username: String::new(), password: String::new(), server_url: DEFAULT_SERVER_URL.to_string(), error: None, loading: false }
     }
 }
 
@@ -55,6 +56,8 @@ impl Default for MakimaApp {
         let secure_store = SecureStore::new();
         let mut login_dialog = LoginDialogState::default();
         login_dialog.server_url = config.server_url.clone();
+        login_dialog.username = std::env::var("MAKIMA_CLI_USERNAME").unwrap_or_default();
+        login_dialog.password = std::env::var("MAKIMA_CLI_PASSWORD").unwrap_or_default();
 
         // Restore persisted layout
         {
@@ -71,7 +74,11 @@ impl Default for MakimaApp {
         if let Some(token) = secure_store.get_token() {
             if let Ok(mut s) = state.lock() { s.auth_token = Some(token); s.is_logged_in = true; s.server_url = config.server_url.clone(); }
         }
-        let client = reqwest::Client::builder().user_agent("makima-desktop/0.1.0").build().expect("Failed to create HTTP client");
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .user_agent("makima-desktop/0.1.0")
+            .build()
+            .expect("Failed to create HTTP client");
 
         // Initialize app_dock before moving state into Self
         let app_dock = {
@@ -109,10 +116,11 @@ impl MakimaApp {
 
         let username = self.login_dialog.username.clone();
         let password = self.login_dialog.password.clone();
-        let server_url = self.login_dialog.server_url.clone();
+        let server_url = normalize_server_url(self.login_dialog.server_url.clone());
         let state = self.state.clone();
         let client = self.client.clone();
 
+        self.login_dialog.server_url = server_url.clone();
         self.config.server_url = server_url.clone();
         let _ = self.config.save();
 
@@ -476,6 +484,26 @@ async fn try_env_auto_login(
             }
             load_sessions_into_state(state, client, server_url, token).await;
             true
+}
+
+async fn wait_for_backend_ready(
+    client: reqwest::Client,
+    server_url: String,
+    attempts: usize,
+    delay: Duration,
+) -> bool {
+    for attempt in 0..attempts {
+        let health_api = HealthApi::new(client.clone(), server_url.clone());
+        if health_api.check().await.is_ok() {
+            return true;
+        }
+
+        if attempt + 1 < attempts {
+            tokio::time::sleep(delay).await;
+        }
+    }
+
+    false
 }
 
 impl eframe::App for MakimaApp {
@@ -1190,16 +1218,31 @@ impl MakimaApp {
         let state = self.state.clone();
         let client = self.client.clone();
         let server_url = self.config.server_url.clone();
+        let auto_connect = self.config.auto_connect;
         let secure_store = SecureStore::new();
 
         self.runtime.spawn(async move {
-            let health_api = HealthApi::new(client.clone(), server_url.clone());
-            let backend_ok = health_api.check().await.is_ok();
+            let backend_ok = if auto_connect {
+                {
+                    let mut s = state.lock().unwrap();
+                    s.login_in_progress = true;
+                    s.set_status("Waiting for backend...".to_string());
+                }
+                wait_for_backend_ready(client.clone(), server_url.clone(), 20, Duration::from_millis(500)).await
+            } else {
+                let health_api = HealthApi::new(client.clone(), server_url.clone());
+                health_api.check().await.is_ok()
+            };
             let token = {
                 let mut s = state.lock().unwrap();
                 s.settings.health.backend = backend_ok;
                 s.settings.health.api_base_url = server_url.clone();
-                if !backend_ok { s.show_login = true; s.set_status("Backend offline".to_string()); return; }
+                if !backend_ok {
+                    s.login_in_progress = false;
+                    s.show_login = true;
+                    s.set_status("Backend offline".to_string());
+                    return;
+                }
                 s.auth_token.clone()
             };
 
@@ -1209,7 +1252,10 @@ impl MakimaApp {
                 if is_valid {
                     {
                         let mut s = state.lock().unwrap();
-                        s.is_logged_in = true; s.set_status("Authenticated".to_string());
+                        s.is_logged_in = true;
+                        s.login_in_progress = false;
+                        s.show_login = false;
+                        s.set_status("Authenticated".to_string());
                     }
                     load_sessions_into_state(state, client, server_url, token).await;
                 } else {
@@ -1220,13 +1266,19 @@ impl MakimaApp {
                         s.is_logged_in = false;
                         s.login_in_progress = false;
                     }
-                    if !try_env_auto_login(state.clone(), client.clone(), server_url.clone()).await {
+                    if auto_connect && try_env_auto_login(state.clone(), client.clone(), server_url.clone()).await {
+                        return;
+                    }
+                    {
                         let mut s = state.lock().unwrap();
                         s.show_login = true;
                     }
                 }
             } else {
-                if !try_env_auto_login(state.clone(), client.clone(), server_url.clone()).await {
+                if auto_connect && try_env_auto_login(state.clone(), client.clone(), server_url.clone()).await {
+                    return;
+                }
+                {
                     let mut s = state.lock().unwrap();
                     s.login_in_progress = false;
                     s.show_login = true;

@@ -1,3 +1,4 @@
+use crate::config::app_config::DEFAULT_SERVER_URL;
 use crate::state::chat_state::ChatState;
 use crate::state::settings_state::SettingsState;
 use crate::state::task_state::TaskState;
@@ -189,7 +190,7 @@ impl Default for AppState {
             voice_call: VoiceCallState::default(),
             auth_token: None,
             is_logged_in: false,
-            server_url: "http://localhost:8000".to_string(),
+            server_url: DEFAULT_SERVER_URL.to_string(),
             app_config_path: None,
             status_message: None,
             login_error: None,

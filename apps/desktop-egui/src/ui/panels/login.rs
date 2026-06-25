@@ -1,6 +1,7 @@
 use eframe::egui::{self, CornerRadius, Frame, Margin, Stroke};
 
 use crate::app::LoginDialogState;
+use crate::config::app_config::DEFAULT_SERVER_URL;
 use crate::state::app_state::AppState;
 use crate::theme::colors;
 
@@ -50,7 +51,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState, login_state: &mut LoginDial
 
                 ui.add_space(28.0);
 
-                field(ui, "Server URL", &mut login_state.server_url, "http://localhost:8000");
+                field(ui, "Server URL", &mut login_state.server_url, DEFAULT_SERVER_URL);
                 ui.add_space(12.0);
                 field(ui, "Username", &mut login_state.username, "admin");
                 ui.add_space(12.0);

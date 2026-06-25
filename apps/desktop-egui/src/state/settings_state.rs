@@ -1,3 +1,4 @@
+use crate::config::app_config::DEFAULT_SERVER_URL;
 use serde::{Deserialize, Serialize};
 
 /// Tool group configuration within a mode
@@ -177,7 +178,7 @@ impl Default for SettingsState {
                 backend: false,
                 auth: false,
                 sse_connected: false,
-                api_base_url: "http://localhost:8000".to_string(),
+                api_base_url: DEFAULT_SERVER_URL.to_string(),
             },
             token_estimate_per_1k: 0.003,
             config_path: None,

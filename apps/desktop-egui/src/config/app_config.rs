@@ -3,6 +3,15 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8000";
+
+pub fn normalize_server_url(server_url: impl Into<String>) -> String {
+    let server_url = server_url.into();
+    server_url
+        .replace("http://localhost:", "http://127.0.0.1:")
+        .replace("https://localhost:", "https://127.0.0.1:")
+}
+
 /// Application configuration stored locally as JSON
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -33,7 +42,7 @@ fn default_true() -> bool { true }
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            server_url: "http://localhost:8000".to_string(),
+            server_url: DEFAULT_SERVER_URL.to_string(),
             window_width: 1400.0,
             window_height: 900.0,
             auto_connect: true,
@@ -80,8 +89,9 @@ impl AppConfig {
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read config file: {:?}", path))?;
 
-        let config: AppConfig = serde_json::from_str(&content)
+        let mut config: AppConfig = serde_json::from_str(&content)
             .with_context(|| format!("Failed to parse config file: {:?}", path))?;
+        config.server_url = normalize_server_url(config.server_url);
 
         Ok(config)
     }

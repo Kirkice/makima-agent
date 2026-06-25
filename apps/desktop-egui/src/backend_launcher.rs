@@ -4,6 +4,7 @@
 //! if no backend is already running. Cleans up the child process on exit.
 
 use std::path::PathBuf;
+use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -70,6 +71,7 @@ fn verify_health(body: &str) -> bool {
 /// Check if the backend is already running by hitting the health endpoint.
 fn is_backend_running() -> bool {
     let client = match reqwest::blocking::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(2))
         .build()
     {
@@ -88,10 +90,15 @@ fn is_backend_running() -> bool {
     }
 }
 
+fn is_port_available() -> bool {
+    TcpListener::bind("127.0.0.1:8000").is_ok()
+}
+
 /// Wait for the backend to become ready by polling the health endpoint.
-fn wait_for_backend(timeout: Duration) -> bool {
+fn wait_for_backend(child: &mut Child, timeout: Duration) -> bool {
     let start = Instant::now();
     let client = match reqwest::blocking::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(2))
         .build()
     {
@@ -103,6 +110,11 @@ fn wait_for_backend(timeout: Duration) -> bool {
     };
 
     while start.elapsed() < timeout {
+        if let Ok(Some(status)) = child.try_wait() {
+            tracing::error!("Backend process exited before becoming ready: {}", status);
+            return false;
+        }
+
         match client.get(HEALTH_URL).send() {
             Ok(resp) if resp.status().is_success() => {
                 if let Ok(body) = resp.text() {
@@ -190,6 +202,14 @@ pub fn ensure_backend_running() -> BackendProcess {
         return BackendProcess::none();
     }
 
+    if !is_port_available() {
+        tracing::error!(
+            "Port 8000 is already in use, but the listener does not look like Makima."
+        );
+        tracing::error!("Free port 8000 or stop the conflicting process, then relaunch.");
+        return BackendProcess::none();
+    }
+
     tracing::info!("Backend not running, starting uvicorn...");
 
     let project_root = find_project_root();
@@ -240,24 +260,25 @@ pub fn ensure_backend_running() -> BackendProcess {
             "--app-dir",
             &app_dir,
             "--host",
-            "0.0.0.0",
+            "127.0.0.1",
             "--port",
             "8000",
-            "--reload",
         ])
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1")
         .current_dir(&project_root)
         .stdout(make_stdio())
         .stderr(make_stdio())
         .spawn();
 
     match result {
-        Ok(child) => {
+        Ok(mut child) => {
             let pid = child.id();
             tracing::info!("Backend process started (PID: {})", pid);
 
             // Wait for it to become ready
             let timeout = Duration::from_secs(STARTUP_TIMEOUT_SECS);
-            if wait_for_backend(timeout) {
+            if wait_for_backend(&mut child, timeout) {
                 tracing::info!("Backend ready at {}", HEALTH_URL);
                 BackendProcess::new(child)
             } else {
