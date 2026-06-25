@@ -65,7 +65,7 @@ impl Default for MakimaApp {
             s.conversations_width = config.sidebar_width;
             s.inspector_width = config.inspector_width;
             s.drawer_height = config.drawer_height;
-            s.show_context_panel = config.show_context_panel;
+            s.show_settings_panel = config.show_settings_panel;
             s.drawer_open = config.drawer_open;
             s.server_url = config.server_url.clone();
             normalize_layout(&mut s);
@@ -85,7 +85,7 @@ impl Default for MakimaApp {
             let state_guard = state.lock().unwrap();
             init_app_dock(
                 ViewMode::Chat,
-                state_guard.show_context_panel,
+                state_guard.show_settings_panel,
                 state_guard.conversations_width,
                 state_guard.inspector_width,
                 egui::vec2(config.window_width, config.window_height),
@@ -591,7 +591,7 @@ impl eframe::App for MakimaApp {
             let sidebar_w = state.conversations_width;
             let inspector_w = state.inspector_width;
             let drawer_h = state.drawer_height;
-            let show_ctx = state.show_context_panel;
+            let show_ctx = state.show_settings_panel;
             let drawer_open = state.drawer_open;
 
             if (self.config.sidebar_width - sidebar_w).abs() > 1.0 {
@@ -606,8 +606,8 @@ impl eframe::App for MakimaApp {
                 self.config.drawer_height = drawer_h;
                 need_save = true;
             }
-            if self.config.show_context_panel != show_ctx {
-                self.config.show_context_panel = show_ctx;
+            if self.config.show_settings_panel != show_ctx {
+                self.config.show_settings_panel = show_ctx;
                 need_save = true;
             }
             if self.config.drawer_open != drawer_open {

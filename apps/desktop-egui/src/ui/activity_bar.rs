@@ -1,18 +1,16 @@
 use eframe::egui::{self, CornerRadius, FontId, Sense, Vec2};
 
-use crate::state::app_state::{ActivitySection, AppState};
+use crate::state::app_state::AppState;
 use crate::theme::colors;
 
-pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
+pub fn draw(ui: &mut egui::Ui, _state: &mut AppState) {
     ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
         ui.add_space(4.0);
         draw_brand_dot(ui);
         ui.add_space(18.0);
 
-        activity_button(ui, state, ActivitySection::Sessions, "💬", "Conversations");
-        activity_button(ui, state, ActivitySection::Resources, "📦", "Resources");
-        activity_button(ui, state, ActivitySection::Agent, "🤖", "Agent");
-        activity_button(ui, state, ActivitySection::Integrations, "🔗", "Integrations");
+        // Only Sessions button — all other sections moved to Settings panel
+        sessions_button(ui, "💬", "Conversations");
     });
 }
 
@@ -22,19 +20,10 @@ fn draw_brand_dot(ui: &mut egui::Ui) {
         .circle_filled(rect.center(), 4.0, colors::RED_ACCENT);
 }
 
-fn activity_button(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    section: ActivitySection,
-    icon: &str,
-    tooltip: &str,
-) {
-    let active = state.activity_section == section;
+fn sessions_button(ui: &mut egui::Ui, icon: &str, tooltip: &str) {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
 
-    let bg = if active {
-        colors::SELECTION_SOFT
-    } else if response.hovered() {
+    let bg = if response.hovered() {
         colors::ELEVATED
     } else {
         colors::TRANSPARENT
@@ -43,13 +32,9 @@ fn activity_button(
     ui.painter()
         .rect_filled(rect, CornerRadius::same(10), bg);
 
-    // Draw icon text centered in the button
-    let icon_size = if active { 18.0 } else { 16.0 };
-    let icon_color = if active {
-        colors::ICON_ACTIVE
-    } else {
-        colors::ICON_DEFAULT
-    };
+    // Always show as active — this is the only button
+    let icon_size = 18.0;
+    let icon_color = colors::ICON_ACTIVE;
     let galley = ui.painter().layout_no_wrap(
         icon.to_string(),
         FontId::proportional(icon_size),
@@ -62,7 +47,7 @@ fn activity_button(
     );
 
     if response.on_hover_text(tooltip).clicked() {
-        state.activity_section = section;
+        // No-op — sessions is always shown now
     }
 
     ui.add_space(6.0);

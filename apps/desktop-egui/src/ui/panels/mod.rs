@@ -1,4 +1,4 @@
-pub mod inspector;
+pub mod settings;
 pub mod diagnostics;
 pub mod login;
 pub mod modes;

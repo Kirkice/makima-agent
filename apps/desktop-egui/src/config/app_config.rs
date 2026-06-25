@@ -30,7 +30,7 @@ pub struct AppConfig {
     pub sidebar_width: f32,
     pub inspector_width: f32,
     pub drawer_height: f32,
-    pub show_context_panel: bool,
+    pub show_settings_panel: bool,
     pub drawer_open: bool,
     /// Whether to auto-start the backend on app launch
     #[serde(default = "default_true")]
@@ -51,7 +51,7 @@ impl Default for AppConfig {
             sidebar_width: 300.0,
             inspector_width: 210.0,
             drawer_height: 155.0,
-            show_context_panel: true,
+            show_settings_panel: true,
             drawer_open: false,
             auto_start_backend: true,
         }

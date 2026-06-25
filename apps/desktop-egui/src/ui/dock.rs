@@ -5,28 +5,27 @@ use crate::app::UiAction;
 use crate::state::app_state::{AppState, ViewMode};
 use crate::theme::colors;
 
-use super::activity_bar;
 use super::chat::composer;
-use super::panels::inspector;
-use super::side_nav;
+use super::panels::settings;
+use super::recent_chat;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AppDockTab {
-    Sidebar,
+    RecentChat,
     Chat,
     Avatar,
     Composer,
-    Context,
+    Settings,
 }
 
 impl AppDockTab {
     pub fn title(&self) -> &'static str {
         match self {
-            Self::Sidebar => "Sidebar",
+            Self::RecentChat => "Recent",
             Self::Chat => "Chat",
             Self::Avatar => "Avatar",
             Self::Composer => "Composer",
-            Self::Context => "Context",
+            Self::Settings => "Settings",
         }
     }
 }
@@ -34,27 +33,27 @@ impl AppDockTab {
 pub type AppDockState = DockState<AppDockTab>;
 
 const DEFAULT_SIDEBAR_WIDTH: f32 = 300.0;
-const DEFAULT_CONTEXT_WIDTH: f32 = 210.0;
+const DEFAULT_SETTINGS_WIDTH: f32 = 280.0;
 const DEFAULT_COMPOSER_HEIGHT: f32 = 155.0;
 const MIN_SIDEBAR_PIXELS: f32 = 260.0;
 const MAX_SIDEBAR_PIXELS: f32 = 340.0;
-const MIN_CONTEXT_PIXELS: f32 = 180.0;
-const MAX_CONTEXT_PIXELS: f32 = 240.0;
+const MIN_SETTINGS_PIXELS: f32 = 240.0;
+const MAX_SETTINGS_PIXELS: f32 = 380.0;
 const MIN_COMPOSER_PIXELS: f32 = 140.0;
 const MAX_COMPOSER_PIXELS: f32 = 220.0;
 
 pub fn init_app_dock(
     view_mode: ViewMode,
-    show_context_panel: bool,
+    show_settings_panel: bool,
     sidebar_width: f32,
-    context_width: f32,
+    settings_width: f32,
     available_size: egui::Vec2,
 ) -> AppDockState {
     let mut dock_state = DockState::new(vec![AppDockTab::Chat]);
     let surface = dock_state.main_surface_mut();
 
     let sidebar_pixels = normalize_pixels(sidebar_width, MIN_SIDEBAR_PIXELS, MAX_SIDEBAR_PIXELS);
-    let context_pixels = normalize_pixels(context_width, MIN_CONTEXT_PIXELS, MAX_CONTEXT_PIXELS);
+    let settings_pixels = normalize_pixels(settings_width, MIN_SETTINGS_PIXELS, MAX_SETTINGS_PIXELS);
     let composer_pixels =
         normalize_pixels(DEFAULT_COMPOSER_HEIGHT, MIN_COMPOSER_PIXELS, MAX_COMPOSER_PIXELS);
 
@@ -63,15 +62,15 @@ pub fn init_app_dock(
     let sidebar_fraction = (sidebar_pixels / total_width).clamp(0.16, 0.32);
 
     let [main, _sidebar] =
-        surface.split_left(NodeIndex::root(), sidebar_fraction, vec![AppDockTab::Sidebar]);
+        surface.split_left(NodeIndex::root(), sidebar_fraction, vec![AppDockTab::RecentChat]);
 
     let main_width = (total_width - sidebar_pixels).max(1.0);
     let composer_fraction = ((total_height - composer_pixels) / total_height).clamp(0.62, 0.9);
 
-    let main = if show_context_panel {
-        let context_fraction = ((main_width - context_pixels) / main_width).clamp(0.68, 0.9);
-        let [chat_stack, _context] =
-            surface.split_right(main, context_fraction, vec![AppDockTab::Context]);
+    let main = if show_settings_panel {
+        let settings_fraction = ((main_width - settings_pixels) / main_width).clamp(0.62, 0.85);
+        let [chat_stack, _settings] =
+            surface.split_right(main, settings_fraction, vec![AppDockTab::Settings]);
         chat_stack
     } else {
         main
@@ -93,9 +92,9 @@ pub fn sync_app_dock(
     available_size: egui::Vec2,
 ) {
     let view_mode = state.view_mode;
-    let show_context_panel = state.show_context_panel;
+    let show_settings_panel = state.show_settings_panel;
     let sidebar_width = state.conversations_width;
-    let context_width = state.inspector_width;
+    let settings_width = state.inspector_width;
 
     let has_chat = dock_state.iter_all_tabs().any(|(_, tab)| matches!(tab, AppDockTab::Chat));
     let has_avatar = dock_state.iter_all_tabs().any(|(_, tab)| matches!(tab, AppDockTab::Avatar));
@@ -104,10 +103,10 @@ pub fn sync_app_dock(
         .any(|(_, tab)| matches!(tab, AppDockTab::Composer));
     let has_sidebar = dock_state
         .iter_all_tabs()
-        .any(|(_, tab)| matches!(tab, AppDockTab::Sidebar));
-    let has_context = dock_state
+        .any(|(_, tab)| matches!(tab, AppDockTab::RecentChat));
+    let has_settings = dock_state
         .iter_all_tabs()
-        .any(|(_, tab)| matches!(tab, AppDockTab::Context));
+        .any(|(_, tab)| matches!(tab, AppDockTab::Settings));
 
     let should_have_avatar = matches!(view_mode, ViewMode::Avatar);
 
@@ -115,13 +114,13 @@ pub fn sync_app_dock(
         || !has_composer
         || !has_sidebar
         || has_avatar != should_have_avatar
-        || has_context != show_context_panel
+        || has_settings != show_settings_panel
     {
         *dock_state = init_app_dock(
             view_mode,
-            show_context_panel,
+            show_settings_panel,
             sidebar_width,
-            context_width,
+            settings_width,
             available_size,
         );
     }
@@ -136,9 +135,9 @@ pub fn normalize_layout(state: &mut AppState) {
     );
     state.inspector_width = normalized_panel_pixels(
         state.inspector_width,
-        DEFAULT_CONTEXT_WIDTH,
-        MIN_CONTEXT_PIXELS,
-        MAX_CONTEXT_PIXELS,
+        DEFAULT_SETTINGS_WIDTH,
+        MIN_SETTINGS_PIXELS,
+        MAX_SETTINGS_PIXELS,
     );
     state.drawer_height = normalized_panel_pixels(
         state.drawer_height,
@@ -179,7 +178,7 @@ impl TabViewer for AppTabViewer<'_> {
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut AppDockTab) {
         match tab {
-            AppDockTab::Sidebar => draw_sidebar_tab(ui, self.state),
+            AppDockTab::RecentChat => draw_sidebar_tab(ui, self.state),
             AppDockTab::Chat => draw_chat_workspace(ui, self.state),
             AppDockTab::Avatar => crate::ui::panels::avatar::draw(ui, self.state),
             AppDockTab::Composer => {
@@ -187,7 +186,7 @@ impl TabViewer for AppTabViewer<'_> {
                     *self.pending_action = Some(UiAction::SendMessage);
                 }
             }
-            AppDockTab::Context => inspector::draw(ui, self.state),
+            AppDockTab::Settings => settings::draw(ui, self.state),
         }
     }
 
@@ -197,33 +196,7 @@ impl TabViewer for AppTabViewer<'_> {
 }
 
 fn draw_sidebar_tab(ui: &mut egui::Ui, state: &mut AppState) {
-    let full_rect = ui.available_rect_before_wrap();
-    let spacing = ui.spacing().item_spacing.x;
-    let icon_width = 56.0;
-
-    let icon_rect =
-        egui::Rect::from_min_size(full_rect.min, egui::vec2(icon_width, full_rect.height()));
-    let detail_min = egui::pos2(icon_rect.max.x + spacing, full_rect.min.y);
-    let detail_rect = egui::Rect::from_min_max(detail_min, full_rect.max);
-
-    ui.allocate_rect(full_rect, egui::Sense::hover());
-
-    let mut icon_ui = ui.child_ui(
-        icon_rect,
-        egui::Layout::top_down(egui::Align::Min),
-        None,
-    );
-    activity_bar::draw(&mut icon_ui, state);
-
-    let mut detail_ui = ui.child_ui(
-        detail_rect,
-        egui::Layout::top_down(egui::Align::Min),
-        None,
-    );
-    detail_ui.set_clip_rect(detail_rect);
-    detail_ui.set_min_height(detail_rect.height());
-    detail_ui.add_space(4.0);
-    side_nav::draw(&mut detail_ui, state);
+    recent_chat::draw(ui, state);
 }
 
 fn draw_chat_workspace(ui: &mut egui::Ui, state: &mut AppState) {

@@ -8,10 +8,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         if state.is_logged_in {
             tool_button(
                 ui,
-                ToolIcon::Context(state.show_context_panel),
-                "Toggle Context",
+                ToolIcon::Settings(state.show_settings_panel),
+                "Toggle Settings",
                 || {
-                    state.show_context_panel = !state.show_context_panel;
+                    state.show_settings_panel = !state.show_settings_panel;
                 },
             );
             ui.add_space(8.0);
@@ -42,14 +42,14 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 enum ToolIcon {
     Chat(bool),
     Avatar(bool),
-    Context(bool),
+    Settings(bool),
 }
 
 fn tool_button<F: FnOnce()>(ui: &mut egui::Ui, icon: ToolIcon, tooltip: &str, on_click: F) {
     let mut callback = Some(on_click);
 
     let active = match icon {
-        ToolIcon::Chat(active) | ToolIcon::Avatar(active) | ToolIcon::Context(active) => active,
+        ToolIcon::Chat(active) | ToolIcon::Avatar(active) | ToolIcon::Settings(active) => active,
     };
 
     let button = egui::Button::new("")
@@ -124,7 +124,7 @@ fn paint_icon(ui: &egui::Ui, rect: egui::Rect, icon: ToolIcon) {
                 stroke,
             );
         }
-        ToolIcon::Context(active) => {
+        ToolIcon::Settings(active) => {
             let panel = egui::Rect::from_center_size(rect.center(), egui::vec2(14.0, 12.0));
             painter.rect_stroke(
                 panel,

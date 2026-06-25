@@ -4,31 +4,23 @@ use crate::state::settings_state::SettingsState;
 use crate::state::task_state::TaskState;
 use crate::state::voice_state::VoiceCallState;
 
+/// Tabs in the Settings panel (right side, replaces old Context panel)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PanelKind {
+pub enum SettingsTab {
+    Providers,
     Modes,
     Persona,
     Memory,
     Knowledge,
-    Voice,
     Mcp,
-    Audit,
-    ModelConfig,
+    Voice,
     Diagnostics,
-    Avatar,
+    Audit,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActivitySection {
-    Sessions,
-    Resources,
-    Agent,
-    Integrations,
-}
-
-impl Default for ActivitySection {
+impl Default for SettingsTab {
     fn default() -> Self {
-        Self::Sessions
+        Self::Providers
     }
 }
 
@@ -145,9 +137,6 @@ pub struct AppState {
     pub login_error: Option<String>,
     pub login_in_progress: bool,
     pub show_login: bool,
-    pub show_settings: bool,
-    pub show_diagnostics: bool,
-    pub show_panel: Option<PanelKind>,
     pub view_mode: ViewMode,
     pub memory_search_query: String,
     pub knowledge_query: String,
@@ -158,24 +147,16 @@ pub struct AppState {
     pub show_modal_model_edit: bool,
     pub show_persona_default: bool,
     pub show_modal_persona_edit: bool,
-    /// Window flags to open orphaned panels as floating windows
-    pub show_window_mcp: bool,
-    pub show_window_audit: bool,
-    pub show_window_persona: bool,
-    pub show_window_modes: bool,
-    pub show_window_memory: bool,
-    pub show_window_knowledge: bool,
-    pub show_window_model_config: bool,
-    pub show_window_diagnostics: bool,
-    pub show_window_voice: bool,
+    /// Which tab is active in the Settings panel
+    pub settings_tab: SettingsTab,
     /// Selected audit entry index for Detail view
     pub audit_detail_index: Option<usize>,
     pub api_commands: Vec<ApiCommand>,
-    pub activity_section: ActivitySection,
     pub drawer_open: bool,
     pub drawer_tab: Option<DrawerTab>,
     pub drawer_user_dismissed: bool,
-    pub show_context_panel: bool,
+    /// Whether the Settings panel (right side) is visible
+    pub show_settings_panel: bool,
     pub conversations_width: f32,
     pub inspector_width: f32,
     pub drawer_height: f32,
@@ -196,9 +177,6 @@ impl Default for AppState {
             login_error: None,
             login_in_progress: false,
             show_login: false,
-            show_settings: false,
-            show_diagnostics: false,
-            show_panel: None,
             view_mode: ViewMode::default(),
             memory_search_query: String::new(),
             knowledge_query: String::new(),
@@ -209,22 +187,13 @@ impl Default for AppState {
             show_modal_model_edit: false,
             show_persona_default: false,
             show_modal_persona_edit: false,
-            show_window_mcp: false,
-            show_window_audit: false,
-            show_window_persona: false,
-            show_window_modes: false,
-            show_window_memory: false,
-            show_window_knowledge: false,
-            show_window_model_config: false,
-            show_window_diagnostics: false,
-            show_window_voice: false,
+            settings_tab: SettingsTab::default(),
             audit_detail_index: None,
             api_commands: Vec::new(),
-            activity_section: ActivitySection::default(),
             drawer_open: false,
             drawer_tab: None,
             drawer_user_dismissed: false,
-            show_context_panel: true,
+            show_settings_panel: true,
             conversations_width: 300.0,
             inspector_width: 210.0,
             drawer_height: 155.0,
