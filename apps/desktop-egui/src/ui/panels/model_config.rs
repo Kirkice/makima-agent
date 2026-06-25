@@ -33,7 +33,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         }
 
         if let Some(ref mut profile) = editing {
-            draw_edit_form(ui, state, profile);
+            let keep_editing = draw_edit_form(ui, state, profile);
+            if !keep_editing {
+                editing = None;
+            }
         } else if state.settings.model_profiles.is_empty() {
             draw_empty_state(ui, state);
         } else {
@@ -218,7 +221,9 @@ fn draw_profile_list(ui: &mut egui::Ui, state: &mut AppState) {
 
 // ── Edit form (Zoo-Code style card layout) ───────────────────────────
 
-fn draw_edit_form(ui: &mut egui::Ui, state: &mut AppState, profile: &mut ModelProfile) {
+fn draw_edit_form(ui: &mut egui::Ui, state: &mut AppState, profile: &mut ModelProfile) -> bool {
+    let mut keep_editing = true;
+
     // ── Profile Name ──────────────────────────────────────────────
     card_section(ui, "Profile Name", |ui| {
         let name_edit = egui::TextEdit::singleline(&mut state.settings.model_profile_edit_name)
@@ -416,9 +421,10 @@ fn draw_edit_form(ui: &mut egui::Ui, state: &mut AppState, profile: &mut ModelPr
                         profile: saved_profile,
                     });
                 }
-                state.settings.model_profile_editing = None;
                 state.settings.show_model_profile_create = false;
+                state.settings.model_profile_edit_name.clear();
                 state.set_status(format!("Saving profile '{}'...", name));
+                keep_editing = false;
             }
         }
 
@@ -433,8 +439,9 @@ fn draw_edit_form(ui: &mut egui::Ui, state: &mut AppState, profile: &mut ModelPr
             )
             .clicked()
         {
-            state.settings.model_profile_editing = None;
             state.settings.show_model_profile_create = false;
+            state.settings.model_profile_edit_name.clear();
+            keep_editing = false;
         }
     });
 
@@ -449,6 +456,8 @@ fn draw_edit_form(ui: &mut egui::Ui, state: &mut AppState, profile: &mut ModelPr
         ui.add_space(4.0);
         ui.colored_label(colors::WARNING, RichText::new("⚠ Base URL is required").size(11.0));
     }
+
+    keep_editing
 }
 
 // ── Helper: card section wrapper ─────────────────────────────────────
