@@ -1,4 +1,4 @@
-use eframe::egui::{self, CornerRadius, Sense, Vec2};
+use eframe::egui::{self, Align, CornerRadius, Layout, Sense, Vec2};
 
 use crate::state::app_state::{ApiCommand, AppState, SettingsTab};
 use crate::theme::colors;
@@ -6,9 +6,12 @@ use crate::theme::colors;
 use super::{audit, diagnostics, knowledge, mcp, memory, model_config, modes, persona, voice};
 
 const TAB_WIDTH: f32 = 120.0;
+const COLUMN_GAP: f32 = 4.0;
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
-    // ── Header ──────────────────────────────────────────────
+    let available = ui.available_size_before_wrap();
+    ui.set_min_size(available);
+
     ui.vertical(|ui| {
         ui.colored_label(
             colors::TEXT_PRIMARY,
@@ -16,8 +19,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         );
         ui.add(
             egui::Label::new(
-                egui::RichText::new("Agent configuration and services")
-                    .color(colors::TEXT_MUTED),
+                egui::RichText::new("Agent configuration and services").color(colors::TEXT_MUTED),
             )
             .wrap(),
         );
@@ -31,58 +33,62 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         ui.add_space(8.0);
     });
 
-    // ── Left tab bar + Right content ────────────────────────
-    let total_width = ui.available_width();
+    let body_size = ui.available_size_before_wrap();
+    let total_width = body_size.x.max(0.0);
+    let total_height = body_size.y.max(0.0);
     let tab_width = TAB_WIDTH.min(total_width * 0.35);
-    let content_width = total_width - tab_width - 8.0;
+    let content_width = (total_width - tab_width - COLUMN_GAP).max(0.0);
 
-    ui.horizontal(|ui| {
-        // Left: vertical tab list
-        ui.vertical(|ui| {
-            ui.set_width(tab_width);
-            ui.set_min_width(tab_width);
-            draw_tab_list(ui, state, tab_width);
-        });
+    ui.allocate_ui_with_layout(
+        Vec2::new(total_width, total_height),
+        Layout::left_to_right(Align::Min),
+        |ui| {
+            ui.vertical(|ui| {
+                ui.set_width(tab_width);
+                ui.set_min_width(tab_width);
+                ui.set_min_height(total_height);
+                draw_tab_list(ui, state, tab_width);
+            });
 
-        ui.add_space(4.0);
+            ui.add_space(COLUMN_GAP);
 
-        // Right: scrollable content
-        ui.vertical(|ui| {
-            ui.set_width(content_width);
-            egui::ScrollArea::vertical()
-                .id_salt("settings_scroll")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.set_width(content_width);
-                    draw_content(ui, state);
-                });
-        });
-    });
+            ui.vertical(|ui| {
+                ui.set_width(content_width);
+                ui.set_min_width(content_width);
+                ui.set_min_height(total_height);
+
+                egui::ScrollArea::vertical()
+                    .id_salt("settings_scroll")
+                    .auto_shrink([false, false])
+                    .max_height(total_height)
+                    .show(ui, |ui| {
+                        ui.set_width(content_width);
+                        ui.set_min_height(total_height);
+                        draw_content(ui, state);
+                    });
+            });
+        },
+    );
 }
 
 fn draw_tab_list(ui: &mut egui::Ui, state: &mut AppState, width: f32) {
     let tabs: &[(&str, SettingsTab)] = &[
-        ("🔌 Providers", SettingsTab::Providers),
-        ("🤖 Modes", SettingsTab::Modes),
-        ("🎭 Persona", SettingsTab::Persona),
-        ("🧠 Memory", SettingsTab::Memory),
-        ("📚 Knowledge", SettingsTab::Knowledge),
-        ("🔗 MCP", SettingsTab::Mcp),
-        ("🎤 Voice", SettingsTab::Voice),
-        ("🩺 Diagnostics", SettingsTab::Diagnostics),
-        ("📋 Audit", SettingsTab::Audit),
+        ("\u{1f50c} Providers", SettingsTab::Providers),
+        ("\u{1f916} Modes", SettingsTab::Modes),
+        ("\u{1f3ad} Persona", SettingsTab::Persona),
+        ("\u{1f9e0} Memory", SettingsTab::Memory),
+        ("\u{1f4da} Knowledge", SettingsTab::Knowledge),
+        ("\u{1f517} MCP", SettingsTab::Mcp),
+        ("\u{1f3a4} Voice", SettingsTab::Voice),
+        ("\u{1fa7a} Diagnostics", SettingsTab::Diagnostics),
+        ("\u{1f4cb} Audit", SettingsTab::Audit),
     ];
 
     for (label, tab) in tabs {
         let selected = state.settings_tab == *tab;
 
-        // Tab row
-        let (rect, response) = ui.allocate_exact_size(
-            Vec2::new(width, 36.0),
-            Sense::click(),
-        );
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 36.0), Sense::click());
 
-        // Background
         if selected || response.hovered() {
             ui.painter().rect_filled(
                 rect,
@@ -95,14 +101,12 @@ fn draw_tab_list(ui: &mut egui::Ui, state: &mut AppState, width: f32) {
             );
         }
 
-        // Left accent bar when selected
         if selected {
             let bar = egui::Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height()));
             ui.painter()
                 .rect_filled(bar, CornerRadius::same(2), colors::RED_ACCENT);
         }
 
-        // Label
         let inner = rect.shrink2(Vec2::new(12.0, 6.0));
         let text_color = if selected {
             colors::TEXT_PRIMARY
@@ -112,7 +116,6 @@ fn draw_tab_list(ui: &mut egui::Ui, state: &mut AppState, width: f32) {
             colors::TEXT_MUTED
         };
 
-        // Extract text after emoji (e.g. "🔌 Providers" → "Providers")
         let display_label = strip_emoji_prefix(label);
 
         ui.painter().text(
@@ -123,7 +126,6 @@ fn draw_tab_list(ui: &mut egui::Ui, state: &mut AppState, width: f32) {
             text_color,
         );
 
-        // Emoji only (left of text)
         let emoji = get_emoji(label);
         ui.painter().text(
             egui::pos2(inner.left() + 2.0, inner.center().y - 6.0),
@@ -196,12 +198,12 @@ fn get_emoji(label: &str) -> &str {
     let idx = label
         .find(|c: char| c.is_ascii_alphabetic())
         .unwrap_or(label.len());
-    &label[..idx]
+    label[..idx].trim_end()
 }
 
 fn strip_emoji_prefix(label: &str) -> &str {
     let idx = label
         .find(|c: char| c.is_ascii_alphabetic())
         .unwrap_or(0);
-    &label[idx..]
+    label[idx..].trim_start()
 }
