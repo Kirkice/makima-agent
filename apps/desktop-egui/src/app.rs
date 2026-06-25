@@ -201,6 +201,26 @@ impl MakimaApp {
         };
         let server_url = s.server_url.clone();
 
+        // Extract model override from active profile
+        let mode_slug = s.settings.active_mode_slug.clone();
+        let model_override = {
+            use crate::api::tasks::ModelOverride;
+            let active_profile_name = s.settings.active_model_profile.clone();
+            let profiles = &s.settings.model_profiles;
+            if let Some(name) = active_profile_name {
+                profiles.iter().find(|p| p.name == name).map(|p| {
+                    ModelOverride {
+                        model: Some(p.model.clone()),
+                        api_key: p.api_key.clone(),
+                        base_url: Some(p.base_url.clone()),
+                        temperature: Some(p.temperature),
+                    }
+                })
+            } else {
+                None
+            }
+        };
+
         // Add user message
         if let Some(session) = s.chat.active_session_mut() {
             let msg = crate::state::chat_state::ChatMessage {
@@ -246,7 +266,7 @@ impl MakimaApp {
             };
 
             let tasks_api = TasksApi::new(client, server_url, token);
-            match tasks_api.stream(resolved_session_id, text).await {
+            match tasks_api.stream(resolved_session_id, text, mode_slug, model_override).await {
                 Ok(mut rx) => {
                     while let Some(event_result) = rx.recv().await {
                         let mut s = state.lock().unwrap();
@@ -576,7 +596,7 @@ impl eframe::App for MakimaApp {
 
 impl MakimaApp {
     fn exec_api_command(&mut self, cmd: crate::state::app_state::ApiCommand) {
-        use crate::api::{audit::AuditApi, knowledge::KnowledgeApi, mcp::McpApi, memory::MemoryApi, modes::ModesApi, persona::PersonaApi, voice::VoiceApi};
+        use crate::api::{audit::AuditApi, config::ConfigApi, knowledge::KnowledgeApi, mcp::McpApi, memory::MemoryApi, modes::ModesApi, model_profiles::ModelProfilesApi, persona::PersonaApi, voice::VoiceApi};
         use crate::state::app_state::ApiCommand;
 
         // Voice commands are handled directly on self.voice_manager (not spawned)
@@ -868,6 +888,294 @@ impl MakimaApp {
                         if let Some(v) = vs.active_voice_id { s.settings.voice_config.active_voice_id = Some(v); }
                         if let Some(ptt) = vs.push_to_talk { s.settings.voice_config.push_to_talk = ptt; }
                         s.set_status("Voice settings loaded".to_string());
+                    }
+                }
+                ApiCommand::SaveVoiceSettings => {
+                    let vc = {
+                        let s = state.lock().unwrap();
+                        s.settings.voice_config.clone()
+                    };
+                    let api = VoiceApi::new(client, server_url, token);
+                    let req = crate::api::voice::VoiceSettings {
+                        tts_provider: Some(vc.tts_provider.clone()),
+                        active_voice_id: vc.active_voice_id.clone(),
+                        push_to_talk: Some(vc.push_to_talk),
+                        mic_device: vc.mic_device.clone(),
+                        speaker_device: vc.speaker_device.clone(),
+                    };
+                    match api.update_settings(&req).await {
+                        Ok(_updated) => {
+                            let mut s = state.lock().unwrap();
+                            s.set_status("Voice settings saved".to_string());
+                        }
+                        Err(e) => {
+                            let mut s = state.lock().unwrap();
+                            s.set_status(format!("Voice settings save failed: {}", e));
+                        }
+                    }
+                }
+                ApiCommand::UpdatePersona { draft } => {
+                    let api = PersonaApi::new(client.clone(), server_url.clone(), token.clone());
+                    if let Ok(mut p) = api.get_current().await {
+                        if !draft.is_empty() {
+                            p.identity = draft.clone();
+                        }
+                        if let Ok(updated) = api.update(&p).await {
+                            let mut s = state.lock().unwrap();
+                            s.settings.persona_name = updated.name.clone();
+                            s.settings.persona_modified = false;
+                            s.settings.persona_default_preview = format!(
+                                "Identity: {}\nPersonality: {}\nStyle: {}",
+                                updated.identity, updated.personality, updated.speaking_style
+                            );
+                            s.set_status("Persona saved to backend".to_string());
+                        }
+                    } else {
+                        let mut s = state.lock().unwrap();
+                        s.set_status("Failed to load persona for update".to_string());
+                    }
+                }
+                ApiCommand::QueryAuditLog { severity } => {
+                    let api = AuditApi::new(client, server_url, token);
+                    let sev_ref = severity.as_deref();
+                    match api.query(sev_ref, None).await {
+                        Ok(list) => {
+                            let mut s = state.lock().unwrap();
+                            s.settings.audit_entries = list.clone();
+                            let count = s.settings.audit_entries.len();
+                            s.set_status(format!("{} audit entries loaded", count));
+                        }
+                        Err(e) => {
+                            let mut s = state.lock().unwrap();
+                            s.set_status(format!("Audit query failed: {}", e));
+                            if e.to_string().contains("403") {
+                                s.settings.audit_entries.clear();
+                            }
+                        }
+                    }
+                }
+                ApiCommand::RefreshHealth => {
+                    let health_api = HealthApi::new(client.clone(), server_url.clone());
+                    let backend_ok = health_api.check().await.is_ok();
+                    let mut s = state.lock().unwrap();
+                    s.settings.health.backend = backend_ok;
+                    s.settings.health.api_base_url = server_url.clone();
+                    if backend_ok {
+                        s.set_status("Backend healthy".to_string());
+                    } else {
+                        s.set_status("Backend unreachable".to_string());
+                    }
+                }
+                ApiCommand::TestConnection => {
+                    let health_api = HealthApi::new(client.clone(), server_url.clone());
+                    let backend_ok = health_api.check().await.is_ok();
+                    let mut s = state.lock().unwrap();
+                    s.settings.health.backend = backend_ok;
+                    if backend_ok {
+                        s.set_status("Connection OK".to_string());
+                    } else {
+                        s.set_status("Connection failed".to_string());
+                    }
+                }
+                ApiCommand::FetchModelConfig => {
+                    let api = ConfigApi::new(client, server_url, token);
+                    match api.fetch_all_map().await {
+                        Ok(map) => {
+                            let mut s = state.lock().unwrap();
+                            if let Some(v) = map.get("model.provider") {
+                                s.settings.model_config.provider = v.clone();
+                            }
+                            if let Some(v) = map.get("model.base_url") {
+                                s.settings.model_config.base_url = v.clone();
+                            }
+                            if let Some(v) = map.get("model.model") {
+                                s.settings.model_config.model = v.clone();
+                            }
+                            if let Some(v) = map.get("model.temperature") {
+                                if let Ok(t) = v.parse::<f64>() { s.settings.model_config.temperature = t; }
+                            }
+                            if let Some(v) = map.get("model.max_steps") {
+                                if let Ok(t) = v.parse::<u32>() { s.settings.model_config.max_steps = t; }
+                            }
+                            if let Some(v) = map.get("model.timeout_seconds") {
+                                if let Ok(t) = v.parse::<u32>() { s.settings.model_config.timeout_seconds = t; }
+                            }
+                            s.settings.model_config.configured = !s.settings.model_config.model.is_empty();
+                            s.set_status("Model config loaded".to_string());
+                        }
+                        Err(e) => {
+                            let mut s = state.lock().unwrap();
+                            s.set_status(format!("Model config fetch failed: {}", e));
+                        }
+                    }
+                }
+                ApiCommand::SaveModelConfig => {
+                    let mc = {
+                        let s = state.lock().unwrap();
+                        s.settings.model_config.clone()
+                    };
+                    let api = ConfigApi::new(client, server_url, token);
+                    let _ = api.set("model.provider", serde_json::json!(mc.provider), None).await;
+                    let _ = api.set("model.base_url", serde_json::json!(mc.base_url), None).await;
+                    let _ = api.set("model.model", serde_json::json!(mc.model), None).await;
+                    let _ = api.set("model.temperature", serde_json::json!(mc.temperature), None).await;
+                    let _ = api.set("model.max_steps", serde_json::json!(mc.max_steps), None).await;
+                    let _ = api.set("model.timeout_seconds", serde_json::json!(mc.timeout_seconds), None).await;
+                    let mut s = state.lock().unwrap();
+                    s.settings.model_config.configured = !mc.model.is_empty();
+                    s.settings.model_config.provider_configured = !mc.provider.is_empty();
+                    s.set_status("Model config saved to backend".to_string());
+                }
+                ApiCommand::TestModelConnection => {
+                    let health_api = HealthApi::new(client.clone(), server_url.clone());
+                    let backend_ok = health_api.check().await.is_ok();
+                    let mut s = state.lock().unwrap();
+                    s.settings.health.backend = backend_ok;
+                    if backend_ok {
+                        s.set_status("Model connection OK (backend reachable)".to_string());
+                    } else {
+                        s.set_status("Model connection failed (backend unreachable)".to_string());
+                    }
+                }
+                // ── Model Profiles ──────────────────────────────────
+                ApiCommand::FetchModelProfiles => {
+                    let api = ModelProfilesApi::new(client, server_url, token);
+                    match api.list().await {
+                        Ok(resp) => {
+                            let mut s = state.lock().unwrap();
+                            let mut profiles: Vec<_> = resp.profiles.into_values().collect();
+                            profiles.sort_by(|a, b| a.name.cmp(&b.name));
+                            s.settings.model_profiles = profiles;
+                            s.settings.active_model_profile = resp.active_profile;
+                            // Sync active profile into legacy model_config
+                            // Clone the active profile first to avoid borrow conflict
+                            let active_clone = s.settings.active_model_profile.as_ref().and_then(|active_name| {
+                                s.settings.model_profiles.iter().find(|p| &p.name == active_name).cloned()
+                            });
+                            if let Some(p) = active_clone {
+                                s.settings.model_config.provider = p.provider;
+                                s.settings.model_config.base_url = p.base_url;
+                                s.settings.model_config.model = p.model.clone();
+                                s.settings.model_config.temperature = p.temperature;
+                                s.settings.model_config.max_steps = p.max_steps as u32;
+                                s.settings.model_config.timeout_seconds = p.timeout_seconds as u32;
+                                s.settings.model_config.configured = !p.model.is_empty();
+                            }
+                            let count = s.settings.model_profiles.len();
+                            s.set_status(format!("{} model profile(s) loaded", count));
+                        }
+                        Err(e) => {
+                            let mut s = state.lock().unwrap();
+                            s.set_status(format!("Model profiles fetch failed: {}", e));
+                        }
+                    }
+                }
+                ApiCommand::CreateModelProfile { name, profile } => {
+                    let api = ModelProfilesApi::new(client, server_url, token);
+                    match api.create(&name, &profile).await {
+                        Ok(_) => {
+                            let mut s = state.lock().unwrap();
+                            s.api_commands.push(ApiCommand::FetchModelProfiles);
+                            s.set_status(format!("Profile '{}' created", name));
+                        }
+                        Err(e) => {
+                            let mut s = state.lock().unwrap();
+                            s.set_status(format!("Create profile failed: {}", e));
+                        }
+                    }
+                }
+                ApiCommand::UpdateModelProfile { name, profile } => {
+                    let api = ModelProfilesApi::new(client, server_url, token);
+                    match api.update(&name, &profile).await {
+                        Ok(_) => {
+                            let mut s = state.lock().unwrap();
+                            s.api_commands.push(ApiCommand::FetchModelProfiles);
+                            s.set_status(format!("Profile '{}' updated", name));
+                        }
+                        Err(e) => {
+                            let mut s = state.lock().unwrap();
+                            s.set_status(format!("Update profile failed: {}", e));
+                        }
+                    }
+                }
+                ApiCommand::DeleteModelProfile(name) => {
+                    let api = ModelProfilesApi::new(client, server_url, token);
+                    match api.delete(&name).await {
+                        Ok(()) => {
+                            let mut s = state.lock().unwrap();
+                            s.api_commands.push(ApiCommand::FetchModelProfiles);
+                            s.set_status(format!("Profile '{}' deleted", name));
+                        }
+                        Err(e) => {
+                            let mut s = state.lock().unwrap();
+                            s.set_status(format!("Delete profile failed: {}", e));
+                        }
+                    }
+                }
+                ApiCommand::ActivateModelProfile(name) => {
+                    let api = ModelProfilesApi::new(client, server_url, token);
+                    match api.activate(&name).await {
+                        Ok(resp) => {
+                            let mut s = state.lock().unwrap();
+                            s.settings.active_model_profile = resp.active_profile;
+                            let mut profiles: Vec<_> = resp.profiles.into_values().collect();
+                            profiles.sort_by(|a, b| a.name.cmp(&b.name));
+                            s.settings.model_profiles = profiles;
+                            // Sync active profile into legacy model_config
+                            let active_clone = s.settings.active_model_profile.as_ref().and_then(|active_name| {
+                                s.settings.model_profiles.iter().find(|p| &p.name == active_name).cloned()
+                            });
+                            if let Some(p) = active_clone {
+                                s.settings.model_config.provider = p.provider;
+                                s.settings.model_config.base_url = p.base_url;
+                                s.settings.model_config.model = p.model.clone();
+                                s.settings.model_config.temperature = p.temperature;
+                                s.settings.model_config.max_steps = p.max_steps as u32;
+                                s.settings.model_config.timeout_seconds = p.timeout_seconds as u32;
+                                s.settings.model_config.configured = !p.model.is_empty();
+                            }
+                            s.set_status(format!("Profile '{}' activated", name));
+                        }
+                        Err(e) => {
+                            let mut s = state.lock().unwrap();
+                            s.set_status(format!("Activate profile failed: {}", e));
+                        }
+                    }
+                }
+                ApiCommand::TestModelProfileConnection { base_url, api_key, model } => {
+                    let api = ModelProfilesApi::new(client, server_url, token);
+                    let req = crate::api::model_profiles::TestConnectionRequest {
+                        base_url: base_url.clone(),
+                        api_key,
+                        model,
+                    };
+                    match api.test_connection(&req).await {
+                        Ok(resp) => {
+                            let mut s = state.lock().unwrap();
+                            if resp.ok {
+                                s.set_status(format!("Connection OK ({} ms)", resp.latency_ms.unwrap_or(0)));
+                            } else {
+                                s.set_status(format!("Connection failed: {}", resp.message));
+                            }
+                        }
+                        Err(e) => {
+                            let mut s = state.lock().unwrap();
+                            s.set_status(format!("Test connection error: {}", e));
+                        }
+                    }
+                }
+                ApiCommand::FetchProviderTypes => {
+                    let api = ModelProfilesApi::new(client, server_url, token);
+                    match api.list_providers().await {
+                        Ok(providers) => {
+                            let mut s = state.lock().unwrap();
+                            s.settings.provider_types = providers;
+                            s.set_status("Provider types loaded".to_string());
+                        }
+                        Err(e) => {
+                            let mut s = state.lock().unwrap();
+                            s.set_status(format!("Fetch providers failed: {}", e));
+                        }
                     }
                 }
                 // Voice commands are handled before spawn — unreachable here

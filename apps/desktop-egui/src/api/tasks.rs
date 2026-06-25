@@ -6,11 +6,28 @@ use tokio::sync::mpsc;
 
 use crate::state::task_state::TaskEvent;
 
-/// Matches TaskCreate from backend: { session_id, input_text }
+/// Model override sent from client to backend
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ModelOverride {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+}
+
+/// Matches TaskCreate from backend: { session_id, input_text, mode_slug?, model_override? }
 #[derive(Debug, Serialize)]
 pub struct CreateTaskRequest {
     pub session_id: String,
     pub input_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode_slug: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_override: Option<ModelOverride>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,9 +52,11 @@ impl TasksApi {
         &self,
         session_id: String,
         text: String,
+        mode_slug: Option<String>,
+        model_override: Option<ModelOverride>,
     ) -> Result<mpsc::Receiver<Result<TaskEvent>>> {
         let url = format!("{}/tasks", self.base_url);
-        let body = CreateTaskRequest { session_id, input_text: text };
+        let body = CreateTaskRequest { session_id, input_text: text, mode_slug, model_override };
 
         let response = self.client.post(&url).bearer_auth(&self.token).json(&body).send().await
             .context("Failed to start task")?;

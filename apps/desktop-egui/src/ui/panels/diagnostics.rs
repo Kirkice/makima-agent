@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use crate::state::app_state::AppState;
+use crate::state::app_state::{ApiCommand, AppState};
 use crate::theme::colors;
 
 /// Draw the diagnostics panel for health, connectivity, and error logs
@@ -60,9 +60,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             // ---- Buttons ----
             ui.horizontal(|ui| {
                 if ui.button("Refresh Health").clicked() {
+                    state.api_commands.push(ApiCommand::RefreshHealth);
                     state.set_status("Refreshing health check...".to_string());
                 }
                 if ui.button("Test Connection").clicked() {
+                    state.api_commands.push(ApiCommand::TestConnection);
                     state.set_status("Testing connection...".to_string());
                 }
             });

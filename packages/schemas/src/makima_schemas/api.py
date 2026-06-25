@@ -86,11 +86,22 @@ class MessageResponse(BaseModel):
 # ── Task ─────────────────────────────────────────────────────────────
 
 
+class ModelOverride(BaseModel):
+    """Optional model configuration override from the client."""
+
+    model: str | None = Field(default=None, description="Model identifier override")
+    api_key: str | None = Field(default=None, description="API key override")
+    base_url: str | None = Field(default=None, description="API base URL override")
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0, description="Temperature override")
+
+
 class TaskCreate(BaseModel):
     """Request body for creating an agent task."""
 
     session_id: UUID = Field(..., description="所属会话 ID")
     input_text: str = Field(..., min_length=1, description="用户输入文本")
+    mode_slug: str | None = Field(default=None, description="Mode slug override")
+    model_override: ModelOverride | None = Field(default=None, description="Model config override from client")
 
 
 class TaskResponse(BaseModel):

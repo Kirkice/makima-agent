@@ -67,9 +67,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                     match state.drawer_tab {
                         Some(DrawerTab::TaskTimeline) => draw_task_timeline(ui, state),
                         Some(DrawerTab::VoiceCall) => draw_voice_call(ui, state),
-                        Some(DrawerTab::Audit) => draw_audit_summary(ui, state),
-                        Some(DrawerTab::Diagnostics) => draw_diagnostics_summary(ui, state),
-                        Some(DrawerTab::McpActivity) => draw_mcp_activity(ui, state),
+                        Some(DrawerTab::Audit) => crate::ui::panels::audit::draw(ui, state),
+                        Some(DrawerTab::Diagnostics) => crate::ui::panels::diagnostics::draw(ui, state),
+                        Some(DrawerTab::McpActivity) => crate::ui::panels::mcp::draw(ui, state),
                         None => {
                             ui.colored_label(colors::TEXT_MUTED, "No drawer tab selected.");
                         }
@@ -139,70 +139,5 @@ fn draw_voice_call(ui: &mut egui::Ui, state: &AppState) {
     }
 }
 
-fn draw_audit_summary(ui: &mut egui::Ui, state: &AppState) {
-    let count = state.settings.audit_entries.len();
-    ui.colored_label(colors::TEXT_PRIMARY, format!("Audit Log ({} entries)", count));
-
-    // Show recent entries
-    for entry in state.settings.audit_entries.iter().take(5) {
-        ui.horizontal(|ui| {
-            let timestamp = entry.timestamp.as_deref().unwrap_or("?");
-            let severity = entry.severity.as_deref().unwrap_or("info");
-            let action = entry.action.as_deref().unwrap_or("?");
-            ui.colored_label(colors::TEXT_MUTED, timestamp);
-            let sev_color = match severity {
-                "error" => colors::ERROR,
-                "warn" => colors::WARNING,
-                _ => colors::INFO,
-            };
-            ui.colored_label(sev_color, severity);
-            ui.colored_label(colors::TEXT_PRIMARY, action);
-        });
-    }
-}
-
-fn draw_diagnostics_summary(ui: &mut egui::Ui, state: &AppState) {
-    let h = &state.settings.health;
-    ui.horizontal(|ui| {
-        let (c, s) = if h.backend { (colors::SUCCESS, "✓") } else { (colors::ERROR, "✗") };
-        ui.colored_label(c, s);
-        ui.colored_label(colors::TEXT_PRIMARY, "Backend");
-    });
-    ui.horizontal(|ui| {
-        let (c, s) = if h.auth { (colors::SUCCESS, "✓") } else { (colors::ERROR, "✗") };
-        ui.colored_label(c, s);
-        ui.colored_label(colors::TEXT_PRIMARY, "Auth");
-    });
-    ui.horizontal(|ui| {
-        let (c, s) = if h.sse_connected { (colors::SUCCESS, "✓") } else { (colors::ERROR, "✗") };
-        ui.colored_label(c, s);
-        ui.colored_label(colors::TEXT_PRIMARY, "SSE Stream");
-    });
-    ui.colored_label(colors::TEXT_MUTED, format!("API: {}", h.api_base_url));
-}
-
-fn draw_mcp_activity(ui: &mut egui::Ui, state: &AppState) {
-    use crate::state::settings_state::McpConnectionStatus;
-
-    if state.settings.mcp_servers.is_empty() {
-        ui.colored_label(colors::TEXT_MUTED, "No MCP servers configured.");
-        return;
-    }
-
-    for srv in &state.settings.mcp_servers {
-        ui.horizontal(|ui| {
-            let (icon, color) = match srv.status {
-                McpConnectionStatus::Connected => ("●", colors::SUCCESS),
-                McpConnectionStatus::Connecting => ("◌", colors::WARNING),
-                McpConnectionStatus::Error => ("●", colors::ERROR),
-                McpConnectionStatus::Disconnected => ("○", colors::TEXT_MUTED),
-            };
-            ui.colored_label(color, icon);
-            ui.colored_label(colors::TEXT_PRIMARY, &srv.name);
-            ui.colored_label(colors::TEXT_MUTED, format!("({} tools)", srv.tools.len()));
-            if let Some(err) = &srv.error {
-                ui.colored_label(colors::ERROR, err);
-            }
-        });
-    }
-}
+// Summary draw functions removed — bottom drawer now renders the full panels
+// (audit::draw, diagnostics::draw, mcp::draw) directly for richer interaction.

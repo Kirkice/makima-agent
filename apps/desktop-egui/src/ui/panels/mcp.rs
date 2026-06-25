@@ -1,20 +1,27 @@
-use crate::state::app_state::AppState;
+use crate::state::app_state::{ApiCommand, AppState};
 use crate::state::settings_state::McpConnectionStatus;
 use crate::theme::colors;
 use eframe::egui;
 
-/// MCP management panel (Phase 3)
+/// MCP management panel — wired to backend via ApiCommand channel.
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     ui.colored_label(colors::RED_ACCENT, "MCP Servers");
     ui.separator();
     ui.add_space(8.0);
 
+    ui.horizontal(|ui| {
+        if ui.button("Refresh").clicked() {
+            state.api_commands.push(ApiCommand::FetchMcpServers);
+            state.set_status("Refreshing MCP servers...".to_string());
+        }
+        if ui.button("Add Server").clicked() {
+            state.set_status("Add Server: configure via backend .makima/mcp.yaml".to_string());
+        }
+    });
+    ui.add_space(8.0);
+
     if state.settings.mcp_servers.is_empty() {
         ui.colored_label(colors::TEXT_MUTED, "No MCP servers configured");
-        ui.add_space(8.0);
-        if ui.button("Add Server").clicked() {
-            state.set_status("MCP server config coming in Phase 3".to_string());
-        }
         return;
     }
 
@@ -63,13 +70,17 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         ui.add_space(4.0);
     }
 
-    // Apply actions outside the loop
+    // Push real ApiCommands (executed next frame by app.rs)
     if let Some(name) = reconnect_request {
+        state.api_commands.push(ApiCommand::ReconnectMcp(name.clone()));
         state.set_status(format!("Reconnecting {}...", name));
     }
     if let Some((name, target)) = toggle_request {
+        state.api_commands.push(ApiCommand::ToggleMcp(name.clone(), target));
+        // Optimistically update local state; backend response will confirm
         if let Some(srv) = state.settings.mcp_servers.iter_mut().find(|s| s.name == name) {
             srv.enabled = target;
         }
+        state.set_status(format!("{} {}...", if target { "Enabling" } else { "Disabling" }, name));
     }
 }

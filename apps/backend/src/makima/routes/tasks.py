@@ -42,13 +42,23 @@ async def create_task(
     await db.flush()
     task_id = str(task.id)
 
+    # Extract model override from request body
+    model_override = None
+    if body.model_override:
+        model_override = body.model_override.model_dump(exclude_none=True)
+
+    # Use mode_slug from request or default
+    mode_slug = body.mode_slug or "code"
+
     async def event_generator():
         try:
             async for event in run_agent(
                 input_text=body.input_text,
                 session_id=str(body.session_id),
                 user_id=str(user.id),
+                mode_slug=mode_slug,
                 db=db,
+                model_override=model_override,
             ):
                 yield {"event": event.type.value, "data": event.model_dump_json()}
             yield {

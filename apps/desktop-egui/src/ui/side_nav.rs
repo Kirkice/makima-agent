@@ -183,20 +183,14 @@ fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
 }
 
 fn draw_resources(ui: &mut egui::Ui, state: &mut AppState) {
-    kv_card(
-        ui,
-        "Memory",
-        &format!("{} items cached", state.settings.memory_items.len()),
-        colors::INFO,
-        Some(|| state.api_commands.push(ApiCommand::FetchMemories)),
-    );
-    kv_card(
-        ui,
-        "Knowledge",
-        &format!("{} docs indexed", state.settings.knowledge_docs.len()),
-        colors::SUCCESS,
-        Some(|| state.api_commands.push(ApiCommand::FetchDocuments)),
-    );
+    if kv_card_interactive(ui, "Memory", &format!("{} items cached", state.settings.memory_items.len()), colors::INFO) {
+        state.show_window_memory = true;
+        state.api_commands.push(ApiCommand::FetchMemories);
+    }
+    if kv_card_interactive(ui, "Knowledge", &format!("{} docs indexed", state.settings.knowledge_docs.len()), colors::SUCCESS) {
+        state.show_window_knowledge = true;
+        state.api_commands.push(ApiCommand::FetchDocuments);
+    }
 }
 
 fn draw_agent(ui: &mut egui::Ui, state: &mut AppState) {
@@ -221,20 +215,30 @@ fn draw_agent(ui: &mut egui::Ui, state: &mut AppState) {
     } else {
         state.settings.persona_name.clone()
     };
-    let model_name = if state.settings.model_config.configured {
-        state.settings.model_config.model.clone()
-    } else {
-        "Model not configured".to_string()
-    };
+    let model_name = state
+        .settings
+        .active_model_profile
+        .clone()
+        .unwrap_or_else(|| {
+            if state.settings.model_config.configured {
+                format!("{} ({})", state.settings.model_config.model, state.settings.model_config.provider)
+            } else {
+                "Not configured".to_string()
+            }
+        });
 
-    // Collect click actions instead of mutating state directly in closures
     if kv_card_interactive(ui, "Mode", &mode_name, colors::RED_ACCENT) {
+        state.show_window_modes = true;
         state.api_commands.push(ApiCommand::FetchModes);
     }
     if kv_card_interactive(ui, "Persona", &persona_name, colors::WARNING) {
+        state.show_window_persona = true;
         state.api_commands.push(ApiCommand::FetchPersona);
     }
-    kv_card_static(ui, "Model", &model_name, colors::INFO);
+    if kv_card_interactive(ui, "Model", &model_name, colors::INFO) {
+        state.show_window_model_config = true;
+        state.api_commands.push(ApiCommand::FetchModelProfiles);
+    }
 }
 
 fn draw_integrations(ui: &mut egui::Ui, state: &mut AppState) {
@@ -258,8 +262,11 @@ fn draw_integrations(ui: &mut egui::Ui, state: &mut AppState) {
         .count();
     let mcp_total = state.settings.mcp_servers.len();
 
-    kv_card_static(ui, "Voice", voice_label, voice_color);
-    kv_card_static(
+    if kv_card_interactive(ui, "Voice", voice_label, voice_color) {
+        state.show_window_voice = true;
+        state.api_commands.push(ApiCommand::FetchVoiceSettings);
+    }
+    if kv_card_interactive(
         ui,
         "MCP",
         &format!("{} / {} connected", mcp_connected, mcp_total),
@@ -270,15 +277,18 @@ fn draw_integrations(ui: &mut egui::Ui, state: &mut AppState) {
         } else {
             colors::TEXT_MUTED
         },
-    );
+    ) {
+        state.show_window_mcp = true;
+        state.api_commands.push(ApiCommand::FetchMcpServers);
+    }
 
     ui.add_space(8.0);
     if ui
         .add_sized([ui.available_width(), 28.0], egui::Button::new("Open diagnostics"))
         .clicked()
     {
-        state.drawer_open = true;
-        state.drawer_tab = Some(crate::state::app_state::DrawerTab::Diagnostics);
+        state.show_window_diagnostics = true;
+        state.api_commands.push(ApiCommand::RefreshHealth);
     }
 }
 
@@ -338,57 +348,7 @@ fn draw_search(ui: &mut egui::Ui, value: &mut String, hint: &str) {
         });
 }
 
-fn kv_card<F: FnOnce()>(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &str,
-    accent: egui::Color32,
-    refresh: Option<F>,
-) {
-    let mut cb = refresh;
-    egui::Frame::NONE
-        .fill(colors::ELEVATED)
-        .corner_radius(CornerRadius::same(8))
-        .inner_margin(egui::Margin {
-            left: 12,
-            right: 10,
-            top: 9,
-            bottom: 9,
-        })
-        .show(ui, |ui| {
-            let bar_rect = egui::Rect::from_min_size(
-                ui.min_rect().min,
-                egui::vec2(3.0, ui.min_rect().height()),
-            );
-            ui.painter()
-                .rect_filled(bar_rect, CornerRadius::same(2), accent);
-
-            if is_narrow(ui) {
-                ui.vertical(|ui| {
-                    ui.colored_label(colors::TEXT_SECONDARY, label);
-                    ui.add(egui::Label::new(egui::RichText::new(value).size(13.0).color(accent)).wrap());
-                    if let Some(f) = cb.take() {
-                        if ui.small_button("Refresh").on_hover_text("Refresh").clicked() {
-                            f();
-                        }
-                    }
-                });
-            } else {
-                ui.horizontal(|ui| {
-                    ui.colored_label(colors::TEXT_SECONDARY, label);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.colored_label(accent, egui::RichText::new(value).size(13.0));
-                        if let Some(f) = cb.take() {
-                            if ui.small_button("Refresh").on_hover_text("Refresh").clicked() {
-                                f();
-                            }
-                        }
-                    });
-                });
-            }
-        });
-    ui.add_space(6.0);
-}
+// kv_card and kv_card_static removed — all cards now use kv_card_interactive.
 
 fn kv_card_interactive(ui: &mut egui::Ui, label: &str, value: &str, accent: egui::Color32) -> bool {
     let response = egui::Frame::NONE
@@ -424,10 +384,6 @@ fn kv_card_interactive(ui: &mut egui::Ui, label: &str, value: &str, accent: egui
         });
     ui.add_space(6.0);
     response.response.clicked()
-}
-
-fn kv_card_static(ui: &mut egui::Ui, label: &str, value: &str, accent: egui::Color32) {
-    kv_card::<fn()>(ui, label, value, accent, None);
 }
 
 fn truncate_to_width(s: &str, max_width: f32) -> String {

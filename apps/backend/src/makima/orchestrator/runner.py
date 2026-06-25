@@ -27,6 +27,7 @@ async def run_agent(
     user_id: str,
     mode_slug: str = "code",
     db: object | None = None,
+    model_override: dict | None = None,
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run the agent with the given input, integrating mode system, memory and knowledge.
 
@@ -122,6 +123,7 @@ async def run_agent(
         persona=persona,
         memory_context=memory_context,
         knowledge_context=knowledge_context,
+        model_override=model_override,
     )
     config = {"configurable": {"thread_id": session_id}}
 

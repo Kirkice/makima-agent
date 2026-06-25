@@ -6,7 +6,7 @@ use crate::theme::colors;
 
 use super::bottom_drawer;
 use super::dock::{self, AppDockState};
-use super::panels::login;
+use super::panels::{audit, knowledge, login, mcp, memory, model_config, modes, persona, diagnostics, voice};
 use super::status_bar;
 use super::top_bar;
 
@@ -74,6 +74,122 @@ pub fn draw(
         .show_inside(ui, |ui| {
             dock::draw_app_dock(ui, state, app_dock, pending_action);
         });
+
+    // Floating windows for orphaned panels
+    draw_floating_windows(ui.ctx(), state);
+}
+
+fn draw_floating_windows(ctx: &egui::Context, state: &mut AppState) {
+    if state.show_window_model_config {
+        let mut open = true;
+        egui::Window::new("Model Configuration")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(420.0)
+            .default_height(500.0)
+            .min_width(350.0)
+            .max_width(700.0)
+            .show(ctx, |ui| {
+                model_config::draw(ui, state);
+            });
+        if !open { state.show_window_model_config = false; }
+    }
+    if state.show_window_mcp {
+        let mut open = true;
+        egui::Window::new("MCP Servers")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(460.0)
+            .default_height(420.0)
+            .show(ctx, |ui| {
+                mcp::draw(ui, state);
+            });
+        if !open { state.show_window_mcp = false; }
+    }
+    if state.show_window_audit {
+        let mut open = true;
+        egui::Window::new("Audit Log")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(640.0)
+            .default_height(420.0)
+            .show(ctx, |ui| {
+                audit::draw(ui, state);
+            });
+        if !open { state.show_window_audit = false; }
+    }
+    if state.show_window_persona {
+        let mut open = true;
+        egui::Window::new("Persona")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(460.0)
+            .default_height(420.0)
+            .show(ctx, |ui| {
+                persona::draw(ui, state);
+            });
+        if !open { state.show_window_persona = false; }
+    }
+    if state.show_window_diagnostics {
+        let mut open = true;
+        egui::Window::new("Diagnostics")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(420.0)
+            .default_height(380.0)
+            .show(ctx, |ui| {
+                diagnostics::draw(ui, state);
+            });
+        if !open { state.show_window_diagnostics = false; }
+    }
+    if state.show_window_modes {
+        let mut open = true;
+        egui::Window::new("Modes")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(520.0)
+            .default_height(440.0)
+            .show(ctx, |ui| {
+                modes::draw(ui, state);
+            });
+        if !open { state.show_window_modes = false; }
+    }
+    if state.show_window_memory {
+        let mut open = true;
+        egui::Window::new("Memory")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(520.0)
+            .default_height(440.0)
+            .show(ctx, |ui| {
+                memory::draw(ui, state);
+            });
+        if !open { state.show_window_memory = false; }
+    }
+    if state.show_window_knowledge {
+        let mut open = true;
+        egui::Window::new("Knowledge")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(520.0)
+            .default_height(440.0)
+            .show(ctx, |ui| {
+                knowledge::draw(ui, state);
+            });
+        if !open { state.show_window_knowledge = false; }
+    }
+    if state.show_window_voice {
+        let mut open = true;
+        egui::Window::new("Voice")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(460.0)
+            .default_height(420.0)
+            .show(ctx, |ui| {
+                voice::draw(ui, state);
+            });
+        if !open { state.show_window_voice = false; }
+    }
 }
 
 fn draw_menu_bar(ui: &mut egui::Ui, state: &mut AppState, pending_action: &mut Option<UiAction>) {
@@ -156,8 +272,8 @@ fn draw_menu_bar(ui: &mut egui::Ui, state: &mut AppState, pending_action: &mut O
 
                 // 模型显示按钮
                 if ui.button("⚙").on_hover_text("Model Settings").clicked() {
-                    // TODO: 打开模型设置面板
-                    state.set_status("Model settings coming soon".to_string());
+                    state.show_window_model_config = true;
+                    state.api_commands.push(crate::state::app_state::ApiCommand::FetchModelProfiles);
                 }
 
                 // 聊天按钮

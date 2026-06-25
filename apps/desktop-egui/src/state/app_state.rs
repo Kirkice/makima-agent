@@ -57,6 +57,7 @@ pub enum ApiCommand {
     FetchModes,
     FetchPersona,
     ReloadPersona,
+    UpdatePersona { draft: String },
     FetchMemories,
     SearchMemories(String),
     DeleteMemory(String),
@@ -66,6 +67,8 @@ pub enum ApiCommand {
     ReconnectMcp(String),
     ToggleMcp(String, bool),
     FetchAuditLog,
+    /// Query audit log with optional severity filter
+    QueryAuditLog { severity: Option<String> },
     FetchVoiceSettings,
     StartVoiceCall {
         room_name: String,
@@ -95,6 +98,37 @@ pub enum ApiCommand {
     FetchModeById(String),
     /// Reload modes from config file
     ReloadModes,
+    /// Refresh backend health status
+    RefreshHealth,
+    /// Test connection to backend (health probe)
+    TestConnection,
+    /// Fetch model config from backend config store
+    FetchModelConfig,
+    /// Save model config to backend config store
+    SaveModelConfig,
+    /// Test model connection (health probe + status)
+    TestModelConnection,
+    /// Save voice settings to backend (PUT /api/voice/settings)
+    SaveVoiceSettings,
+
+    // Model profiles (multi-LLM configuration, like Zoo-Code)
+    FetchModelProfiles,
+    CreateModelProfile {
+        name: String,
+        profile: crate::api::model_profiles::ModelProfile,
+    },
+    UpdateModelProfile {
+        name: String,
+        profile: crate::api::model_profiles::ModelProfile,
+    },
+    DeleteModelProfile(String),
+    ActivateModelProfile(String),
+    TestModelProfileConnection {
+        base_url: String,
+        api_key: Option<String>,
+        model: String,
+    },
+    FetchProviderTypes,
 }
 
 pub struct AppState {
@@ -123,6 +157,18 @@ pub struct AppState {
     pub show_modal_model_edit: bool,
     pub show_persona_default: bool,
     pub show_modal_persona_edit: bool,
+    /// Window flags to open orphaned panels as floating windows
+    pub show_window_mcp: bool,
+    pub show_window_audit: bool,
+    pub show_window_persona: bool,
+    pub show_window_modes: bool,
+    pub show_window_memory: bool,
+    pub show_window_knowledge: bool,
+    pub show_window_model_config: bool,
+    pub show_window_diagnostics: bool,
+    pub show_window_voice: bool,
+    /// Selected audit entry index for Detail view
+    pub audit_detail_index: Option<usize>,
     pub api_commands: Vec<ApiCommand>,
     pub activity_section: ActivitySection,
     pub drawer_open: bool,
@@ -162,6 +208,16 @@ impl Default for AppState {
             show_modal_model_edit: false,
             show_persona_default: false,
             show_modal_persona_edit: false,
+            show_window_mcp: false,
+            show_window_audit: false,
+            show_window_persona: false,
+            show_window_modes: false,
+            show_window_memory: false,
+            show_window_knowledge: false,
+            show_window_model_config: false,
+            show_window_diagnostics: false,
+            show_window_voice: false,
+            audit_detail_index: None,
             api_commands: Vec::new(),
             activity_section: ActivitySection::default(),
             drawer_open: false,

@@ -9,7 +9,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
-from makima.clients.llm import get_chat_model_for_mode
+from makima.clients.llm import get_chat_model_for_mode, get_chat_model_with_override
 from makima.modes.registry import get_default_mode, get_mode
 from makima.modes.tool_groups import get_tools_for_configs
 from makima.prompts.engine import PromptEngine
@@ -47,6 +47,7 @@ def build_graph(
     persona: Persona | None = None,
     memory_context: str = "",
     knowledge_context: str = "",
+    model_override: dict | None = None,
 ) -> Any:
     """Build and compile the agent graph.
 
@@ -63,9 +64,19 @@ def build_graph(
     if mode is None:
         mode = get_mode("code") or get_default_mode()
 
-    # Get LLM with mode-specific configuration (model, temperature, api_base, api_key)
-    llm = get_chat_model_for_mode(mode)
-    logger.debug("Using model for mode", mode=mode.slug, model=llm.model_name)
+    # Get LLM with mode-specific configuration + optional client override
+    if model_override:
+        llm = get_chat_model_with_override(
+            mode,
+            model_name=model_override.get("model"),
+            api_key=model_override.get("api_key"),
+            base_url=model_override.get("base_url"),
+            temperature=model_override.get("temperature"),
+        )
+        logger.debug("Using model with override", mode=mode.slug, model=llm.model_name)
+    else:
+        llm = get_chat_model_for_mode(mode)
+        logger.debug("Using model for mode", mode=mode.slug, model=llm.model_name)
 
     # Get tools filtered by mode
     tools = _get_tools_for_mode(mode)

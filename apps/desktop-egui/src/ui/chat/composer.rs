@@ -150,6 +150,8 @@ fn draw_toolbar(
             ui.horizontal(|ui| {
                 mode_dropdown(ui, state);
                 ui.add_space(4.0);
+                model_dropdown(ui, state);
+                ui.add_space(4.0);
                 attach_btn(ui, state);
             });
             ui.add_space(4.0);
@@ -167,9 +169,11 @@ fn draw_toolbar(
         // Normal: single horizontal row, all items vertically centered
         ui.spacing_mut().item_spacing.y = 4.0;
         ui.horizontal(|ui| {
-            // Left side: mode + attach + auto-approve
+            // Left side: mode + model + attach + auto-approve
             ui.add_space(1.0);
             mode_dropdown(ui, state);
+            ui.add_space(4.0);
+            model_dropdown(ui, state);
             ui.add_space(4.0);
             attach_btn(ui, state);
             ui.add_space(4.0);
@@ -219,6 +223,55 @@ fn mode_dropdown(ui: &mut egui::Ui, state: &mut AppState) {
     if let Some(slug) = new_slug {
         state.settings.active_mode_slug = Some(slug.clone());
         state.set_status(format!("Mode switched to {}", slug));
+    }
+}
+
+fn model_dropdown(ui: &mut egui::Ui, state: &mut AppState) {
+    let profiles = state.settings.model_profiles.clone();
+    let active_name = state.settings.active_model_profile.clone();
+
+    let current_label = if let Some(ref name) = active_name {
+        if let Some(p) = profiles.iter().find(|p| &p.name == name) {
+            format!("🤖 {} ({})", p.name, p.model)
+        } else {
+            "🤖 No model".to_string()
+        }
+    } else if !profiles.is_empty() {
+        format!("🤖 {} profiles", profiles.len())
+    } else {
+        "🤖 No model".to_string()
+    };
+
+    let mut new_active: Option<String> = None;
+
+    let _response = egui::ComboBox::from_id_salt("composer_model")
+        .selected_text(&current_label)
+        .width(180.0)
+        .show_ui(ui, |ui| {
+            for p in &profiles {
+                let selected = active_name.as_deref() == Some(&p.name);
+                let label = format!("{} ({})", p.name, p.model);
+                let resp = ui.selectable_label(selected, &label);
+                if resp.clicked() && !selected {
+                    new_active = Some(p.name.clone());
+                }
+            }
+            if !profiles.is_empty() {
+                ui.separator();
+                if ui.selectable_label(active_name.is_none(), "None (use default)").clicked() {
+                    new_active = Some(String::new()); // empty = clear active
+                }
+            }
+        });
+
+    if let Some(name) = new_active {
+        if name.is_empty() {
+            state.settings.active_model_profile = None;
+            state.set_status("Model profile cleared".to_string());
+        } else {
+            state.api_commands.push(crate::state::app_state::ApiCommand::ActivateModelProfile(name.clone()));
+            state.set_status(format!("Switching to model profile: {}", name));
+        }
     }
 }
 

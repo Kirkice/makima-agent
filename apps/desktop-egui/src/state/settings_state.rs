@@ -125,6 +125,12 @@ pub struct HealthStatus {
 /// Settings state for the right inspector
 #[derive(Debug, Clone)]
 pub struct SettingsState {
+    /// Model profiles (multi-LLM configuration, like Zoo-Code)
+    pub model_profiles: Vec<crate::api::model_profiles::ModelProfile>,
+    /// Currently active model profile name
+    pub active_model_profile: Option<String>,
+    /// Supported provider types (fetched from backend)
+    pub provider_types: Vec<crate::api::model_profiles::ProviderInfo>,
     pub modes: Vec<ModeConfig>,
     pub active_mode_slug: Option<String>,
     pub mcp_servers: Vec<McpServerConfig>,
@@ -134,6 +140,11 @@ pub struct SettingsState {
     pub token_estimate_per_1k: f64, // assumed cost per 1k tokens for estimation
     pub config_path: Option<String>,
     pub show_secret: bool,
+    // Model profile editing state
+    pub model_profile_edit_name: String,
+    pub model_profile_editing: Option<crate::api::model_profiles::ModelProfile>,
+    pub show_model_profile_create: bool,
+    pub model_profile_show_api_key: bool,
     // Backend-populated data
     pub memory_items: Vec<String>,
     pub knowledge_docs: Vec<crate::api::knowledge::ApiDocument>,
@@ -154,6 +165,9 @@ pub struct SettingsState {
 impl Default for SettingsState {
     fn default() -> Self {
         Self {
+            model_profiles: Vec::new(),
+            active_model_profile: None,
+            provider_types: Vec::new(),
             modes: Vec::new(),
             active_mode_slug: None,
             mcp_servers: Vec::new(),
@@ -168,6 +182,10 @@ impl Default for SettingsState {
             token_estimate_per_1k: 0.003,
             config_path: None,
             show_secret: false,
+            model_profile_edit_name: String::new(),
+            model_profile_editing: None,
+            show_model_profile_create: false,
+            model_profile_show_api_key: false,
             memory_items: Vec::new(),
             knowledge_docs: Vec::new(),
             knowledge_results: Vec::new(),
