@@ -142,7 +142,7 @@ fn draw_toolbar(
     pending_action: &mut Option<UiAction>,
     should_send: &mut bool,
 ) {
-    let narrow = ui.available_width() < 360.0;
+    let narrow = ui.available_width() < 420.0;
 
     if narrow {
         // Narrow: stack in two rows
@@ -164,43 +164,62 @@ fn draw_toolbar(
             });
         });
     } else {
-        // Normal: single horizontal row
+        // Normal: single horizontal row, all items vertically centered
+        ui.spacing_mut().item_spacing.y = 4.0;
         ui.horizontal(|ui| {
             // Left side: mode + attach + auto-approve
+            ui.add_space(1.0);
             mode_dropdown(ui, state);
-            ui.add_space(6.0);
+            ui.add_space(4.0);
             attach_btn(ui, state);
-            ui.add_space(8.0);
+            ui.add_space(4.0);
             auto_approve_btn(ui, state);
 
             // Right side: char count + token count + send
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 send_or_stop(ui, state, pending_action, should_send);
-                ui.add_space(8.0);
+                ui.add_space(6.0);
                 status_labels(ui, state);
             });
         });
     }
 }
 
-fn mode_dropdown(ui: &mut egui::Ui, state: &AppState) {
+fn mode_dropdown(ui: &mut egui::Ui, state: &mut AppState) {
     let current_name = state
         .settings
         .active_mode()
-        .map(|m| m.name.clone())
-        .unwrap_or_else(|| "Code".to_string());
+        .map(|m| compact_emoji_name(&m.name))
+        .unwrap_or_else(|| "🛠️Code".to_string());
 
-    egui::ComboBox::from_id_salt("composer_mode")
-        .selected_text(current_name)
-        .width(120.0)
+    // Use a local copy of slugs to avoid borrow issues inside ComboBox
+    let modes: Vec<(String, String)> = state
+        .settings
+        .modes
+        .iter()
+        .map(|m| (m.slug.clone(), compact_emoji_name(&m.name)))
+        .collect();
+    let active_slug = state.settings.active_mode_slug.clone();
+    let mut new_slug: Option<String> = None;
+
+    let _response = egui::ComboBox::from_id_salt("composer_mode")
+        .selected_text(&current_name)
+        .width(130.0)
         .show_ui(ui, |ui| {
-            for m in &state.settings.modes {
-                ui.selectable_label(
-                    state.settings.active_mode_slug.as_deref() == Some(&m.slug),
-                    &m.name,
-                );
+            for (slug, name) in &modes {
+                let selected = Some(slug.clone()) == active_slug;
+                let resp = ui.selectable_label(selected, name);
+                if resp.clicked() && !selected {
+                    new_slug = Some(slug.clone());
+                }
             }
         });
+
+    // Also check if ComboBox response itself indicates a change
+    if let Some(slug) = new_slug {
+        state.settings.active_mode_slug = Some(slug.clone());
+        state.set_status(format!("Mode switched to {}", slug));
+    }
 }
 
 fn attach_btn(ui: &mut egui::Ui, state: &mut AppState) {
@@ -251,7 +270,7 @@ fn auto_approve_btn(ui: &mut egui::Ui, state: &mut AppState) {
     } else {
         "○ Auto-Approve"
     };
-    let color = if state.chat.composer.auto_approve {
+    if state.chat.composer.auto_approve {
         colors::SUCCESS
     } else {
         colors::TEXT_MUTED
@@ -292,6 +311,19 @@ fn status_labels(ui: &mut egui::Ui, state: &AppState) {
             egui::RichText::new(format!("${cost:.4}")).size(11.0),
         );
     }
+}
+
+/// Remove the space right after an emoji so names like "🛠️ Code" → "🛠️Code"
+fn compact_emoji_name(name: &str) -> String {
+    // Find the position right after an emoji (first non-ASCII character)
+    if let Some(idx) = name.find(|c: char| c.is_alphabetic()) {
+        if idx > 0 {
+            let emoji_part = name[..idx].trim_end();
+            let text_part = &name[idx..];
+            return format!("{}{}", emoji_part, text_part);
+        }
+    }
+    name.to_string()
 }
 
 fn send_or_stop(

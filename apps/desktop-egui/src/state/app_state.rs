@@ -77,6 +77,24 @@ pub enum ApiCommand {
     ToggleVoiceMute,
     /// Delete a conversation by its ID (UUID string)
     DeleteSession(String),
+    /// Create a custom mode on the backend
+    CreateMode {
+        slug: String,
+        name: String,
+        role_definition: String,
+        when_to_use: Option<String>,
+        description: Option<String>,
+        custom_instructions: Option<String>,
+        tool_groups: Vec<String>,
+        max_steps: i32,
+        temperature: f64,
+    },
+    /// Delete a custom mode by slug
+    DeleteMode(String),
+    /// Fetch a single mode by slug
+    FetchModeById(String),
+    /// Reload modes from config file
+    ReloadModes,
 }
 
 pub struct AppState {

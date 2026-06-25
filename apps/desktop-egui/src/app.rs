@@ -154,6 +154,13 @@ impl MakimaApp {
                         if !s.chat.sessions.is_empty() { s.chat.active_session_id = Some(s.chat.sessions[0].id); }
                         s.set_status("Sessions loaded".to_string());
                     }
+
+                    // Also fetch modes after login
+                    {
+                        use crate::state::app_state::ApiCommand;
+                        let mut s = state.lock().unwrap();
+                        s.api_commands.push(ApiCommand::FetchModes);
+                    }
                 }
                 Err(e) => {
                     let mut s = state.lock().unwrap();
@@ -442,8 +449,13 @@ async fn try_env_auto_login(
         s.set_status("Auto-login via env".to_string());
     }
 
-    load_sessions_into_state(state, client, server_url, token).await;
-    true
+            {
+                use crate::state::app_state::ApiCommand;
+                let mut s = state.lock().unwrap();
+                s.api_commands.push(ApiCommand::FetchModes);
+            }
+            load_sessions_into_state(state, client, server_url, token).await;
+            true
 }
 
 impl eframe::App for MakimaApp {
@@ -628,19 +640,101 @@ impl MakimaApp {
                     let api = ModesApi::new(client, server_url, token);
                     if let Ok(resp) = api.list().await {
                         let mut s = state.lock().unwrap();
-                        s.settings.modes = resp.modes.into_iter().map(|m| crate::state::settings_state::ModeConfig {
-                            slug: m.slug, name: m.name,
-                            role_definition: m.role_definition.unwrap_or_default(),
-                            when_to_use: m.when_to_use,
-                            description: m.description,
-                            custom_instructions: m.custom_instructions,
-                            groups: m.tool_groups.iter().map(|tg| tg.group.clone()).collect(),
-                            source: Some(m.source),
+                        s.settings.modes = resp.modes.into_iter().map(|m| {
+                            crate::state::settings_state::ModeConfig {
+                                slug: m.slug,
+                                name: m.name,
+                                role_definition: m.role_definition.unwrap_or_default(),
+                                when_to_use: m.when_to_use,
+                                description: m.description,
+                                custom_instructions: m.custom_instructions,
+                                tool_groups: m.tool_groups.into_iter().map(|tg| {
+                                    crate::state::settings_state::ToolGroupConfig {
+                                        group: tg.group,
+                                        file_regex: tg.file_regex,
+                                        auto_approve: tg.auto_approve,
+                                    }
+                                }).collect(),
+                                max_steps: m.max_steps,
+                                temperature: m.temperature,
+                                source: Some(m.source),
+                                model: m.model,
+                                api_base: m.api_base,
+                            }
                         }).collect();
                         if s.settings.active_mode_slug.is_none() {
                             s.settings.active_mode_slug = s.settings.modes.first().map(|m| m.slug.clone());
                         }
                         s.set_status("Modes loaded".to_string());
+                    }
+                }
+                ApiCommand::FetchModeById(slug) => {
+                    let api = ModesApi::new(client.clone(), server_url.clone(), token.clone());
+                    if let Ok(m) = api.get(&slug).await {
+                        let mut s = state.lock().unwrap();
+                        // Update the specific mode in the list
+                        if let Some(idx) = s.settings.modes.iter().position(|mode| mode.slug == slug) {
+                            s.settings.modes[idx] = crate::state::settings_state::ModeConfig {
+                                slug: m.slug, name: m.name,
+                                role_definition: m.role_definition.unwrap_or_default(),
+                                when_to_use: m.when_to_use,
+                                description: m.description,
+                                custom_instructions: m.custom_instructions,
+                                tool_groups: m.tool_groups.into_iter().map(|tg| {
+                                    crate::state::settings_state::ToolGroupConfig {
+                                        group: tg.group,
+                                        file_regex: tg.file_regex,
+                                        auto_approve: tg.auto_approve,
+                                    }
+                                }).collect(),
+                                max_steps: m.max_steps,
+                                temperature: m.temperature,
+                                source: Some(m.source),
+                                model: m.model,
+                                api_base: m.api_base,
+                            };
+                        }
+                        s.set_status(format!("Mode '{}' refreshed", slug));
+                    }
+                }
+                ApiCommand::CreateMode { slug, name, role_definition, when_to_use, description, custom_instructions, tool_groups, max_steps, temperature } => {
+                    let api = ModesApi::new(client.clone(), server_url.clone(), token.clone());
+                    let req = crate::api::modes::CreateModeRequest {
+                        slug: slug.clone(),
+                        name: name.clone(),
+                        role_definition: role_definition.clone(),
+                        when_to_use,
+                        description,
+                        custom_instructions,
+                        tool_groups: tool_groups.into_iter().map(|g| {
+                            crate::api::modes::ToolGroupConfig { group: g, file_regex: None, auto_approve: true }
+                        }).collect(),
+                        max_steps,
+                        temperature,
+                    };
+                    if let Ok(_mode) = api.create(&req).await {
+                        let mut s = state.lock().unwrap();
+                        s.api_commands.push(ApiCommand::FetchModes);
+                        s.set_status(format!("Mode '{}' created", slug));
+                    }
+                }
+                ApiCommand::DeleteMode(slug) => {
+                    let api = ModesApi::new(client.clone(), server_url.clone(), token.clone());
+                    if let Ok(_resp) = api.delete(&slug).await {
+                        let mut s = state.lock().unwrap();
+                        s.settings.modes.retain(|m| m.slug != slug);
+                        if s.settings.active_mode_slug.as_deref() == Some(&slug) {
+                            s.settings.active_mode_slug = s.settings.modes.first().map(|m| m.slug.clone());
+                        }
+                        s.set_status(format!("Mode '{}' deleted", slug));
+                    }
+                }
+                ApiCommand::ReloadModes => {
+                    let api = ModesApi::new(client, server_url, token);
+                    if let Ok(_resp) = api.reload().await {
+                        let mut s = state.lock().unwrap();
+                        s.api_commands.push(ApiCommand::FetchModes);
+                        s.set_status("Modes reloaded from config".to_string());
                     }
                 }
                 ApiCommand::FetchPersona => {

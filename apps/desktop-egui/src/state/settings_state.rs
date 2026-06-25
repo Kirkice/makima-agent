@@ -1,6 +1,14 @@
 use serde::{Deserialize, Serialize};
 
-/// Mirror of Zoo-Code's ModeConfig structure
+/// Tool group configuration within a mode
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolGroupConfig {
+    pub group: String,
+    pub file_regex: Option<String>,
+    pub auto_approve: bool,
+}
+
+/// Mirror of Zoo-Code's ModeConfig structure (full backend alignment)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModeConfig {
     pub slug: String,
@@ -9,8 +17,13 @@ pub struct ModeConfig {
     pub when_to_use: Option<String>,
     pub description: Option<String>,
     pub custom_instructions: Option<String>,
-    pub groups: Vec<String>,
-    pub source: Option<String>, // "global" or "project"
+    pub tool_groups: Vec<ToolGroupConfig>,
+    pub max_steps: i32,
+    pub temperature: f64,
+    pub source: Option<String>, // "builtin", "project", "custom"
+    pub model: Option<String>,
+    pub api_base: Option<String>,
+    // api_key intentionally omitted from UI display
 }
 
 /// Mirror of Zoo-Code's McpServer + McpTool structure

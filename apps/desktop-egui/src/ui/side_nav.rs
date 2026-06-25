@@ -203,7 +203,18 @@ fn draw_agent(ui: &mut egui::Ui, state: &mut AppState) {
     let mode_name = state
         .settings
         .active_mode()
-        .map(|m| m.name.clone())
+        .map(|m| {
+            let name = &m.name;
+            if let Some(idx) = name.find(|c: char| c.is_alphabetic()) {
+                if idx > 0 {
+                    format!("{}{}", name[..idx].trim_end(), &name[idx..])
+                } else {
+                    name.clone()
+                }
+            } else {
+                name.clone()
+            }
+        })
         .unwrap_or_else(|| "No mode selected".to_string());
     let persona_name = if state.settings.persona_name.is_empty() {
         "Default persona".to_string()
@@ -216,8 +227,13 @@ fn draw_agent(ui: &mut egui::Ui, state: &mut AppState) {
         "Model not configured".to_string()
     };
 
-    kv_card_static(ui, "Mode", &mode_name, colors::RED_ACCENT);
-    kv_card_static(ui, "Persona", &persona_name, colors::WARNING);
+    // Collect click actions instead of mutating state directly in closures
+    if kv_card_interactive(ui, "Mode", &mode_name, colors::RED_ACCENT) {
+        state.api_commands.push(ApiCommand::FetchModes);
+    }
+    if kv_card_interactive(ui, "Persona", &persona_name, colors::WARNING) {
+        state.api_commands.push(ApiCommand::FetchPersona);
+    }
     kv_card_static(ui, "Model", &model_name, colors::INFO);
 }
 
@@ -372,6 +388,42 @@ fn kv_card<F: FnOnce()>(
             }
         });
     ui.add_space(6.0);
+}
+
+fn kv_card_interactive(ui: &mut egui::Ui, label: &str, value: &str, accent: egui::Color32) -> bool {
+    let response = egui::Frame::NONE
+        .fill(colors::ELEVATED)
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(egui::Margin {
+            left: 12,
+            right: 10,
+            top: 9,
+            bottom: 9,
+        })
+        .show(ui, |ui| {
+            let bar_rect = egui::Rect::from_min_size(
+                ui.min_rect().min,
+                egui::vec2(3.0, ui.min_rect().height()),
+            );
+            ui.painter()
+                .rect_filled(bar_rect, CornerRadius::same(2), accent);
+
+            if is_narrow(ui) {
+                ui.vertical(|ui| {
+                    ui.colored_label(colors::TEXT_SECONDARY, label);
+                    ui.add(egui::Label::new(egui::RichText::new(value).size(13.0).color(accent)).wrap());
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.colored_label(colors::TEXT_SECONDARY, label);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.colored_label(accent, egui::RichText::new(value).size(13.0));
+                    });
+                });
+            }
+        });
+    ui.add_space(6.0);
+    response.response.clicked()
 }
 
 fn kv_card_static(ui: &mut egui::Ui, label: &str, value: &str, accent: egui::Color32) {

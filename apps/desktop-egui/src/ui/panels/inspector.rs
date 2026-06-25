@@ -14,11 +14,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         kv_card(
             ui,
             "Mode",
-            state
+            &state
                 .settings
                 .active_mode()
-                .map(|mode| mode.name.as_str())
-                .unwrap_or("No mode selected"),
+                .map(|mode| compact_emoji_name(&mode.name))
+                .unwrap_or_else(|| "No mode selected".to_string()),
             colors::RED_ACCENT,
         );
         kv_card(
@@ -87,6 +87,15 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         };
         kv_card(ui, "Status", voice_label, voice_color);
     });
+}
+
+fn compact_emoji_name(name: &str) -> String {
+    if let Some(idx) = name.find(|c: char| c.is_alphabetic()) {
+        if idx > 0 {
+            return format!("{}{}", name[..idx].trim_end(), &name[idx..]);
+        }
+    }
+    name.to_string()
 }
 
 fn is_narrow(ui: &egui::Ui) -> bool {
