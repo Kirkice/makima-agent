@@ -1,187 +1,340 @@
-use eframe::egui::{self, Key};
-
 use crate::app::UiAction;
 use crate::state::app_state::AppState;
+use crate::state::chat_state::{AttachedFile, AttachmentStatus};
 use crate::theme::colors;
+use eframe::egui::{self, CornerRadius, Key};
 
+/// Zoo-Code-style input panel.
+///
+/// Layout:
+/// ┌──────────────────────────────────────────┐
+/// │ 📎 report.pdf [✕]  photo.png [✕]        │  ← attachments (if any)
+/// │                                          │
+/// │  [auto-resizing textarea, min 2 rows]    │  ← main input
+/// │                                          │
+/// ├──────────────────────────────────────────┤
+/// │ 🛠️ Code ▼  📎 Attach     ~128 tok  ⬆️   │  ← single toolbar row
+/// └──────────────────────────────────────────┘
 pub fn draw(
     ui: &mut egui::Ui,
     state: &mut AppState,
-    _pending_action: &mut Option<UiAction>,
+    pending_action: &mut Option<UiAction>,
 ) -> bool {
     let mut should_send = false;
 
     egui::Frame::NONE
         .fill(colors::ELEVATED)
         .stroke(egui::Stroke::new(1.0, colors::BORDER_WEAK.linear_multiply(0.5)))
-        .corner_radius(egui::CornerRadius::same(12))
-        .inner_margin(egui::Margin::same(12))
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
-            draw_top_row(ui, state);
-            ui.add_space(6.0);
+            // Fill the entire Dock-allocated region
+            ui.set_min_height(ui.available_height());
+            // ── Attachment previews ──────────────────────────────
+            if !state.chat.composer.attachments.is_empty() {
+                draw_attachment_previews(ui, state);
+                ui.add_space(4.0);
+            }
 
-            let response = ui.add_sized(
-                egui::vec2(ui.available_width(), 52.0),
+            // ── Main text area ───────────────────────────────────
+            let text_response = ui.add_sized(
+                egui::vec2(ui.available_width(), 0.0),
                 egui::TextEdit::multiline(&mut state.chat.composer.input)
-                    .hint_text("Ask Makima anything...")
-                    .desired_rows(3)
+                    .hint_text("Ask Makima anything... (Enter to send, Shift+Enter for newline)")
+                    .desired_rows(2)
+                    .desired_width(f32::INFINITY)
                     .frame(false),
             );
 
-            ui.add_space(6.0);
-            draw_bottom_row(ui, state, &mut should_send);
+            // Push toolbar to the bottom with a flexible spacer
+            let remaining = ui.available_height().max(0.0);
+            if remaining > 32.0 {
+                ui.add_space(remaining - 28.0);
+            }
 
-            if response.lost_focus()
-                && ui.input(|i| i.key_pressed(Key::Enter) && i.modifiers.ctrl)
+            // ── Single bottom toolbar (Zoo-Code style) ───────────
+            draw_toolbar(ui, state, pending_action, &mut should_send);
+
+            // ── Keyboard: Enter = send, Shift+Enter = newline ────
+            let enter_pressed = ui.input(|i| {
+                i.key_pressed(Key::Enter) && !i.modifiers.shift && !i.modifiers.ctrl
+            });
+            let ctrl_enter = ui.input(|i| {
+                i.key_pressed(Key::Enter) && i.modifiers.ctrl
+            });
+
+            if (enter_pressed || ctrl_enter)
                 && !state.chat.composer.input.trim().is_empty()
                 && !state.chat.composer.is_streaming
             {
-                if handle_inline_command(state) {
-                    should_send = true;
-                }
-                response.request_focus();
+                should_send = true;
+                text_response.request_focus();
             }
         });
 
     should_send
 }
 
-fn is_narrow(ui: &egui::Ui) -> bool {
-    ui.available_width() < 260.0
-}
+// ── Attachment Previews (compact, Zoo-Code style) ─────────────────────
 
-fn draw_top_row(ui: &mut egui::Ui, state: &AppState) {
-    if is_narrow(ui) {
-        ui.vertical(|ui| {
-            token_status(ui, state);
-            stream_status(ui, state);
-        });
-    } else {
-        ui.horizontal(|ui| {
-            token_status(ui, state);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                stream_status(ui, state);
-            });
-        });
-    }
-}
-
-fn token_status(ui: &mut egui::Ui, state: &AppState) {
-    let tokens = estimate_tokens(&state.chat.composer.input);
-    if tokens > 0 {
-        let cost = (tokens as f64 / 1000.0) * state.settings.token_estimate_per_1k;
-        let text = format!("~{tokens} tok | ${cost:.5}");
-        ui.add(
-            egui::Label::new(egui::RichText::new(text).size(11.0).color(colors::TEXT_MUTED)).wrap(),
-        );
-    } else {
-        ui.colored_label(colors::TEXT_MUTED, egui::RichText::new("Ready").size(12.0));
-    }
-}
-
-fn stream_status(ui: &mut egui::Ui, state: &AppState) {
-    if state.chat.composer.is_streaming {
-        ui.colored_label(
-            colors::WARNING,
-            egui::RichText::new("Streaming...").size(12.0),
-        );
-    } else {
-        ui.colored_label(
-            colors::TEXT_MUTED,
-            egui::RichText::new("Ctrl+Enter to send").size(12.0),
-        );
-    }
-}
-
-fn draw_bottom_row(ui: &mut egui::Ui, state: &mut AppState, should_send: &mut bool) {
-    if is_narrow(ui) {
-        ui.vertical(|ui| {
-            command_pills(ui);
-            ui.add_space(4.0);
-            action_button(ui, state, should_send);
-        });
-    } else {
-        ui.horizontal(|ui| {
-            command_pills(ui);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                action_button(ui, state, should_send);
-            });
-        });
-    }
-}
-
-fn command_pills(ui: &mut egui::Ui) {
+fn draw_attachment_previews(ui: &mut egui::Ui, state: &mut AppState) {
     ui.horizontal_wrapped(|ui| {
-        for cmd in ["/mode", "/clear", "/persona"] {
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(cmd)
-                        .size(11.0)
-                        .color(colors::TEXT_MUTED)
-                        .background_color(colors::SURFACE),
-                )
-                .sense(egui::Sense::hover()),
+        let mut to_remove: Vec<usize> = Vec::new();
+
+        for (idx, file) in state.chat.composer.attachments.iter().enumerate() {
+            let status_icon = match file.status {
+                AttachmentStatus::Pending => "⏳",
+                AttachmentStatus::Uploading => "⬆️",
+                AttachmentStatus::Uploaded => "✅",
+                AttachmentStatus::Error(_) => "❌",
+            };
+
+            let size_str = if file.size > 1_000_000 {
+                format!("{:.1}MB", file.size as f64 / 1_000_000.0)
+            } else if file.size > 1000 {
+                format!("{:.1}KB", file.size as f64 / 1000.0)
+            } else {
+                format!("{}B", file.size)
+            };
+
+            let text = format!("📎 {:.30} ({})", file.name, size_str);
+            let label = egui::Label::new(
+                egui::RichText::new(format!("{} {}", status_icon, text)).size(11.0),
             );
-            ui.add_space(4.0);
+
+            let frame = egui::Frame::NONE
+                .fill(colors::SURFACE)
+                .corner_radius(CornerRadius::same(4))
+                .inner_margin(egui::Margin::symmetric(6, 2));
+
+            frame.show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(label);
+                    if ui
+                        .add(
+                            egui::Button::new("✕")
+                                .fill(colors::TRANSPARENT)
+                                .stroke(egui::Stroke::NONE)
+                                .min_size(egui::vec2(16.0, 16.0)),
+                        )
+                        .on_hover_text("Remove")
+                        .clicked()
+                    {
+                        to_remove.push(idx);
+                    }
+                });
+            });
+
+            ui.add_space(3.0);
+        }
+
+        for idx in to_remove.into_iter().rev() {
+            state.chat.composer.attachments.remove(idx);
         }
     });
 }
 
-fn action_button(ui: &mut egui::Ui, state: &mut AppState, should_send: &mut bool) {
+// ── Bottom Toolbar (single row, Zoo-Code proportions) ──────────────────
+
+fn draw_toolbar(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    pending_action: &mut Option<UiAction>,
+    should_send: &mut bool,
+) {
+    let narrow = ui.available_width() < 360.0;
+
+    if narrow {
+        // Narrow: stack in two rows
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                mode_dropdown(ui, state);
+                ui.add_space(4.0);
+                attach_btn(ui, state);
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                status_labels(ui, state);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    send_or_stop(ui, state, pending_action, should_send);
+                });
+            });
+            ui.horizontal(|ui| {
+                auto_approve_btn(ui, state);
+            });
+        });
+    } else {
+        // Normal: single horizontal row
+        ui.horizontal(|ui| {
+            // Left side: mode + attach + auto-approve
+            mode_dropdown(ui, state);
+            ui.add_space(6.0);
+            attach_btn(ui, state);
+            ui.add_space(8.0);
+            auto_approve_btn(ui, state);
+
+            // Right side: char count + token count + send
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                send_or_stop(ui, state, pending_action, should_send);
+                ui.add_space(8.0);
+                status_labels(ui, state);
+            });
+        });
+    }
+}
+
+fn mode_dropdown(ui: &mut egui::Ui, state: &AppState) {
+    let current_name = state
+        .settings
+        .active_mode()
+        .map(|m| m.name.clone())
+        .unwrap_or_else(|| "Code".to_string());
+
+    egui::ComboBox::from_id_salt("composer_mode")
+        .selected_text(current_name)
+        .width(120.0)
+        .show_ui(ui, |ui| {
+            for m in &state.settings.modes {
+                ui.selectable_label(
+                    state.settings.active_mode_slug.as_deref() == Some(&m.slug),
+                    &m.name,
+                );
+            }
+        });
+}
+
+fn attach_btn(ui: &mut egui::Ui, state: &mut AppState) {
+    if ui
+        .add(
+            egui::Button::new("📎")
+                .fill(colors::TRANSPARENT)
+                .stroke(egui::Stroke::NONE)
+                .min_size(egui::vec2(28.0, 24.0)),
+        )
+        .on_hover_text("Attach files (images, PDFs, code)")
+        .clicked()
+    {
+        let files = rfd::FileDialog::new()
+            .add_filter(
+                "Documents & Images",
+                &[
+                    "pdf", "png", "jpg", "jpeg", "gif", "webp", "txt", "md", "py", "rs",
+                    "toml", "yaml", "json", "csv", "html", "css", "js", "ts",
+                ],
+            )
+            .add_filter("All Files", &["*"])
+            .pick_files();
+
+        if let Some(paths) = files {
+            for path in paths {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let path_str = path.to_string_lossy().to_string();
+                let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+
+                state.chat.composer.attachments.push(AttachedFile {
+                    name,
+                    path: path_str,
+                    size,
+                    status: AttachmentStatus::Pending,
+                });
+            }
+        }
+    }
+}
+
+fn auto_approve_btn(ui: &mut egui::Ui, state: &mut AppState) {
+    let label = if state.chat.composer.auto_approve {
+        "◉ Auto-Approve"
+    } else {
+        "○ Auto-Approve"
+    };
+    let color = if state.chat.composer.auto_approve {
+        colors::SUCCESS
+    } else {
+        colors::TEXT_MUTED
+    };
+
+    if ui
+        .add_sized(
+            egui::vec2(120.0, 20.0),
+            egui::Button::new(label)
+                .fill(colors::TRANSPARENT)
+                .stroke(egui::Stroke::NONE),
+        )
+        .on_hover_text("Toggle auto-approve for tool execution")
+        .clicked()
+    {
+        state.chat.composer.auto_approve = !state.chat.composer.auto_approve;
+    }
+}
+
+fn status_labels(ui: &mut egui::Ui, state: &AppState) {
+    let chars = state.chat.composer.input.len();
+    let tokens = chars.div_ceil(4) as u64;
+
     if state.chat.composer.is_streaming {
-        let stop_btn = egui::Button::new("Stop")
-            .fill(colors::ERROR)
-            .stroke(egui::Stroke::NONE)
-            .min_size(egui::vec2(ui.available_width().min(96.0).max(72.0), 28.0));
-        if ui.add_sized([ui.available_width(), 28.0], stop_btn).clicked() {
+        ui.colored_label(
+            colors::WARNING,
+            egui::RichText::new("◌ Streaming").size(11.0),
+        );
+    } else if chars > 0 {
+        let cost = (tokens as f64 / 1000.0) * state.settings.token_estimate_per_1k;
+        ui.colored_label(
+            colors::TEXT_MUTED,
+            egui::RichText::new(format!("📊 {} chars  ~{tokens} tok", chars)).size(11.0),
+        );
+        ui.add_space(4.0);
+        ui.colored_label(
+            colors::TEXT_MUTED,
+            egui::RichText::new(format!("${cost:.4}")).size(11.0),
+        );
+    }
+}
+
+fn send_or_stop(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    pending_action: &mut Option<UiAction>,
+    should_send: &mut bool,
+) {
+    if state.chat.composer.is_streaming {
+        if ui
+            .add(
+                egui::Button::new("⏹")
+                    .fill(colors::ERROR)
+                    .stroke(egui::Stroke::NONE)
+                    .min_size(egui::vec2(32.0, 24.0)),
+            )
+            .on_hover_text("Stop generating")
+            .clicked()
+        {
             state.chat.composer.is_streaming = false;
+            *pending_action = None;
         }
     } else {
-        let can_send = !state.chat.composer.input.trim().is_empty() && state.is_logged_in;
-        let send_btn = egui::Button::new("Send")
+        let has_content = !state.chat.composer.input.trim().is_empty()
+            || !state.chat.composer.attachments.is_empty();
+        let can_send = has_content && state.is_logged_in;
+
+        let btn = egui::Button::new("⬆")
             .fill(if can_send {
                 colors::RED_ACCENT
             } else {
                 colors::GRAPHITE_BORDER
             })
             .stroke(egui::Stroke::NONE)
-            .min_size(egui::vec2(72.0, 28.0));
-        if ui.add_enabled_ui(can_send, |ui| ui.add_sized([ui.available_width().min(96.0).max(72.0), 28.0], send_btn)).inner.clicked() {
-            if handle_inline_command(state) {
-                *should_send = true;
-            }
+            .min_size(egui::vec2(32.0, 24.0));
+
+        if ui
+            .add_enabled(can_send, btn)
+            .on_hover_text(if can_send { "Send (Enter)" } else { "Type something to send" })
+            .clicked()
+        {
+            *should_send = true;
+            *pending_action = Some(UiAction::SendMessage);
         }
     }
-}
-
-fn handle_inline_command(state: &mut AppState) -> bool {
-    if !state.chat.composer.input.starts_with('/') {
-        return true;
-    }
-
-    let parts: Vec<&str> = state.chat.composer.input.split_whitespace().collect();
-    if parts.is_empty() {
-        return false;
-    }
-
-    match parts[0] {
-        "/clear" => {
-            if let Some(session) = state.chat.active_session_mut() {
-                session.messages.clear();
-            }
-            state.chat.composer.input.clear();
-            state.set_status("Conversation cleared".to_string());
-            false
-        }
-        "/help" => {
-            state.set_status("Commands: /mode, /clear, /help, /persona".to_string());
-            state.chat.composer.input.clear();
-            false
-        }
-        _ => true,
-    }
-}
-
-fn estimate_tokens(text: &str) -> u64 {
-    (text.len() as u64).div_ceil(4)
 }

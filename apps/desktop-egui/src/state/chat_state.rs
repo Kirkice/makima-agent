@@ -135,6 +135,23 @@ impl Session {
     }
 }
 
+/// Represents a file attached to the composer for upload
+#[derive(Debug, Clone)]
+pub struct AttachedFile {
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    pub status: AttachmentStatus,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AttachmentStatus {
+    Pending,
+    Uploading,
+    Uploaded,
+    Error(String),
+}
+
 /// Chat input composer state
 #[derive(Debug, Clone)]
 pub struct ComposerState {
@@ -142,6 +159,10 @@ pub struct ComposerState {
     pub is_streaming: bool,
     pub current_task_id: Option<Uuid>,
     pub estimated_tokens: u64,
+    /// Files attached via the 📎 button
+    pub attachments: Vec<AttachedFile>,
+    /// Whether auto-approve mode is enabled
+    pub auto_approve: bool,
 }
 
 impl Default for ComposerState {
@@ -151,6 +172,8 @@ impl Default for ComposerState {
             is_streaming: false,
             current_task_id: None,
             estimated_tokens: 0,
+            attachments: Vec::new(),
+            auto_approve: true,
         }
     }
 }

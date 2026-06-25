@@ -113,7 +113,11 @@ fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
                                     colors::TEXT_MUTED,
                                     egui::RichText::new(format!("{} msg", session.messages.len())).size(11.0),
                                 );
-                                if ui.small_button("🗑").on_hover_text("Delete conversation").clicked() {
+                                let del_btn = egui::Button::new("🗑")
+                                    .fill(colors::TRANSPARENT)
+                                    .stroke(egui::Stroke::NONE)
+                                    .min_size(egui::vec2(22.0, 22.0));
+                                if ui.add(del_btn).on_hover_text("Delete conversation").clicked() {
                                     to_delete = Some(session.id);
                                 }
                             });
@@ -132,7 +136,7 @@ fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
                                     ui.add_space(6.0);
                                 }
 
-                                let label_w = (ui.available_width() - 52.0).max(40.0);
+                                let label_w = (ui.available_width() - 30.0).max(40.0);
                                 ui.vertical(|ui| {
                                     ui.set_width(label_w);
                                     ui.colored_label(
@@ -145,11 +149,13 @@ fn draw_sessions(ui: &mut egui::Ui, state: &mut AppState) {
                                     );
                                 });
 
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.small_button("🗑").on_hover_text("Delete conversation").clicked() {
-                                        to_delete = Some(session.id);
-                                    }
-                                });
+                                let del_btn = egui::Button::new("🗑")
+                                    .fill(colors::TRANSPARENT)
+                                    .stroke(egui::Stroke::NONE)
+                                    .min_size(egui::vec2(22.0, 22.0));
+                                if ui.add(del_btn).on_hover_text("Delete conversation").clicked() {
+                                    to_delete = Some(session.id);
+                                }
                             });
                         }
                     });
