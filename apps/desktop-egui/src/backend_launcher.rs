@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 use std::net::TcpListener;
+use std::fs::{self, File, OpenOptions};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -15,15 +16,27 @@ const POLL_INTERVAL_MS: u64 = 500;
 /// Holds the backend child process and cleans it up on drop.
 pub struct BackendProcess {
     child: Option<Child>,
+    startup_error: Option<String>,
 }
 
 impl BackendProcess {
     fn new(child: Child) -> Self {
-        Self { child: Some(child) }
+        Self { child: Some(child), startup_error: None }
     }
 
     pub fn none() -> Self {
-        Self { child: None }
+        Self { child: None, startup_error: None }
+    }
+
+    pub fn with_error(error: impl Into<String>) -> Self {
+        Self {
+            child: None,
+            startup_error: Some(error.into()),
+        }
+    }
+
+    pub fn startup_error(&self) -> Option<&str> {
+        self.startup_error.as_deref()
     }
 
     pub fn terminate(&mut self) {
@@ -177,6 +190,47 @@ fn backend_pid_on_port() -> Option<u32> {
     }
 }
 
+fn backend_log_path() -> PathBuf {
+    std::env::temp_dir().join("makima-backend-startup.log")
+}
+
+fn prepare_backend_log_file() -> std::io::Result<(File, File, PathBuf)> {
+    let path = backend_log_path();
+    let stdout = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&path)?;
+    let stderr = stdout.try_clone()?;
+    Ok((stdout, stderr, path))
+}
+
+fn summarize_startup_error(log_path: &PathBuf) -> Option<String> {
+    let content = fs::read_to_string(log_path).ok()?;
+    let mut lines: Vec<String> = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .collect();
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    if lines.len() > 10 {
+        lines = lines.split_off(lines.len() - 10);
+    }
+
+    let summary = lines.join(" | ");
+    let max_len = 1200;
+    if summary.len() > max_len {
+        Some(format!("{}...", &summary[..max_len]))
+    } else {
+        Some(summary)
+    }
+}
+
 /// Wait for the backend to become ready by polling the health endpoint.
 fn wait_for_backend(child: &mut Child, timeout: Duration) -> bool {
     let start = Instant::now();
@@ -286,11 +340,10 @@ pub fn ensure_backend_running() -> BackendProcess {
     }
 
     if !is_port_available() {
-        tracing::error!(
-            "Port 8000 is already in use, but the listener does not look like Makima."
-        );
-        tracing::error!("Free port 8000 or stop the conflicting process, then relaunch.");
-        return BackendProcess::none();
+        let msg =
+            "Port 8000 is already in use, but the listener does not look like Makima. Stop the conflicting process and retry.";
+        tracing::error!("{}", msg);
+        return BackendProcess::with_error(msg);
     }
 
     tracing::info!("Backend not running, starting uvicorn...");
@@ -299,14 +352,12 @@ pub fn ensure_backend_running() -> BackendProcess {
     let backend_dir = project_root.join("apps").join("backend");
 
     if !backend_dir.exists() {
-        tracing::warn!(
-            "Backend directory not found: {:?}. Cannot auto-start backend.",
+        let msg = format!(
+            "Backend directory not found: {:?}. Set MAKIMA_PROJECT_ROOT to the makima-agent project root.",
             backend_dir
         );
-        tracing::warn!(
-            "Tip: set MAKIMA_PROJECT_ROOT env var to the makima-agent project root."
-        );
-        return BackendProcess::none();
+        tracing::warn!("{}", msg);
+        return BackendProcess::with_error(msg);
     }
 
     tracing::info!("Project root: {:?}", project_root);
@@ -321,13 +372,12 @@ pub fn ensure_backend_running() -> BackendProcess {
         }
     });
 
-    // Inherit stdout/stderr in debug builds so backend logs are visible
-    // in the terminal. In release builds, suppress them (no console window).
-    let make_stdio = || {
-        if cfg!(debug_assertions) {
-            Stdio::inherit()
-        } else {
-            Stdio::null()
+    let (stdout_log, stderr_log, log_path) = match prepare_backend_log_file() {
+        Ok(files) => files,
+        Err(e) => {
+            let msg = format!("Failed to prepare backend startup log: {}", e);
+            tracing::error!("{}", msg);
+            return BackendProcess::with_error(msg);
         }
     };
 
@@ -349,9 +399,13 @@ pub fn ensure_backend_running() -> BackendProcess {
         ])
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUTF8", "1")
+        // Let the backend parse complex values like JSON arrays from the .env file
+        // itself. Inherited values loaded by dotenvy can arrive already de-quoted
+        // and break pydantic-settings parsing.
+        .env_remove("MAKIMA_API_CORS_ORIGINS")
         .current_dir(&project_root)
-        .stdout(make_stdio())
-        .stderr(make_stdio())
+        .stdout(Stdio::from(stdout_log))
+        .stderr(Stdio::from(stderr_log))
         .spawn();
 
     match result {
@@ -365,11 +419,14 @@ pub fn ensure_backend_running() -> BackendProcess {
                 tracing::info!("Backend ready at {}", HEALTH_URL);
                 BackendProcess::new(child)
             } else {
-                tracing::error!(
-                    "Backend did not become ready within {} seconds.",
-                    STARTUP_TIMEOUT_SECS
-                );
-                tracing::error!("Check .env configuration and Python dependencies.");
+                let detail = summarize_startup_error(&log_path).unwrap_or_else(|| {
+                    format!(
+                        "Backend did not become ready within {} seconds. Check .env configuration and Python dependencies.",
+                        STARTUP_TIMEOUT_SECS
+                    )
+                });
+                let msg = format!("Backend startup failed: {}", detail);
+                tracing::error!("{}", msg);
 
                 // Kill the failed process (including children on Windows)
                 #[cfg(windows)]
@@ -383,17 +440,16 @@ pub fn ensure_backend_running() -> BackendProcess {
                 let mut child = child;
                 let _ = child.kill();
                 let _ = child.wait();
-                BackendProcess::none()
+                BackendProcess::with_error(msg)
             }
         }
         Err(e) => {
-            tracing::error!("Failed to start backend process: {}", e);
-            tracing::error!(
-                "Make sure Python is installed and '{}' is in PATH, \
-                 or set PYTHON env var / MAKIMA_PROJECT_ROOT env var.",
-                python
+            let msg = format!(
+                "Failed to start backend process: {}. Make sure Python '{}' is installed and in PATH.",
+                e, python
             );
-            BackendProcess::none()
+            tracing::error!("{}", msg);
+            BackendProcess::with_error(msg)
         }
     }
 }

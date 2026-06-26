@@ -48,6 +48,7 @@ pub struct MakimaApp {
     pub layout_changed: bool,
     pub last_save_frame: u64,
     pub backend_process: BackendProcess,
+    pub backend_startup_error: Option<String>,
 }
 
 impl Default for MakimaApp {
@@ -58,6 +59,7 @@ impl Default for MakimaApp {
 
 impl MakimaApp {
     pub fn new(backend_process: BackendProcess) -> Self {
+        let backend_startup_error = backend_process.startup_error().map(str::to_owned);
         let state = Arc::new(Mutex::new(AppState::default()));
         let runtime = Runtime::new().expect("Failed to create Tokio runtime");
         let config = AppConfig::load().unwrap_or_default();
@@ -82,9 +84,17 @@ impl MakimaApp {
         if let Some(token) = secure_store.get_token() {
             if let Ok(mut s) = state.lock() { s.auth_token = Some(token); s.is_logged_in = true; s.server_url = config.server_url.clone(); }
         }
+        if let Some(err) = &backend_startup_error {
+            if let Ok(mut s) = state.lock() {
+                s.login_error = Some(err.clone());
+                s.status_message = Some(err.clone());
+            }
+        }
         let client = reqwest::Client::builder()
             .no_proxy()
             .user_agent("makima-desktop/0.1.0")
+            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(10))
             .build()
             .expect("Failed to create HTTP client");
 
@@ -114,6 +124,7 @@ impl MakimaApp {
             layout_changed: false,
             last_save_frame: 0,
             backend_process,
+            backend_startup_error,
         }
     }
 
@@ -1311,6 +1322,7 @@ impl MakimaApp {
         let server_url = self.config.server_url.clone();
         let auto_connect = self.config.auto_connect;
         let secure_store = SecureStore::new();
+        let backend_startup_error = self.backend_startup_error.clone();
 
         self.runtime.spawn(async move {
             let backend_ok = if auto_connect {
@@ -1319,7 +1331,7 @@ impl MakimaApp {
                     s.login_in_progress = true;
                     s.set_status("Waiting for backend...".to_string());
                 }
-                wait_for_backend_ready(client.clone(), server_url.clone(), 20, Duration::from_millis(500)).await
+                wait_for_backend_ready(client.clone(), server_url.clone(), 6, Duration::from_secs(1)).await
             } else {
                 let health_api = HealthApi::new(client.clone(), server_url.clone());
                 health_api.check().await.is_ok()
@@ -1331,7 +1343,13 @@ impl MakimaApp {
                 if !backend_ok {
                     s.login_in_progress = false;
                     s.show_login = true;
-                    s.set_status("Backend offline".to_string());
+                    if let Some(err) = backend_startup_error.clone() {
+                        s.login_error = Some(err.clone());
+                        s.set_status(err);
+                    } else {
+                        s.login_error = Some("Backend offline".to_string());
+                        s.set_status("Backend offline".to_string());
+                    }
                     return;
                 }
                 s.auth_token.clone()

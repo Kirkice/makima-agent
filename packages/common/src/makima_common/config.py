@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     tool_sandbox_enabled: bool = True
     tool_timeout: int = 60
     tool_working_dir: str = "/tmp/makima-sandbox"
+    # Additional directories allowed for file access (comma-separated or JSON array)
+    # Example: "/home/user/projects,/workspace" or '["/home/user/projects", "/workspace"]'
+    tool_allowed_dirs: list[str] = []
 
     # ── Memory Service (Mem0) ──────────────────────────────────────────
     memory_enabled: bool = True
@@ -90,6 +93,19 @@ class Settings(BaseSettings):
             if raw.startswith("["):
                 return json.loads(raw)
             return [origin.strip() for origin in raw.split(",") if origin.strip()]
+        return value
+
+    @field_validator("tool_allowed_dirs", mode="before")
+    @classmethod
+    def parse_allowed_dirs(cls, value: Any) -> Any:
+        """Accept either JSON arrays or simple comma-separated directory lists."""
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return []
+            if raw.startswith("["):
+                return json.loads(raw)
+            return [d.strip() for d in raw.split(",") if d.strip()]
         return value
 
 

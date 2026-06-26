@@ -92,6 +92,17 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState, login_state: &mut LoginDial
 
                 ui.add_space(12.0);
                 ui.vertical_centered(|ui| {
+                    if let Some(status) = &state.status_message {
+                        let color = if login_state.loading {
+                            colors::TEXT_MUTED
+                        } else if login_state.error.is_some() {
+                            colors::ERROR
+                        } else {
+                            colors::TEXT_MUTED
+                        };
+                        ui.colored_label(color, egui::RichText::new(status).size(12.0));
+                        ui.add_space(6.0);
+                    }
                     ui.colored_label(
                         colors::TEXT_MUTED,
                         egui::RichText::new("Make sure your Makima backend is running.").size(12.0),

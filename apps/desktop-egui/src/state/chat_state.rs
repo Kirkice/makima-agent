@@ -165,6 +165,101 @@ pub enum AttachmentStatus {
     Error(String),
 }
 
+/// Fine-grained auto-approval settings (similar to Zoo Code)
+/// Each category can be independently enabled/disabled
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoApprovalSettings {
+    /// Auto-approve read-only file operations (read_file, list_directory, search_files)
+    pub always_allow_read_only: bool,
+    /// Auto-approve file write operations (write_file, edit_file)
+    pub always_allow_write: bool,
+    /// Auto-approve terminal command execution
+    pub always_allow_execute: bool,
+    /// Auto-approve mode switching
+    pub always_allow_mode_switch: bool,
+    /// Auto-approve MCP server tool usage
+    pub always_allow_mcp: bool,
+    /// Auto-approve subtask creation/completion
+    pub always_allow_subtasks: bool,
+    /// Auto-approve follow-up questions (no user input needed)
+    pub always_allow_followup_questions: bool,
+    /// Command allowlist (prefix matching, longer prefix wins)
+    pub command_allowlist: Vec<String>,
+    /// Command denylist (prefix matching, longer prefix wins)
+    pub command_denylist: Vec<String>,
+    /// Max auto-approval requests before requiring user input (0 = unlimited)
+    pub max_auto_approval_requests: u32,
+    /// Whether to show approval notifications for auto-approved actions
+    pub show_auto_approval_notifications: bool,
+}
+
+impl Default for AutoApprovalSettings {
+    fn default() -> Self {
+        Self {
+            always_allow_read_only: true,
+            always_allow_write: false,
+            always_allow_execute: false,
+            always_allow_mode_switch: true,
+            always_allow_mcp: false,
+            always_allow_subtasks: true,
+            always_allow_followup_questions: false,
+            command_allowlist: vec!["ls".into(), "cat".into(), "echo".into(), "pwd".into(), "head".into(), "tail".into(), "grep".into(), "find".into(), "wc".into(), "date".into()],
+            command_denylist: vec!["rm -rf".into(), "sudo".into(), "chmod".into(), "chown".into(), "kill".into(), "shutdown".into()],
+            max_auto_approval_requests: 50,
+            show_auto_approval_notifications: true,
+        }
+    }
+}
+
+impl AutoApprovalSettings {
+    /// Check if a command should be allowed based on allowlist/denylist
+    /// Longer prefix match wins in case of conflicts
+    pub fn is_command_allowed(&self, command: &str) -> CommandDecision {
+        let command_lower = command.to_lowercase();
+        
+        // Find longest matching prefix in allowlist and denylist
+        let allow_match_len = self.command_allowlist.iter()
+            .filter_map(|prefix| {
+                if command_lower.starts_with(&prefix.to_lowercase()) {
+                    Some(prefix.len())
+                } else {
+                    None
+                }
+            })
+            .max()
+            .unwrap_or(0);
+        
+        let deny_match_len = self.command_denylist.iter()
+            .filter_map(|prefix| {
+                if command_lower.starts_with(&prefix.to_lowercase()) {
+                    Some(prefix.len())
+                } else {
+                    None
+                }
+            })
+            .max()
+            .unwrap_or(0);
+        
+        // Longer prefix wins
+        if deny_match_len > allow_match_len {
+            CommandDecision::Denied
+        } else if allow_match_len > 0 {
+            CommandDecision::Allowed
+        } else if self.always_allow_execute {
+            CommandDecision::Allowed
+        } else {
+            CommandDecision::RequiresApproval
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandDecision {
+    Allowed,
+    Denied,
+    RequiresApproval,
+}
+
 /// Chat input composer state
 #[derive(Debug, Clone)]
 pub struct ComposerState {
@@ -174,8 +269,14 @@ pub struct ComposerState {
     pub estimated_tokens: u64,
     /// Files attached via the 📎 button
     pub attachments: Vec<AttachedFile>,
-    /// Whether auto-approve mode is enabled
+    /// Whether auto-approve mode is enabled (global toggle)
     pub auto_approve: bool,
+    /// Fine-grained auto-approval settings
+    pub auto_approval_settings: AutoApprovalSettings,
+    /// Whether the auto-approval settings panel is open
+    pub show_auto_approval_panel: bool,
+    /// Counter for auto-approval requests in current session
+    pub auto_approval_request_count: u32,
 }
 
 impl Default for ComposerState {
@@ -187,6 +288,9 @@ impl Default for ComposerState {
             estimated_tokens: 0,
             attachments: Vec::new(),
             auto_approve: true,
+            auto_approval_settings: AutoApprovalSettings::default(),
+            show_auto_approval_panel: false,
+            auto_approval_request_count: 0,
         }
     }
 }

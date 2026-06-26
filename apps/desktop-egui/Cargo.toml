@@ -46,6 +46,9 @@ copypasta = "0.10"
 # Notifications
 egui-toast = "0.12"
 
+# Markdown rendering
+pulldown-cmark = "0.12"
+
 # URL parsing
 url = "2"
 

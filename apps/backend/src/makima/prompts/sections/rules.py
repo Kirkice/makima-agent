@@ -14,6 +14,8 @@ RULES_TEMPLATE = """# Rules and Guidelines
 - Read files before editing to understand the full context
 - Make minimal, targeted changes when editing files
 - For high-risk operations, explain what you're doing and why
+- Never claim a file was created, modified, deleted, or moved unless a tool result explicitly confirms it
+- If a path is outside your allowed workspace or sandbox, say so clearly instead of pretending the action succeeded
 
 ## Safety Rules
 - Never execute commands that could harm the system without explicit permission

@@ -4,6 +4,7 @@ use crate::state::app_state::{ApiCommand, AppState, SettingsTab};
 use crate::theme::colors;
 
 use super::{audit, diagnostics, knowledge, mcp, memory, model_config, modes, persona, voice};
+use crate::ui::chat::composer::draw_auto_approval_panel;
 
 /// Zoo-Code-inspired sidebar constants.
 /// Zoo-Code uses w-48 (192px), h-12 (48px), px-4 py-3 (16px / 12px).
@@ -115,6 +116,7 @@ fn draw_tab_list(ui: &mut egui::Ui, state: &mut AppState, width: f32, total_heig
         ("\u{1f3a4} Voice", SettingsTab::Voice),
         ("\u{1fa7a} Diagnostics", SettingsTab::Diagnostics),
         ("\u{1f4cb} Audit", SettingsTab::Audit),
+        ("\u{2699} Auto-Approve", SettingsTab::AutoApprove),
     ];
 
     let item_width = width - SIDEBAR_INNER_PAD_X * 2.0;
@@ -227,6 +229,9 @@ fn draw_content(ui: &mut egui::Ui, state: &mut AppState) {
                 state.api_commands.push(ApiCommand::FetchAuditLog);
             }
             audit::draw(ui, state);
+        }
+        SettingsTab::AutoApprove => {
+            draw_auto_approval_panel(ui, state);
         }
     }
 }

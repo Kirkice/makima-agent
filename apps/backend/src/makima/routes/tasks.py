@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from makima.auth.models import User
 from makima.core.deps import get_current_user, get_db
@@ -19,6 +20,16 @@ from makima_schemas.api import TaskCreate, TaskResponse
 from makima_schemas.events import AgentEvent, AgentEventType
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+
+def _to_langchain_message(message: Message) -> BaseMessage | None:
+    if message.role == "user":
+        return HumanMessage(content=message.content)
+    if message.role == "assistant":
+        return AIMessage(content=message.content)
+    if message.role == "system":
+        return SystemMessage(content=message.content)
+    return None
 
 
 @router.post("")
@@ -34,6 +45,18 @@ async def create_task(
     if result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    history_result = await db.execute(
+        select(Message)
+        .where(Session.id == body.session_id, Session.user_id == user.id)
+        .join(Session, Session.id == Message.session_id)
+        .order_by(Message.created_at.asc())
+    )
+    history_messages = [
+        lc_msg
+        for lc_msg in (_to_langchain_message(msg) for msg in history_result.scalars().all())
+        if lc_msg is not None
+    ]
+
     user_msg = Message(session_id=body.session_id, role="user", content=body.input_text)
     db.add(user_msg)
 
@@ -41,6 +64,7 @@ async def create_task(
     db.add(task)
     await db.flush()
     task_id = str(task.id)
+    await db.commit()
 
     # Extract model override from request body
     model_override = None
@@ -51,6 +75,8 @@ async def create_task(
     mode_slug = body.mode_slug or "code"
 
     async def event_generator():
+        last_assistant_message: str | None = None
+        step_count = 0
         try:
             async for event in run_agent(
                 input_text=body.input_text,
@@ -60,8 +86,30 @@ async def create_task(
                 db=db,
                 model_override=model_override,
                 attachments=body.attachments if body.attachments else None,
+                history_messages=history_messages,
             ):
+                step_count = max(step_count, event.step)
+                if event.type == AgentEventType.MESSAGE:
+                    content = event.data.get("content")
+                    if isinstance(content, str) and content.strip():
+                        last_assistant_message = content
                 yield {"event": event.type.value, "data": event.model_dump_json()}
+
+            if last_assistant_message:
+                db.add(
+                    Message(
+                        session_id=body.session_id,
+                        role="assistant",
+                        content=last_assistant_message,
+                    )
+                )
+            task_db = await db.get(Task, UUID(task_id))
+            if task_db is not None:
+                task_db.status = "completed"
+                task_db.result = last_assistant_message
+                task_db.step_count = step_count
+                task_db.error = None
+            await db.commit()
             yield {
                 "event": AgentEventType.DONE.value,
                 "data": AgentEvent(
@@ -72,6 +120,12 @@ async def create_task(
                 ).model_dump_json(),
             }
         except Exception as e:
+            task_db = await db.get(Task, UUID(task_id))
+            if task_db is not None:
+                task_db.status = "failed"
+                task_db.error = str(e)
+                task_db.step_count = step_count
+            await db.commit()
             yield {
                 "event": AgentEventType.ERROR.value,
                 "data": AgentEvent(

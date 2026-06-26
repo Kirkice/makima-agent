@@ -16,6 +16,7 @@ pub enum SettingsTab {
     Voice,
     Diagnostics,
     Audit,
+    AutoApprove,
 }
 
 impl Default for SettingsTab {

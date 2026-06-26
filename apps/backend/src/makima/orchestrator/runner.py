@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 
 from makima.orchestrator.graph import build_graph
 from makima.orchestrator.attachment_context import build_attachment_context
@@ -34,6 +34,7 @@ async def run_agent(
     db: object | None = None,
     model_override: dict | None = None,
     attachments: list[AttachmentInfo] | None = None,
+    history_messages: list[BaseMessage] | None = None,
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run the agent with the given input, integrating mode system, memory and knowledge.
 
@@ -155,8 +156,11 @@ async def run_agent(
     else:
         enriched_input = input_text
 
+    conversation_messages = list(history_messages or [])
+    conversation_messages.append(HumanMessage(content=enriched_input))
+
     initial_state = {
-        "messages": [HumanMessage(content=enriched_input)],
+        "messages": conversation_messages,
         "user_id": user_id,
         "session_id": session_id,
         "context": {"mode": mode.slug},

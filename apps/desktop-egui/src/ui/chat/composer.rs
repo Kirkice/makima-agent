@@ -324,7 +324,7 @@ fn auto_approve_btn(ui: &mut egui::Ui, state: &mut AppState) {
     } else {
         "○ Auto-Approve"
     };
-    if state.chat.composer.auto_approve {
+    let text_color = if state.chat.composer.auto_approve {
         colors::SUCCESS
     } else {
         colors::TEXT_MUTED
@@ -333,15 +333,173 @@ fn auto_approve_btn(ui: &mut egui::Ui, state: &mut AppState) {
     if ui
         .add_sized(
             egui::vec2(120.0, 20.0),
-            egui::Button::new(label)
+            egui::Button::new(egui::RichText::new(label).color(text_color))
                 .fill(colors::TRANSPARENT)
                 .stroke(egui::Stroke::NONE),
         )
-        .on_hover_text("Toggle auto-approve for tool execution")
+        .on_hover_text("Toggle auto-approve for tool execution. Click to expand settings.")
         .clicked()
     {
-        state.chat.composer.auto_approve = !state.chat.composer.auto_approve;
+        state.chat.composer.show_auto_approval_panel = !state.chat.composer.show_auto_approval_panel;
     }
+}
+
+/// Auto-approval settings panel (similar to Zoo Code)
+pub fn draw_auto_approval_panel(ui: &mut egui::Ui, state: &mut AppState) {
+    let settings = &mut state.chat.composer.auto_approval_settings;
+    
+    egui::Frame::NONE
+        .fill(colors::SURFACE)
+        .stroke(egui::Stroke::new(1.0, colors::BORDER_WEAK))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            // Header
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("⚙ Auto-Approval Settings").strong().size(13.0));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(egui::Button::new("✕").fill(colors::TRANSPARENT).stroke(egui::Stroke::NONE))
+                        .on_hover_text("Close panel")
+                        .clicked()
+                    {
+                        state.chat.composer.show_auto_approval_panel = false;
+                    }
+                });
+            });
+            ui.add_space(8.0);
+
+            // Global toggle
+            ui.horizontal(|ui| {
+                let label = if state.chat.composer.auto_approve { "✓ Global Auto-Approve" } else { "○ Global Auto-Approve" };
+                if ui.checkbox(&mut state.chat.composer.auto_approve, label).clicked() {
+                    // Toggle was clicked
+                }
+            });
+            ui.add_space(8.0);
+
+            ui.separator();
+            ui.add_space(6.0);
+
+            // Category toggles
+            ui.label(egui::RichText::new("Tool Categories").strong().size(12.0));
+            ui.add_space(4.0);
+
+            let categories = vec![
+                ("📖 Read-Only Operations", &mut settings.always_allow_read_only, "read_file, list_directory, search_files"),
+                ("✏️ Write Operations", &mut settings.always_allow_write, "write_file, edit_file"),
+                ("▶️ Execute Commands", &mut settings.always_allow_execute, "Terminal command execution"),
+                ("🔄 Mode Switching", &mut settings.always_allow_mode_switch, "Switch between agent modes"),
+                ("🔌 MCP Server Tools", &mut settings.always_allow_mcp, "MCP server tool usage"),
+                ("📋 Subtasks", &mut settings.always_allow_subtasks, "Create and complete subtasks"),
+                ("❓ Follow-up Questions", &mut settings.always_allow_followup_questions, "Auto-answer follow-up questions"),
+            ];
+
+            for (label, enabled, desc) in categories {
+                ui.horizontal(|ui| {
+                    ui.checkbox(enabled, label);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(desc).size(10.0).color(colors::TEXT_MUTED));
+                    });
+                });
+                ui.add_space(2.0);
+            }
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(6.0);
+
+            // Command allowlist/denylist
+            ui.label(egui::RichText::new("Command Lists").strong().size(12.0));
+            ui.add_space(4.0);
+
+            ui.collapsing("Command Allowlist", |ui| {
+                ui.label(egui::RichText::new("Prefixes that are always allowed (longer prefix wins)").size(10.0).color(colors::TEXT_MUTED));
+                ui.add_space(4.0);
+                
+                let mut to_remove = Vec::new();
+                for (idx, prefix) in settings.command_allowlist.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("• {}", prefix)).monospace().size(11.0));
+                        if ui
+                            .add(egui::Button::new("✕").fill(colors::TRANSPARENT).stroke(egui::Stroke::NONE))
+                            .clicked()
+                        {
+                            to_remove.push(idx);
+                        }
+                    });
+                }
+                
+                for idx in to_remove.into_iter().rev() {
+                    settings.command_allowlist.remove(idx);
+                }
+                
+                ui.add_space(4.0);
+                let mut new_prefix = String::new();
+                ui.horizontal(|ui| {
+                    let response = ui.text_edit_singleline(&mut new_prefix);
+                    if ui.button("Add").clicked() || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                        if !new_prefix.trim().is_empty() {
+                            settings.command_allowlist.push(new_prefix.trim().to_string());
+                        }
+                    }
+                });
+            });
+
+            ui.add_space(4.0);
+
+            ui.collapsing("Command Denylist", |ui| {
+                ui.label(egui::RichText::new("Prefixes that are always denied (longer prefix wins)").size(10.0).color(colors::TEXT_MUTED));
+                ui.add_space(4.0);
+                
+                let mut to_remove = Vec::new();
+                for (idx, prefix) in settings.command_denylist.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("• {}", prefix)).monospace().size(11.0));
+                        if ui
+                            .add(egui::Button::new("✕").fill(colors::TRANSPARENT).stroke(egui::Stroke::NONE))
+                            .clicked()
+                        {
+                            to_remove.push(idx);
+                        }
+                    });
+                }
+                
+                for idx in to_remove.into_iter().rev() {
+                    settings.command_denylist.remove(idx);
+                }
+                
+                ui.add_space(4.0);
+                let mut new_prefix = String::new();
+                ui.horizontal(|ui| {
+                    let response = ui.text_edit_singleline(&mut new_prefix);
+                    if ui.button("Add").clicked() || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                        if !new_prefix.trim().is_empty() {
+                            settings.command_denylist.push(new_prefix.trim().to_string());
+                        }
+                    }
+                });
+            });
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(6.0);
+
+            // Max auto-approval requests
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Max Auto-Approvals:").size(11.0));
+                ui.add(egui::DragValue::new(&mut settings.max_auto_approval_requests).range(0..=1000));
+                ui.label(egui::RichText::new("(0 = unlimited)").size(9.0).color(colors::TEXT_MUTED));
+            });
+
+            ui.add_space(4.0);
+
+            ui.checkbox(&mut settings.show_auto_approval_notifications, "Show notifications for auto-approved actions");
+            
+            // Status display
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(format!("Auto-approvals this session: {}", state.chat.composer.auto_approval_request_count)).size(10.0).color(colors::TEXT_MUTED));
+        });
 }
 
 fn status_labels(ui: &mut egui::Ui, state: &AppState) {
