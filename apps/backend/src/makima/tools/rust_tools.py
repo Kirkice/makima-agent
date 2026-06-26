@@ -7,6 +7,7 @@ and fall back to Python implementations if Rust is unavailable.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 from langchain_core.tools import tool
@@ -23,6 +24,38 @@ from makima_common.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _path_is_inside(path: Path, base: Path) -> bool:
+    try:
+        path.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
+def _requires_python_path_handling(path_str: str) -> bool:
+    """Return True when the Python file tools should handle this path.
+
+    Rust runtime currently only supports a single base_dir sandbox. If the path
+    is outside tool_working_dir but inside a configured allowed directory, we
+    must bypass Rust and use the Python implementation that understands the
+    whitelist rules.
+    """
+    settings = get_settings()
+    sandbox_base = Path(settings.tool_working_dir).resolve()
+    raw_path = Path(path_str)
+    target = (sandbox_base / raw_path).resolve() if not raw_path.is_absolute() else raw_path.resolve()
+
+    if _path_is_inside(target, sandbox_base):
+        return False
+
+    for allowed_dir in settings.tool_allowed_dirs:
+        allowed_base = Path(allowed_dir).resolve()
+        if _path_is_inside(target, allowed_base):
+            return True
+
+    return False
+
+
 @tool
 async def read_file(file_path: str) -> str:
     """Read the contents of a file at the given path.
@@ -33,6 +66,9 @@ async def read_file(file_path: str) -> str:
     Returns:
         The contents of the file as a string, or an error message.
     """
+    if _requires_python_path_handling(file_path):
+        return await py_read_file.ainvoke({"file_path": file_path})
+
     rust = get_rust_client()
     if await rust.is_available():
         try:
@@ -58,6 +94,9 @@ async def write_file(file_path: str, content: str) -> str:
     Returns:
         A success message or an error message.
     """
+    if _requires_python_path_handling(file_path):
+        return await py_write_file.ainvoke({"file_path": file_path, "content": content})
+
     rust = get_rust_client()
     if await rust.is_available():
         try:
@@ -82,6 +121,9 @@ async def list_directory(path: str = ".") -> str:
     Returns:
         A formatted listing of the directory contents, or an error message.
     """
+    if _requires_python_path_handling(path):
+        return await py_list_directory.ainvoke({"dir_path": path})
+
     rust = get_rust_client()
     if await rust.is_available():
         try:

@@ -16,7 +16,7 @@ from langchain_core.tools import tool
 
 from makima_common.config import get_settings
 from makima_common.logging import get_logger
-from makima.tools.path_whitelist import PathWhitelist
+from makima.tools.path_whitelist import get_path_whitelist
 
 logger = get_logger(__name__)
 
@@ -63,7 +63,7 @@ def _check_path_layers(file_path: str, session_id: Optional[str] = None) -> tupl
     
     # Layer 3: Session whitelist (auto-approved for approved paths)
     if session_id:
-        whitelist = PathWhitelist()
+        whitelist = get_path_whitelist()
         if whitelist.is_path_allowed(session_id, str(target)):
             return target, "session_whitelist"
     
@@ -120,7 +120,7 @@ async def _validate_path(file_path: str, session_id: Optional[str] = None,
         
         # Add to session whitelist for future access
         if session_id:
-            whitelist = PathWhitelist()
+            whitelist = get_path_whitelist()
             whitelist.add_path(session_id, str(e.path))
             logger.info(f"Added to session whitelist: {e.path}")
         
