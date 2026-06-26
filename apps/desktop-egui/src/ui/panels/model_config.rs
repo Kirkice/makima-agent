@@ -5,7 +5,7 @@ use eframe::egui::{self, CornerRadius, Frame, Margin, Stroke, RichText};
 
 /// Model configuration panel — Zoo-Code style multi-profile management.
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
-    egui::ScrollArea::vertical().show(ui, |ui| {
+    ui.set_width(ui.available_width());
         // ── Header ────────────────────────────────────────────────
         ui.horizontal(|ui| {
             ui.colored_label(
@@ -43,8 +43,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             draw_profile_list(ui, state);
         }
 
-        state.settings.model_profile_editing = editing;
-    });
+    state.settings.model_profile_editing = editing;
 }
 
 // ── Profile selector bar ─────────────────────────────────────────────
@@ -56,7 +55,7 @@ fn draw_profile_bar(ui: &mut egui::Ui, state: &mut AppState) {
         .inner_margin(Margin::symmetric(10, 8))
         .stroke(Stroke::new(1.0, colors::BORDER_WEAK))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.colored_label(colors::TEXT_SECONDARY, RichText::new("Profile:").size(12.0));
 
                 let active_name = state
@@ -77,9 +76,10 @@ fn draw_profile_bar(ui: &mut egui::Ui, state: &mut AppState) {
                     .collect();
 
                 let mut activate_name: Option<String> = None;
+                let combo_width = ui.available_width().clamp(180.0, 320.0);
                 egui::ComboBox::from_id_salt("profile_selector")
                     .selected_text(&active_name)
-                    .width(180.0)
+                    .width(combo_width)
                     .show_ui(ui, |ui| {
                         for (name, model, is_active) in &profiles_snapshot {
                             let label = format!("{} ({})", name, model);
@@ -223,12 +223,14 @@ fn draw_profile_list(ui: &mut egui::Ui, state: &mut AppState) {
 
 fn draw_edit_form(ui: &mut egui::Ui, state: &mut AppState, profile: &mut ModelProfile) -> bool {
     let mut keep_editing = true;
+    let field_width = ui.available_width().max(240.0);
+    let api_key_width = (field_width - 40.0).max(200.0);
 
     // ── Profile Name ──────────────────────────────────────────────
     card_section(ui, "Profile Name", |ui| {
         let name_edit = egui::TextEdit::singleline(&mut state.settings.model_profile_edit_name)
             .hint_text("e.g. My GPT-4o, DeepSeek V3, Local Ollama")
-            .desired_width(300.0);
+            .desired_width(field_width);
         ui.add(name_edit);
     });
     ui.add_space(8.0);
@@ -240,7 +242,7 @@ fn draw_edit_form(ui: &mut egui::Ui, state: &mut AppState, profile: &mut ModelPr
             let current_provider = get_provider_display(&profile.provider);
             egui::ComboBox::from_id_salt("provider_selector")
                 .selected_text(&current_provider)
-                .width(300.0)
+                .width(field_width)
                 .show_ui(ui, |ui| {
                     let providers = get_provider_list();
                     for (id, display, default_url) in &providers {
@@ -261,7 +263,7 @@ fn draw_edit_form(ui: &mut egui::Ui, state: &mut AppState, profile: &mut ModelPr
             ui.add(
                 egui::TextEdit::singleline(&mut profile.base_url)
                     .hint_text("https://api.openai.com/v1")
-                    .desired_width(300.0),
+                    .desired_width(field_width),
             );
         });
         ui.add_space(4.0);
@@ -274,7 +276,7 @@ fn draw_edit_form(ui: &mut egui::Ui, state: &mut AppState, profile: &mut ModelPr
                     egui::TextEdit::singleline(&mut key)
                         .hint_text("sk-...")
                         .password(!state.settings.model_profile_show_api_key)
-                        .desired_width(260.0),
+                        .desired_width(api_key_width),
                 );
                 profile.api_key = if key.is_empty() { None } else { Some(key) };
 
@@ -300,7 +302,7 @@ fn draw_edit_form(ui: &mut egui::Ui, state: &mut AppState, profile: &mut ModelPr
             ui.add(
                 egui::TextEdit::singleline(&mut profile.model)
                     .hint_text("gpt-4o, claude-3-opus, deepseek-chat, llama3...")
-                    .desired_width(300.0),
+                    .desired_width(field_width),
             );
         });
     });

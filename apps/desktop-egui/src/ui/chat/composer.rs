@@ -311,6 +311,7 @@ fn attach_btn(ui: &mut egui::Ui, state: &mut AppState) {
                     path: path_str,
                     size,
                     status: AttachmentStatus::Pending,
+                    uploaded_info: None,
                 });
             }
         }

@@ -59,6 +59,7 @@ async def create_task(
                 mode_slug=mode_slug,
                 db=db,
                 model_override=model_override,
+                attachments=body.attachments if body.attachments else None,
             ):
                 yield {"event": event.type.value, "data": event.model_dump_json()}
             yield {

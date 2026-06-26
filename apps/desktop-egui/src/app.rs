@@ -5,6 +5,7 @@ use tokio::runtime::Runtime;
 use uuid::Uuid;
 
 use crate::api::{auth::AuthApi, health::HealthApi, sessions::SessionsApi, tasks::TasksApi};
+use crate::backend_launcher::BackendProcess;
 use crate::config::app_config::{AppConfig, DEFAULT_SERVER_URL, normalize_server_url};
 use crate::config::secure_store::SecureStore;
 use crate::state::app_state::{AppState, ViewMode};
@@ -46,10 +47,17 @@ pub struct MakimaApp {
     pub app_dock: AppDockState,
     pub layout_changed: bool,
     pub last_save_frame: u64,
+    pub backend_process: BackendProcess,
 }
 
 impl Default for MakimaApp {
     fn default() -> Self {
+        Self::new(BackendProcess::none())
+    }
+}
+
+impl MakimaApp {
+    pub fn new(backend_process: BackendProcess) -> Self {
         let state = Arc::new(Mutex::new(AppState::default()));
         let runtime = Runtime::new().expect("Failed to create Tokio runtime");
         let config = AppConfig::load().unwrap_or_default();
@@ -105,11 +113,10 @@ impl Default for MakimaApp {
             app_dock,
             layout_changed: false,
             last_save_frame: 0,
+            backend_process,
         }
     }
-}
 
-impl MakimaApp {
     fn exec_login(&mut self) {
         self.login_dialog.loading = true;
         self.login_dialog.error = None;
@@ -242,9 +249,18 @@ impl MakimaApp {
             session.messages.push(msg);
             session.updated_at = chrono::Utc::now();
         }
+        // Extract attachment paths before clearing
+        let attachment_paths: Vec<(String, String)> = s.chat.composer.attachments.iter()
+            .map(|f| (f.path.clone(), f.name.clone()))
+            .collect();
+
         s.chat.composer.input.clear();
+        // Mark all attachments as uploading
+        for att in s.chat.composer.attachments.iter_mut() {
+            att.status = crate::state::chat_state::AttachmentStatus::Uploading;
+        }
         s.chat.composer.is_streaming = true;
-        s.set_status("Sending...".to_string());
+        s.set_status(if attachment_paths.is_empty() { "Sending...".to_string() } else { "Uploading attachments...".to_string() });
         drop(s);
 
         let state = self.state.clone();
@@ -273,8 +289,79 @@ impl MakimaApp {
                 }
             };
 
+            // Upload attachments before sending the task. If every attachment fails,
+            // stop here instead of silently sending a message with no files.
+            let uploaded_attachments = if !attachment_paths.is_empty() {
+                let attachments_api = crate::api::attachments::AttachmentsApi::new(
+                    client.clone(), server_url.clone(), token.clone(),
+                );
+                let mut results: Vec<crate::api::tasks::AttachmentInfo> = Vec::new();
+                let mut failed_paths: Vec<String> = Vec::new();
+                for (path, name) in &attachment_paths {
+                    match attachments_api.upload(&resolved_session_id, path).await {
+                        Ok(info) => {
+                            // Update attachment status to Uploaded
+                            let mut s = state.lock().unwrap();
+                            if let Some(att) = s.chat.composer.attachments.iter_mut()
+                                .find(|a| a.path == *path)
+                            {
+                                att.status = crate::state::chat_state::AttachmentStatus::Uploaded;
+                                att.uploaded_info = Some(crate::state::chat_state::UploadedAttachmentInfo {
+                                    attachment_id: info.attachment_id.clone(),
+                                    original_name: info.original_name.clone(),
+                                    stored_path: info.stored_path.clone(),
+                                    mime_type: info.mime_type.clone(),
+                                    size: info.size,
+                                    is_text: info.is_text,
+                                });
+                            }
+                            results.push(info);
+                        }
+                        Err(e) => {
+                            let err_msg = e.to_string();
+                            failed_paths.push(path.clone());
+                            let mut s = state.lock().unwrap();
+                            if let Some(att) = s.chat.composer.attachments.iter_mut()
+                                .find(|a| a.path == *path)
+                            {
+                                att.status = crate::state::chat_state::AttachmentStatus::Error(err_msg.clone());
+                            }
+                            s.set_status(format!("Failed to upload {}: {}", name, err_msg));
+                        }
+                    }
+                }
+
+                {
+                    let mut s = state.lock().unwrap();
+                    s.chat.composer.attachments.retain(|att| failed_paths.contains(&att.path));
+                }
+
+                if results.is_empty() && !failed_paths.is_empty() {
+                    let mut s = state.lock().unwrap();
+                    s.chat.composer.is_streaming = false;
+                    s.set_status(
+                        "Attachment upload failed. Message was not sent; please retry after restarting the backend or fixing the upload error."
+                            .to_string(),
+                    );
+                    return;
+                }
+
+                if !failed_paths.is_empty() {
+                    let mut s = state.lock().unwrap();
+                    s.set_status(format!(
+                        "{} attachment(s) uploaded, {} failed. Sending only the uploaded files.",
+                        results.len(),
+                        failed_paths.len()
+                    ));
+                }
+
+                if results.is_empty() { None } else { Some(results) }
+            } else {
+                None
+            };
+
             let tasks_api = TasksApi::new(client, server_url, token);
-            match tasks_api.stream(resolved_session_id, text, mode_slug, model_override).await {
+            match tasks_api.stream(resolved_session_id, text, mode_slug, model_override, uploaded_attachments).await {
                 Ok(mut rx) => {
                     while let Some(event_result) = rx.recv().await {
                         let mut s = state.lock().unwrap();
@@ -619,6 +706,10 @@ impl eframe::App for MakimaApp {
                 let _ = self.config.save();
             }
         }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.backend_process.terminate();
     }
 }
 

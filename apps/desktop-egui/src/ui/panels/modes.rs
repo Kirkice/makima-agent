@@ -12,73 +12,72 @@ use eframe::egui::{self, CornerRadius};
 /// - Reload modes from YAML config
 /// - Select active mode
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.colored_label(
-        colors::RED_ACCENT,
-        egui::RichText::new("🛠️ Mode Management").size(15.0).strong(),
-    );
-    ui.add_space(8.0);
+    // ── Header: compact title + toolbar on same row ───────────────
+    ui.horizontal(|ui| {
+        ui.colored_label(
+            colors::TEXT_PRIMARY,
+            egui::RichText::new("Modes").size(14.0).strong(),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .small_button("＋ New")
+                .on_hover_text("Create a custom mode")
+                .clicked()
+            {
+                state.show_modal_mode_create = true;
+            }
+            if ui
+                .small_button("↻")
+                .on_hover_text("Reload from config")
+                .clicked()
+            {
+                state.api_commands.push(ApiCommand::ReloadModes);
+            }
+        });
+    });
 
-    // ── Active mode badge ────────────────────────────────────────
+    // ── Active mode inline chip ───────────────────────────────────
     if let Some(active) = state.settings.active_mode() {
+        ui.add_space(4.0);
         egui::Frame::NONE
             .fill(colors::RED_DIM)
             .corner_radius(CornerRadius::same(6))
-            .inner_margin(egui::Margin::symmetric(10, 8))
+            .inner_margin(egui::Margin::symmetric(8, 4))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.colored_label(colors::RED_ACCENT, "● Active:");
-                    ui.colored_label(colors::TEXT_PRIMARY, compact_emoji_name(&active.name));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.colored_label(
-                            colors::TEXT_MUTED,
-                            format!(
-                                "temp: {:.1}  max: {} steps  tools: {}",
-                                active.temperature,
-                                active.max_steps,
-                                active.tool_groups.len()
-                            ),
-                        );
-                    });
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.colored_label(colors::RED_ACCENT, "●");
+                    ui.colored_label(
+                        colors::TEXT_PRIMARY,
+                        egui::RichText::new(compact_emoji_name(&active.name))
+                            .size(12.0)
+                            .strong(),
+                    );
+                    ui.colored_label(
+                        colors::TEXT_MUTED,
+                        egui::RichText::new(format!(
+                            "· t{:.1} · {} steps · {} tools",
+                            active.temperature,
+                            active.max_steps,
+                            active.tool_groups.len()
+                        ))
+                        .size(11.0),
+                    );
                 });
             });
-        ui.add_space(8.0);
     }
 
-    // ── Toolbar ───────────────────────────────────────────────────
-    ui.horizontal(|ui| {
-        egui::ScrollArea::horizontal()
-            .id_salt("mode_toolbar")
-            .show(ui, |ui| {
-                if ui.button("🔄 Reload from Config").clicked() {
-                    state.api_commands.push(ApiCommand::ReloadModes);
-                }
-                if ui.button("＋ New Mode").clicked() {
-                    state.show_modal_mode_create = true;
-                }
-                if ui.button("📋 Refresh List").clicked() {
-                    state.api_commands.push(ApiCommand::FetchModes);
-                }
-            });
-    });
     ui.add_space(8.0);
 
-    // ── Mode list ─────────────────────────────────────────────────
-    egui::ScrollArea::vertical()
-        .id_salt("mode_list")
-        .auto_shrink([false, false])
-        .max_height(ui.available_height().max(200.0))
-        .show(ui, |ui| {
-            let modes = state.settings.modes.clone();
-            let total = modes.len();
-            for (i, mode) in modes.iter().enumerate() {
-                draw_mode_card(ui, state, mode);
-
-                // Divider between cards
-                if i < total - 1 {
-                    ui.add_space(4.0);
-                }
-            }
-        });
+    // ── Mode list (no nested scroll — parent settings ScrollArea handles it) ──
+    let modes = state.settings.modes.clone();
+    let total = modes.len();
+    for (i, mode) in modes.iter().enumerate() {
+        draw_mode_card(ui, state, mode);
+        if i < total - 1 {
+            ui.add_space(6.0);
+        }
+    }
 
     // ── Create Mode Dialog ────────────────────────────────────────
     if state.show_modal_mode_create {
@@ -91,14 +90,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 fn draw_mode_card(ui: &mut egui::Ui, state: &mut AppState, mode: &ModeConfig) {
     let is_active = Some(&mode.slug) == state.settings.active_mode_slug.as_ref();
     let is_builtin = mode.source.as_deref() == Some("builtin");
-    let source_label = mode.source.as_deref().unwrap_or("custom");
 
     let bg = if is_active {
         colors::RED_DIM
-    } else if is_builtin {
-        colors::ELEVATED
     } else {
-        colors::SURFACE
+        colors::ELEVATED
     };
 
     egui::Frame::NONE
@@ -111,70 +107,71 @@ fn draw_mode_card(ui: &mut egui::Ui, state: &mut AppState, mode: &ModeConfig) {
         .corner_radius(CornerRadius::same(8))
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
+            // ── Row 1: name + action button ────────────────────────
             ui.horizontal(|ui| {
-                // Left: icon + name + meta
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        if is_active {
-                            ui.colored_label(colors::RED_ACCENT, "●");
-                        }
-                        ui.colored_label(
-                            colors::TEXT_PRIMARY,
-                            egui::RichText::new(compact_emoji_name(&mode.name)).size(13.0).strong(),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        ui.colored_label(colors::TEXT_MUTED, format!("slug: {}", mode.slug));
-                        ui.add_space(8.0);
-                        ui.colored_label(
-                            colors::TEXT_MUTED,
-                            format!(
-                                "source: {}  ·  temp: {:.1}  ·  max_steps: {}",
-                                source_label, mode.temperature, mode.max_steps
-                            ),
-                        );
-                    });
-                    // Tool groups
-                    let tools: Vec<String> = mode.tool_groups.iter().map(|tg| tg.group.clone()).collect();
-                    if !tools.is_empty() {
-                        ui.colored_label(
-                            colors::TEXT_MUTED,
-                            format!("tools: {}", tools.join(", ")),
-                        );
+                ui.spacing_mut().item_spacing.x = 6.0;
+                if is_active {
+                    ui.colored_label(colors::RED_ACCENT, "●");
+                }
+                ui.colored_label(
+                    colors::TEXT_PRIMARY,
+                    egui::RichText::new(compact_emoji_name(&mode.name)).size(13.0).strong(),
+                );
+                // Source badge (compact)
+                if !is_builtin {
+                    egui::Frame::NONE
+                        .fill(colors::SURFACE)
+                        .corner_radius(CornerRadius::same(4))
+                        .inner_margin(egui::Margin::symmetric(4, 1))
+                        .show(ui, |ui| {
+                            ui.colored_label(
+                                colors::TEXT_MUTED,
+                                egui::RichText::new("custom").size(9.0),
+                            );
+                        });
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if is_active {
+                        egui::Frame::NONE
+                            .fill(colors::RED_ACCENT)
+                            .corner_radius(CornerRadius::same(4))
+                            .inner_margin(egui::Margin::symmetric(5, 2))
+                            .show(ui, |ui| {
+                                ui.colored_label(
+                                    colors::SURFACE,
+                                    egui::RichText::new("Active").size(10.0).strong(),
+                                );
+                            });
+                    } else if ui
+                        .add(egui::Button::new(
+                            egui::RichText::new("Select").size(11.0),
+                        ).small())
+                        .clicked()
+                    {
+                        state.settings.active_mode_slug = Some(mode.slug.clone());
+                        state.set_status(format!("Switched to {}", compact_emoji_name(&mode.name)));
                     }
-                    // Role definition preview (first 100 chars)
-                    let preview: String = mode.role_definition.chars().take(100).collect();
-                    let dots = if mode.role_definition.chars().count() > 100 { "…" } else { "" };
-                    ui.colored_label(
-                        colors::TEXT_MUTED,
-                        egui::RichText::new(format!("role: {}{}", preview, dots)).size(11.0),
-                    );
-                });
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                    ui.vertical(|ui| {
-                        if !is_active && ui.small_button("Select").clicked() {
-                            state.settings.active_mode_slug = Some(mode.slug.clone());
-                            state.set_status(format!("Switched to {}", compact_emoji_name(&mode.name)));
-                        }
-                        if is_active {
-                            ui.add_enabled_ui(false, |ui| {
-                                ui.small_button("Active");
-                            });
-                        }
-                        // Only allow delete for custom modes
-                        if !is_builtin {
-                            if ui.small_button("🗑").on_hover_text("Delete custom mode").clicked() {
-                                state.api_commands.push(ApiCommand::DeleteMode(mode.slug.clone()));
-                            }
-                        } else {
-                            ui.add_enabled_ui(false, |ui| {
-                                ui.small_button("🔒");
-                            });
-                        }
-                    });
                 });
             });
+
+            // ── Row 2: meta line (compact) ─────────────────────────
+            ui.add_space(3.0);
+            let tools: Vec<String> = mode.tool_groups.iter().map(|tg| tg.group.clone()).collect();
+            let meta = format!(
+                "t{:.1}  ·  {} steps{}{}",
+                mode.temperature,
+                mode.max_steps,
+                if tools.is_empty() {
+                    String::new()
+                } else {
+                    format!("  ·  {}", tools.join(", "))
+                },
+                if !is_builtin { format!("  ·  {}", mode.slug) } else { String::new() },
+            );
+            ui.colored_label(
+                colors::TEXT_MUTED,
+                egui::RichText::new(meta).size(11.0),
+            );
         });
 }
 

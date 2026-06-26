@@ -11,3 +11,4 @@ pub mod mcp;
 pub mod audit;
 pub mod config;
 pub mod model_profiles;
+pub mod attachments;

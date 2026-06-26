@@ -142,6 +142,19 @@ pub struct AttachedFile {
     pub path: String,
     pub size: u64,
     pub status: AttachmentStatus,
+    /// Server-side metadata after successful upload
+    pub uploaded_info: Option<UploadedAttachmentInfo>,
+}
+
+/// Server-side metadata returned after attachment upload
+#[derive(Debug, Clone)]
+pub struct UploadedAttachmentInfo {
+    pub attachment_id: String,
+    pub original_name: String,
+    pub stored_path: String,
+    pub mime_type: String,
+    pub size: u64,
+    pub is_text: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

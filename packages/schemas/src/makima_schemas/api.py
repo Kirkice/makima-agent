@@ -95,6 +95,17 @@ class ModelOverride(BaseModel):
     temperature: float | None = Field(default=None, ge=0.0, le=2.0, description="Temperature override")
 
 
+class AttachmentInfo(BaseModel):
+    """Metadata for an uploaded attachment, sent alongside a task request."""
+
+    attachment_id: str = Field(..., description="Unique attachment identifier")
+    original_name: str = Field(..., description="Original filename")
+    mime_type: str = Field(..., description="MIME type of the file")
+    stored_path: str = Field(..., description="Relative path under tool_working_dir")
+    is_text: bool = Field(..., description="Whether the file is text (safe to inline)")
+    size: int = Field(..., description="File size in bytes")
+
+
 class TaskCreate(BaseModel):
     """Request body for creating an agent task."""
 
@@ -102,6 +113,7 @@ class TaskCreate(BaseModel):
     input_text: str = Field(..., min_length=1, description="用户输入文本")
     mode_slug: str | None = Field(default=None, description="Mode slug override")
     model_override: ModelOverride | None = Field(default=None, description="Model config override from client")
+    attachments: list[AttachmentInfo] = Field(default_factory=list, description="Uploaded file attachments")
 
 
 class TaskResponse(BaseModel):

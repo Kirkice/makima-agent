@@ -195,7 +195,7 @@ impl Default for AppState {
             drawer_user_dismissed: false,
             show_settings_panel: true,
             conversations_width: 300.0,
-            inspector_width: 210.0,
+            inspector_width: 420.0,
             drawer_height: 155.0,
         }
     }

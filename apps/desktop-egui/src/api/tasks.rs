@@ -19,7 +19,18 @@ pub struct ModelOverride {
     pub temperature: Option<f64>,
 }
 
-/// Matches TaskCreate from backend: { session_id, input_text, mode_slug?, model_override? }
+/// Attachment metadata returned from upload and sent with task request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentInfo {
+    pub attachment_id: String,
+    pub original_name: String,
+    pub stored_path: String,
+    pub mime_type: String,
+    pub size: u64,
+    pub is_text: bool,
+}
+
+/// Matches TaskCreate from backend: { session_id, input_text, mode_slug?, model_override?, attachments? }
 #[derive(Debug, Serialize)]
 pub struct CreateTaskRequest {
     pub session_id: String,
@@ -28,6 +39,8 @@ pub struct CreateTaskRequest {
     pub mode_slug: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_override: Option<ModelOverride>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<AttachmentInfo>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -54,9 +67,16 @@ impl TasksApi {
         text: String,
         mode_slug: Option<String>,
         model_override: Option<ModelOverride>,
+        attachments: Option<Vec<AttachmentInfo>>,
     ) -> Result<mpsc::Receiver<Result<TaskEvent>>> {
         let url = format!("{}/tasks", self.base_url);
-        let body = CreateTaskRequest { session_id, input_text: text, mode_slug, model_override };
+        let body = CreateTaskRequest {
+            session_id,
+            input_text: text,
+            mode_slug,
+            model_override,
+            attachments,
+        };
 
         let response = self.client.post(&url).bearer_auth(&self.token).json(&body).send().await
             .context("Failed to start task")?;

@@ -59,7 +59,7 @@ fn main() -> Result<(), eframe::Error> {
     let config = config::app_config::AppConfig::load().unwrap_or_default();
 
     // Auto-start backend if configured
-    let _backend_process = if config.auto_start_backend {
+    let backend_process = if config.auto_start_backend {
         tracing::info!("Auto-starting backend...");
         backend_launcher::ensure_backend_running()
     } else {
@@ -80,7 +80,7 @@ fn main() -> Result<(), eframe::Error> {
         native_options,
         Box::new(|_cc| {
             // Create the application
-            Ok(Box::new(app::MakimaApp::default()))
+            Ok(Box::new(app::MakimaApp::new(backend_process)))
         }),
     )
 }

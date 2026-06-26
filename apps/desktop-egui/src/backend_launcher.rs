@@ -25,16 +25,12 @@ impl BackendProcess {
     pub fn none() -> Self {
         Self { child: None }
     }
-}
 
-impl Drop for BackendProcess {
-    fn drop(&mut self) {
+    pub fn terminate(&mut self) {
         if let Some(mut child) = self.child.take() {
             let pid = child.id();
             tracing::info!("Stopping backend process (PID: {})...", pid);
 
-            // On Windows, kill the entire process tree to clean up uvicorn
-            // child processes spawned by --reload.
             #[cfg(windows)]
             {
                 let _ = Command::new("taskkill")
@@ -44,11 +40,18 @@ impl Drop for BackendProcess {
                     .status();
             }
 
-            // Fallback: kill just the direct process
             let _ = child.kill();
             let _ = child.wait();
             tracing::info!("Backend process stopped.");
         }
+
+        terminate_backend_running_on_port();
+    }
+}
+
+impl Drop for BackendProcess {
+    fn drop(&mut self) {
+        self.terminate();
     }
 }
 
@@ -92,6 +95,86 @@ fn is_backend_running() -> bool {
 
 fn is_port_available() -> bool {
     TcpListener::bind("127.0.0.1:8000").is_ok()
+}
+
+fn terminate_backend_running_on_port() {
+    if !is_backend_running() {
+        return;
+    }
+
+    if let Some(pid) = backend_pid_on_port() {
+        tracing::info!("Stopping Makima backend on port 8000 (PID: {})...", pid);
+
+        #[cfg(windows)]
+        {
+            let _ = Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+
+        #[cfg(not(windows))]
+        {
+            let _ = Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+}
+
+fn backend_pid_on_port() -> Option<u32> {
+    #[cfg(windows)]
+    {
+        let output = Command::new("netstat")
+            .args(["-ano", "-p", "tcp"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || !trimmed.contains(":8000") {
+                continue;
+            }
+
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() < 5 || !parts[0].eq_ignore_ascii_case("TCP") {
+                continue;
+            }
+
+            let local_addr = parts[1];
+            let state = parts[3];
+            let pid = parts[4];
+
+            let matches_port = local_addr.ends_with(":8000");
+            let listening = state.eq_ignore_ascii_case("LISTENING");
+            if matches_port && listening {
+                if let Ok(pid) = pid.parse::<u32>() {
+                    return Some(pid);
+                }
+            }
+        }
+
+        None
+    }
+
+    #[cfg(not(windows))]
+    {
+        let output = Command::new("lsof")
+            .args(["-ti", "tcp:8000"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.lines().find_map(|line| line.trim().parse::<u32>().ok())
+    }
 }
 
 /// Wait for the backend to become ready by polling the health endpoint.

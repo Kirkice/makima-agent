@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import time
 from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from langchain_core.messages import HumanMessage
 
 from makima.orchestrator.graph import build_graph
+from makima.orchestrator.attachment_context import build_attachment_context
 from makima.modes.registry import get_mode
 from makima.persona import get_current_persona
 from makima.memory.service import MemoryService
@@ -17,6 +19,9 @@ from makima_schemas import ModeConfig, Persona
 from makima_schemas.events import AgentEvent, AgentEventType
 from makima_common.config import get_settings
 from makima_common.logging import get_logger
+
+if TYPE_CHECKING:
+    from makima_schemas.api import AttachmentInfo
 
 logger = get_logger(__name__)
 
@@ -28,6 +33,7 @@ async def run_agent(
     mode_slug: str = "code",
     db: object | None = None,
     model_override: dict | None = None,
+    attachments: list[AttachmentInfo] | None = None,
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run the agent with the given input, integrating mode system, memory and knowledge.
 
@@ -117,6 +123,22 @@ async def run_agent(
     if persona:
         logger.debug("Using persona", name=persona.name)
 
+    # ── Build attachment context ────────────────────────────────────────
+    attachment_context = ""
+    if attachments:
+        attachment_context = build_attachment_context(attachments)
+        if attachment_context:
+            step += 1
+            yield AgentEvent(
+                type=AgentEventType.THINKING,
+                data={
+                    "phase": "attachment_context",
+                    "count": len(attachments),
+                },
+                timestamp=time.time(),
+                step=step,
+            )
+
     # ── Build and run graph ────────────────────────────────────────────
     graph = build_graph(
         mode=mode,
@@ -127,8 +149,14 @@ async def run_agent(
     )
     config = {"configurable": {"thread_id": session_id}}
 
+    # Prepend attachment context to user input so the LLM can see file contents
+    if attachment_context:
+        enriched_input = f"{attachment_context}\n\n{input_text}"
+    else:
+        enriched_input = input_text
+
     initial_state = {
-        "messages": [HumanMessage(content=input_text)],
+        "messages": [HumanMessage(content=enriched_input)],
         "user_id": user_id,
         "session_id": session_id,
         "context": {"mode": mode.slug},
