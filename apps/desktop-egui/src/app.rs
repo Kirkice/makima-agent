@@ -1471,7 +1471,7 @@ impl MakimaApp {
                         wv.sync_bounds(avatar_rect);
                         wv.set_visible(true);
                         self.avatar_webview = Some(wv);
-                        tracing::info!("Avatar WebView created (independent window mode)");
+                        tracing::info!("Avatar WebView created (standalone window)");
                     }
                     Err(e) => {
                         tracing::error!("Failed to create avatar WebView: {e}");

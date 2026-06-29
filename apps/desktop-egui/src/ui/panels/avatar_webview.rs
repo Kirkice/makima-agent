@@ -40,10 +40,10 @@ impl AvatarWebView {
     ///
     /// `parent` must be the native window handle of the eframe viewport
     /// (obtained via `raw-window-handle`).
-    pub fn new(port: u16) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(port: u16, window: &impl raw_window_handle::HasWindowHandle) -> Result<Self, Box<dyn std::error::Error>> {
         let url = format!("http://127.0.0.1:{}/index.html", port);
 
-        let webview = wry::WebViewBuilder::new()
+        let webview = wry::WebViewBuilder::new(window)
             .with_url(&url)
             .with_transparent(false)
             .with_devtools(true)
