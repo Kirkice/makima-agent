@@ -1,0 +1,403 @@
+# MCP Marketplace - curated list of MCP servers for Makima Agent
+# Format compatible with Zoo Code / standard MCP protocol
+items:
+  - id: brave-search
+    name: Brave Search
+    description: Comprehensive web and local search with smart filtering and pagination via Brave Search API.
+    author: modelcontextprotocol
+    url: https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search
+    tags:
+      - search
+      - web-search
+      - brave-api
+    prerequisites:
+      - Brave Search account (free tier available)
+    content:
+      - name: NPX
+        prerequisites:
+          - Node.js
+        content: |
+          {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+            "env": {
+              "BRAVE_API_KEY": "{{BRAVE_API_KEY}}"
+            }
+          }
+      - name: Docker
+        prerequisites:
+          - Docker
+        content: |
+          {
+            "command": "docker",
+            "args": ["run", "-i", "--rm", "-e", "BRAVE_API_KEY", "mcp/brave-search"],
+            "env": {
+              "BRAVE_API_KEY": "{{BRAVE_API_KEY}}"
+            }
+          }
+    parameters:
+      - name: Brave API Key
+        key: BRAVE_API_KEY
+        placeholder: your_brave_api_key_here
+
+  - id: filesystem
+    name: File System
+    description: Read, write, move, and edit files with pattern matching and formatting capabilities.
+    author: modelcontextprotocol
+    url: https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem
+    tags:
+      - filesystem
+      - file-management
+      - directory-operations
+    content:
+      - name: NPX
+        prerequisites:
+          - Node.js
+        content: |
+          {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "{{ALLOWED_DIRECTORY}}"]
+          }
+      - name: Docker
+        prerequisites:
+          - Docker
+        content: |
+          {
+            "command": "docker",
+            "args": ["run", "-i", "--rm", "--mount", "type=bind,src={{ALLOWED_DIRECTORY}},dst=/projects", "mcp/filesystem", "/projects"]
+          }
+    parameters:
+      - name: Allowed Directory
+        key: ALLOWED_DIRECTORY
+        placeholder: /Users/username/Documents
+
+  - id: context7
+    name: Context7
+    description: Up-to-date code documentation and examples for LLMs. Eliminates outdated or hallucinated API information.
+    author: upstash
+    url: https://github.com/upstash/context7
+    tags:
+      - documentation
+      - code-examples
+      - api-reference
+    content:
+      - name: NPX
+        prerequisites:
+          - Node.js
+        content: |
+          {
+            "command": "npx",
+            "args": ["-y", "@upstash/context7-mcp"]
+          }
+      - name: Remote Server
+        content: |
+          {
+            "type": "streamable-http",
+            "url": "https://mcp.context7.com/mcp"
+          }
+
+  - id: github
+    name: GitHub
+    description: Interact with GitHub repositories, issues, pull requests, and more.
+    author: modelcontextprotocol
+    url: https://github.com/modelcontextprotocol/servers/tree/main/src/github
+    tags:
+      - github
+      - version-control
+      - issues
+      - pull-requests
+    prerequisites:
+      - GitHub Personal Access Token
+    content:
+      - name: NPX
+        prerequisites:
+          - Node.js
+        content: |
+          {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-github"],
+            "env": {
+              "GITHUB_PERSONAL_ACCESS_TOKEN": "{{GITHUB_TOKEN}}"
+            }
+          }
+      - name: Docker
+        prerequisites:
+          - Docker
+        content: |
+          {
+            "command": "docker",
+            "args": ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "mcp/github"],
+            "env": {
+              "GITHUB_PERSONAL_ACCESS_TOKEN": "{{GITHUB_TOKEN}}"
+            }
+          }
+    parameters:
+      - name: GitHub Personal Access Token
+        key: GITHUB_TOKEN
+        placeholder: ghp_xxxxxxxxxxxxxxxxxxxx
+
+  - id: postgres
+    name: PostgreSQL
+    description: Query and manage PostgreSQL databases. Supports read-only and read-write modes.
+    author: modelcontextprotocol
+    url: https://github.com/modelcontextprotocol/servers/tree/main/src/postgres
+    tags:
+      - database
+      - postgresql
+      - sql
+    content:
+      - name: NPX (Read-Only)
+        prerequisites:
+          - Node.js
+        content: |
+          {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-postgres", "{{DATABASE_URL}}"]
+          }
+      - name: NPX (Read-Write)
+        prerequisites:
+          - Node.js
+        content: |
+          {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-postgres", "--allow-write", "{{DATABASE_URL}}"]
+          }
+    parameters:
+      - name: Database URL
+        key: DATABASE_URL
+        placeholder: postgresql://user:password@localhost:5432/dbname
+
+  - id: sqlite
+    name: SQLite
+    description: Query and manage local SQLite databases with natural language.
+    author: modelcontextprotocol
+    url: https://github.com/modelcontextprotocol/servers/tree/main/src/sqlite
+    tags:
+      - database
+      - sqlite
+      - local-storage
+    content:
+      - name: NPX
+        prerequisites:
+          - Node.js
+        content: |
+          {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-sqlite", "{{DB_PATH}}"]
+          }
+    parameters:
+      - name: Database Path
+        key: DB_PATH
+        placeholder: /path/to/database.db
+
+  - id: fetch
+    name: Fetch
+    description: Fetch and parse web content including HTML, PDFs, and plain text.
+    author: modelcontextprotocol
+    url: https://github.com/modelcontextprotocol/servers/tree/main/src/fetch
+    tags:
+      - web
+      - http
+      - scraping
+    content:
+      - name: NPX
+        prerequisites:
+          - Node.js
+        content: |
+          {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-fetch"]
+          }
+      - name: Docker
+        prerequisites:
+          - Docker
+        content: |
+          {
+            "command": "docker",
+            "args": ["run", "-i", "--rm", "mcp/fetch"]
+          }
+
+  - id: sequential-thinking
+    name: Sequential Thinking
+    description: A structured problem-solving tool that helps break down complex tasks into logical steps.
+    author: modelcontextprotocol
+    url: https://github.com/modelcontextprotocol/servers/tree/main/src/sequential-thinking
+    tags:
+      - reasoning
+      - planning
+      - problem-solving
+    content:
+      - name: NPX
+        prerequisites:
+          - Node.js
+        content: |
+          {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+          }
+
+  - id: memory
+    name: Memory
+    description: Persistent knowledge graph memory system for long-term context retention across sessions.
+    author: modelcontextprotocol
+    url: https://github.com/modelcontextprotocol/servers/tree/main/src/memory
+    tags:
+      - memory
+      - knowledge-graph
+      - persistence
+    content:
+      - name: NPX
+        prerequisites:
+          - Node.js
+        content: |
+          {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-memory"]
+          }
+
+  - id: puppeteer
+    name: Puppeteer
+    description: Browser automation - navigate, screenshot, click, and extract content from web pages.
+    author: modelcontextprotocol
+    url: https://github.com/modelcontextprotocol/servers/tree/main/src/puppeteer
+    tags:
+      - browser
+      - automation
+      - screenshot
+      - web-testing
+    prerequisites:
+      - Chrome/Chromium
+    content:
+      - name: NPX
+        prerequisites:
+          - Node.js
+          - Chrome/Chromium
+        content: |
+          {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-puppeteer"]
+          }
+
+  - id: exa
+    name: Exa Search
+    description: AI-powered search with structured results including titles, URLs, and content snippets.
+    author: exa-labs
+    url: https://github.com/exa-labs/exa-mcp-server
+    tags:
+      - search
+      - ai-search
+      - content-discovery
+    prerequisites:
+      - Exa account
+    content:
+      - name: NPX
+        prerequisites:
+          - Node.js
+        content: |
+          {
+            "command": "npx",
+            "args": ["-y", "exa-mcp-server"],
+            "env": {
+              "EXA_API_KEY": "{{EXA_API_KEY}}"
+            }
+          }
+      - name: Remote MCP
+        prerequisites:
+          - Node.js
+        content: |
+          {
+            "command": "npx",
+            "args": ["-y", "mcp-remote", "https://mcp.exa.ai/mcp?exaApiKey={{EXA_API_KEY}}"]
+          }
+    parameters:
+      - name: Exa API Key
+        key: EXA_API_KEY
+        placeholder: your_exa_api_key_here
+
+  - id: e2b
+    name: Code Interpreter (E2B)
+    description: Secure sandboxed code execution in JavaScript and Python environments.
+    author: e2b-dev
+    url: https://github.com/e2b-dev/mcp-server
+    tags:
+      - code-execution
+      - sandbox
+      - javascript
+      - python
+    prerequisites:
+      - E2B account
+    content:
+      - name: NPX
+        prerequisites:
+          - Node.js
+        content: |
+          {
+            "command": "npx",
+            "args": ["-y", "@e2b/mcp-server"],
+            "env": {
+              "E2B_API_KEY": "{{E2B_API_KEY}}"
+            }
+          }
+    parameters:
+      - name: E2B API Key
+        key: E2B_API_KEY
+        placeholder: your_e2b_api_key
+
+  - id: figma
+    name: Figma Dev Mode
+    description: Access Figma design files for design-to-code workflows.
+    author: figma
+    url: https://help.figma.com/hc/en-us/articles/32132100833559
+    tags:
+      - figma
+      - design
+      - design-to-code
+    content:
+      - name: Figma Dev Mode
+        content: |
+          {
+            "type": "sse",
+            "url": "http://127.0.0.1:3845/sse"
+          }
+
+  - id: redis
+    name: Redis
+    description: Interact with Redis databases - get, set, delete keys, and run commands.
+    author: modelcontextprotocol
+    url: https://github.com/modelcontextprotocol/servers/tree/main/src/redis
+    tags:
+      - database
+      - redis
+      - cache
+    content:
+      - name: NPX
+        prerequisites:
+          - Node.js
+        content: |
+          {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-redis", "{{REDIS_URL}}"]
+          }
+    parameters:
+      - name: Redis URL
+        key: REDIS_URL
+        placeholder: redis://localhost:6379
+
+  - id: time
+    name: Time
+    description: Get current time and convert between timezones.
+    author: modelcontextprotocol
+    url: https://github.com/modelcontextprotocol/servers/tree/main/src/time
+    tags:
+      - utility
+      - time
+      - timezone
+    content:
+      - name: NPX
+        prerequisites:
+          - Node.js
+        content: |
+          {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-time"]
+          }

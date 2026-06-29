@@ -3,7 +3,7 @@ use eframe::egui::{self, Align, CornerRadius, Layout, Vec2};
 use crate::state::app_state::{ApiCommand, AppState, SettingsTab};
 use crate::theme::colors;
 
-use super::{audit, diagnostics, knowledge, mcp, memory, model_config, modes, persona, voice};
+use super::{audit, diagnostics, knowledge, mcp, marketplace, memory, model_config, modes, persona, voice};
 use crate::ui::chat::composer::draw_auto_approval_panel;
 
 /// Zoo-Code-inspired sidebar constants.
@@ -113,6 +113,7 @@ fn draw_tab_list(ui: &mut egui::Ui, state: &mut AppState, width: f32, total_heig
         ("\u{1f9e0} Memory", SettingsTab::Memory),
         ("\u{1f4da} Knowledge", SettingsTab::Knowledge),
         ("\u{1f517} MCP", SettingsTab::Mcp),
+        ("\u{1f6d2} Marketplace", SettingsTab::Marketplace),
         ("\u{1f3a4} Voice", SettingsTab::Voice),
         ("\u{1fa7a} Diagnostics", SettingsTab::Diagnostics),
         ("\u{1f4cb} Audit", SettingsTab::Audit),
@@ -217,6 +218,17 @@ fn draw_content(ui: &mut egui::Ui, state: &mut AppState) {
                 state.api_commands.push(ApiCommand::FetchMcpServers);
             }
             mcp::draw(ui, state);
+        }
+        SettingsTab::Marketplace => {
+            if state.settings.marketplace_items.is_empty() && !state.settings.marketplace_loading {
+                state.settings.marketplace_loading = true;
+                state.api_commands.push(ApiCommand::FetchMarketplaceItems {
+                    search: None,
+                    tags: None,
+                });
+                state.api_commands.push(ApiCommand::FetchMarketplaceTags);
+            }
+            marketplace::draw(ui, state);
         }
         SettingsTab::Voice => {
             voice::draw(ui, state);

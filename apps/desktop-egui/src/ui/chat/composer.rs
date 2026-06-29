@@ -167,8 +167,9 @@ fn draw_toolbar(
         });
     } else {
         // Normal: single horizontal row, all items vertically centered
-        ui.spacing_mut().item_spacing.y = 4.0;
+        ui.spacing_mut().item_spacing.y = 0.0;
         ui.horizontal(|ui| {
+            ui.set_min_height(28.0);
             // Left side: mode + model + attach + auto-approve
             ui.add_space(1.0);
             mode_dropdown(ui, state);
@@ -209,6 +210,7 @@ fn mode_dropdown(ui: &mut egui::Ui, state: &mut AppState) {
     let _response = egui::ComboBox::from_id_salt("composer_mode")
         .selected_text(&current_name)
         .width(130.0)
+        .height(24.0)
         .show_ui(ui, |ui| {
             for (slug, name) in &modes {
                 let selected = Some(slug.clone()) == active_slug;
@@ -247,6 +249,7 @@ fn model_dropdown(ui: &mut egui::Ui, state: &mut AppState) {
     let _response = egui::ComboBox::from_id_salt("composer_model")
         .selected_text(&current_label)
         .width(180.0)
+        .height(24.0)
         .show_ui(ui, |ui| {
             for p in &profiles {
                 let selected = active_name.as_deref() == Some(&p.name);
@@ -332,7 +335,7 @@ fn auto_approve_btn(ui: &mut egui::Ui, state: &mut AppState) {
 
     if ui
         .add_sized(
-            egui::vec2(120.0, 20.0),
+            egui::vec2(120.0, 24.0),
             egui::Button::new(egui::RichText::new(label).color(text_color))
                 .fill(colors::TRANSPARENT)
                 .stroke(egui::Stroke::NONE),

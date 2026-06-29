@@ -13,7 +13,7 @@ from makima import __version__
 from makima.auth.models import User
 from makima.auth.service import hash_password, verify_password
 from makima.modes import load_all_custom_modes
-from makima.routes import admin, attachments, audit, auth, health, knowledge, mcp, memory, modes, model_profiles, persona, sessions, tasks, voice
+from makima.routes import admin, attachments, audit, auth, health, knowledge, mcp, marketplace, memory, modes, model_profiles, persona, sessions, tasks, voice
 from makima.core.middleware import setup_middleware
 from makima.observability.metrics import setup_metrics
 from makima.observability.tracing import setup_tracing
@@ -136,6 +136,7 @@ def create_app() -> FastAPI:
     app.include_router(audit.router)
     app.include_router(admin.router)
     app.include_router(mcp.router)
+    app.include_router(marketplace.router)
     app.include_router(voice.router)
     app.include_router(model_profiles.router)
     app.include_router(attachments.router)

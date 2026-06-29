@@ -126,6 +126,18 @@ pub struct HealthStatus {
 /// Settings state for the right inspector
 #[derive(Debug, Clone)]
 pub struct SettingsState {
+    /// Marketplace items from the MCP marketplace
+    pub marketplace_items: Vec<crate::api::marketplace::MarketplaceItem>,
+    /// Available tags for filtering marketplace items
+    pub marketplace_tags: Vec<String>,
+    /// Current marketplace search query
+    pub marketplace_search: String,
+    /// Currently selected marketplace tags for filtering
+    pub marketplace_selected_tags: Vec<String>,
+    /// Currently selected item for installation modal
+    pub marketplace_install_item: Option<crate::api::marketplace::MarketplaceItem>,
+    /// Whether marketplace data is loading
+    pub marketplace_loading: bool,
     /// Model profiles (multi-LLM configuration, like Zoo-Code)
     pub model_profiles: Vec<crate::api::model_profiles::ModelProfile>,
     /// Currently active model profile name
@@ -166,6 +178,12 @@ pub struct SettingsState {
 impl Default for SettingsState {
     fn default() -> Self {
         Self {
+            marketplace_items: Vec::new(),
+            marketplace_tags: Vec::new(),
+            marketplace_search: String::new(),
+            marketplace_selected_tags: Vec::new(),
+            marketplace_install_item: None,
+            marketplace_loading: false,
             model_profiles: Vec::new(),
             active_model_profile: None,
             provider_types: Vec::new(),

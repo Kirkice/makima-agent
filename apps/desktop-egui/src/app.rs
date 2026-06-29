@@ -1308,6 +1308,97 @@ impl MakimaApp {
                         }
                     }
                 }
+                // Marketplace commands
+                ApiCommand::FetchMarketplaceItems { search, tags } => {
+                    let api = crate::api::marketplace::MarketplaceApi::new(client, server_url, token);
+                    match api.list_items(search.as_deref(), tags.as_deref()).await {
+                        Ok(resp) => {
+                            let mut s = state.lock().unwrap();
+                            s.settings.marketplace_items = resp.items;
+                            s.settings.marketplace_loading = false;
+                            let count = s.settings.marketplace_items.len();
+                            s.set_status(format!("Loaded {} marketplace items", count));
+                        }
+                        Err(e) => {
+                            let mut s = state.lock().unwrap();
+                            s.settings.marketplace_loading = false;
+                            s.set_status(format!("Failed to load marketplace: {}", e));
+                        }
+                    }
+                }
+                ApiCommand::FetchMarketplaceTags => {
+                    let api = crate::api::marketplace::MarketplaceApi::new(client, server_url, token);
+                    match api.list_tags().await {
+                        Ok(tags) => {
+                            let mut s = state.lock().unwrap();
+                            s.settings.marketplace_tags = tags;
+                        }
+                        Err(e) => {
+                            let mut s = state.lock().unwrap();
+                            s.set_status(format!("Failed to load tags: {}", e));
+                        }
+                    }
+                }
+                ApiCommand::InstallMarketplaceItem { item_id, target, selected_method_index, parameters } => {
+                    let api = crate::api::marketplace::MarketplaceApi::new(client, server_url, token);
+                    let req = crate::api::marketplace::InstallRequest {
+                        item_id: item_id.clone(),
+                        target,
+                        selected_method_index,
+                        parameters,
+                    };
+                    match api.install(req).await {
+                        Ok(resp) => {
+                            let mut s = state.lock().unwrap();
+                            if resp.success {
+                                s.set_status(format!("Installed {} successfully", resp.server_name));
+                            } else {
+                                s.set_status(format!("Install failed: {}", resp.error.unwrap_or_default()));
+                            }
+                        }
+                        Err(e) => {
+                            let mut s = state.lock().unwrap();
+                            s.set_status(format!("Install error: {}", e));
+                        }
+                    }
+                }
+                ApiCommand::UninstallMarketplaceItem { item_id, target } => {
+                    let api = crate::api::marketplace::MarketplaceApi::new(client, server_url, token);
+                    let req = crate::api::marketplace::UninstallRequest {
+                        item_id: item_id.clone(),
+                        target,
+                    };
+                    match api.uninstall(req).await {
+                        Ok(resp) => {
+                            let mut s = state.lock().unwrap();
+                            if resp.success {
+                                s.set_status(format!("Uninstalled {} successfully", resp.server_name));
+                            } else {
+                                s.set_status(format!("Uninstall failed: {}", resp.error.unwrap_or_default()));
+                            }
+                        }
+                        Err(e) => {
+                            let mut s = state.lock().unwrap();
+                            s.set_status(format!("Uninstall error: {}", e));
+                        }
+                    }
+                }
+                ApiCommand::FetchInstalledMarketplaceItems { target } => {
+                    let api = crate::api::marketplace::MarketplaceApi::new(client, server_url, token);
+                    match api.list_installed(&target).await {
+                        Ok(items) => {
+                            let mut s = state.lock().unwrap();
+                            let installed_ids: std::collections::HashSet<String> = items.iter().map(|i| i.item_id.clone()).collect();
+                            for item in &mut s.settings.marketplace_items {
+                                item.installed = installed_ids.contains(&item.id);
+                            }
+                        }
+                        Err(e) => {
+                            let mut s = state.lock().unwrap();
+                            s.set_status(format!("Failed to load installed items: {}", e));
+                        }
+                    }
+                }
                 // Voice commands are handled before spawn — unreachable here
                 ApiCommand::StartVoiceCall { .. }
                 | ApiCommand::StopVoiceCall

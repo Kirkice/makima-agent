@@ -13,6 +13,7 @@ pub enum SettingsTab {
     Memory,
     Knowledge,
     Mcp,
+    Marketplace,
     Voice,
     Diagnostics,
     Audit,
@@ -123,6 +124,26 @@ pub enum ApiCommand {
         model: String,
     },
     FetchProviderTypes,
+
+    // Marketplace (MCP install/uninstall)
+    FetchMarketplaceItems {
+        search: Option<String>,
+        tags: Option<Vec<String>>,
+    },
+    FetchMarketplaceTags,
+    InstallMarketplaceItem {
+        item_id: String,
+        target: String,
+        selected_method_index: Option<usize>,
+        parameters: std::collections::HashMap<String, String>,
+    },
+    UninstallMarketplaceItem {
+        item_id: String,
+        target: String,
+    },
+    FetchInstalledMarketplaceItems {
+        target: String,
+    },
 }
 
 pub struct AppState {

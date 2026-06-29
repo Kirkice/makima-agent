@@ -56,6 +56,9 @@ url = "2"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
+# Open URLs in browser
+open = "5"
+
 # Voice / LiveKit (optional — requires webrtc-sys native build)
 livekit = { version = "0.7", optional = true }
 livekit-api = { version = "0.5", optional = true }
