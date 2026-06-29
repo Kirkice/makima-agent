@@ -66,11 +66,14 @@ cpal = { version = "0.15", optional = true }
 
 # Avatar WebView (optional)
 wry = { version = "0.40", optional = true }
+rust-embed = { version = "8", optional = true, features = ["interpolate-folder-path"] }
+tiny_http = { version = "0.12", optional = true }
+raw-window-handle = { version = "0.6", optional = true }
 
 [features]
 default = []
 voice = ["livekit", "livekit-api", "cpal"]
-avatar = ["wry"]  # Enable 3D avatar WebView rendering
+avatar = ["wry", "rust-embed", "tiny_http", "raw-window-handle"]  # Enable 3D avatar WebView rendering
 
 [[bin]]
 name = "makima-desktop"

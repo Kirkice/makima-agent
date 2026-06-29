@@ -180,7 +180,7 @@ impl TabViewer for AppTabViewer<'_> {
         match tab {
             AppDockTab::RecentChat => draw_sidebar_tab(ui, self.state),
             AppDockTab::Chat => draw_chat_workspace(ui, self.state),
-            AppDockTab::Avatar => crate::ui::panels::avatar::draw(ui, self.state),
+            AppDockTab::Avatar => crate::ui::panels::avatar_impl::draw(ui, self.state),
             AppDockTab::Composer => {
                 if composer::draw(ui, self.state, self.pending_action) {
                     *self.pending_action = Some(UiAction::SendMessage);

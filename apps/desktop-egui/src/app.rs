@@ -49,6 +49,14 @@ pub struct MakimaApp {
     pub last_save_frame: u64,
     pub backend_process: BackendProcess,
     pub backend_startup_error: Option<String>,
+    /// Avatar WebGL WebView (only when `avatar` feature is enabled)
+    #[cfg(feature = "avatar")]
+    pub avatar_webview: Option<crate::ui::panels::avatar_impl::AvatarWebView>,
+    /// Port that the embedded asset server is listening on
+    #[cfg(feature = "avatar")]
+    pub avatar_port: Option<u16>,
+    /// Previous ViewMode – used to detect transitions into/out of Avatar
+    prev_view_mode: ViewMode,
 }
 
 impl Default for MakimaApp {
@@ -125,6 +133,11 @@ impl MakimaApp {
             last_save_frame: 0,
             backend_process,
             backend_startup_error,
+            #[cfg(feature = "avatar")]
+            avatar_webview: None,
+            #[cfg(feature = "avatar")]
+            avatar_port: None,
+            prev_view_mode: ViewMode::default(),
         }
     }
 
@@ -679,6 +692,23 @@ impl eframe::App for MakimaApp {
             ui::shell::draw(ui, &mut state, &mut self.login_dialog, &mut self.pending_action, &mut self.app_dock);
         });
         ctx.request_repaint();
+
+        // ── Avatar WebGL WebView lifecycle ─────────────────────────
+        // Extract the view mode before dropping the MutexGuard so we
+        // can call `&mut self` methods afterwards.
+        #[cfg(feature = "avatar")]
+        {
+            let view_mode = state.view_mode;
+            let conversations_width = state.conversations_width;
+            let inspector_width = state.inspector_width;
+            drop(state);
+            self.update_avatar_webview(ctx, _frame, view_mode, conversations_width, inspector_width);
+            // Re-acquire state for the persistence block below
+            state = match self.state.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+        }
 
         // Persist layout changes (throttled to ~1 save per second)
         self.last_save_frame += 1;
@@ -1405,6 +1435,79 @@ impl MakimaApp {
                 | ApiCommand::ToggleVoiceMute => {}
             }
         });
+    }
+
+    /// Manage the Avatar WebView lifecycle: start server, create WebView,
+    /// sync bounds, and show/hide on ViewMode transitions.
+    #[cfg(feature = "avatar")]
+    fn update_avatar_webview(
+        &mut self,
+        ctx: &egui::Context,
+        frame: &mut eframe::Frame,
+        view_mode: ViewMode,
+        conversations_width: f32,
+        inspector_width: f32,
+    ) {
+        use crate::ui::panels::avatar_impl;
+
+        // 1. Ensure the embedded HTTP server is running (once)
+        avatar_impl::ensure_server(&mut self.avatar_port);
+
+        let in_avatar_mode = matches!(view_mode, ViewMode::Avatar);
+        let entered_avatar = in_avatar_mode && self.prev_view_mode != ViewMode::Avatar;
+        let left_avatar = !in_avatar_mode && self.prev_view_mode == ViewMode::Avatar;
+        self.prev_view_mode = view_mode;
+
+        // 2. Create WebView when entering Avatar mode
+        if entered_avatar {
+            if let Some(port) = self.avatar_port {
+                match avatar_impl::AvatarWebView::new(port) {
+                    Ok(mut wv) => {
+                        let screen_rect = ctx.screen_rect();
+                        let avatar_rect = egui::Rect::from_min_max(
+                            egui::pos2(screen_rect.center().x, screen_rect.min.y),
+                            screen_rect.max,
+                        );
+                        wv.sync_bounds(avatar_rect);
+                        wv.set_visible(true);
+                        self.avatar_webview = Some(wv);
+                        tracing::info!("Avatar WebView created (independent window mode)");
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to create avatar WebView: {e}");
+                    }
+                }
+            }
+        }
+
+        // 3. Show/hide on mode transitions
+        if left_avatar {
+            if let Some(ref mut wv) = self.avatar_webview {
+                wv.set_visible(false);
+            }
+        } else if entered_avatar {
+            if let Some(ref mut wv) = self.avatar_webview {
+                wv.set_visible(true);
+            }
+        }
+
+        // 4. Sync bounds every frame when in Avatar mode
+        if in_avatar_mode {
+            if let Some(ref mut wv) = self.avatar_webview {
+                let screen_rect = ctx.screen_rect();
+                let avatar_rect = egui::Rect::from_min_max(
+                    egui::pos2(
+                        screen_rect.center().x + conversations_width,
+                        screen_rect.min.y + 30.0,
+                    ),
+                    egui::pos2(
+                        screen_rect.max.x - inspector_width,
+                        screen_rect.max.y - 155.0 - 32.0,
+                    ),
+                );
+                wv.sync_bounds(avatar_rect);
+            }
+        }
     }
 
     fn bootstrap(&self) {
