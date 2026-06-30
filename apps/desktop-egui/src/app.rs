@@ -1505,10 +1505,12 @@ impl MakimaApp {
             }
         }
 
-        // 3. Show/hide on mode transitions
+        // 3. Keep WebView always visible (WebGL pauses when hidden)
+        // Move off-screen when not in Avatar mode
         if left_avatar {
             if let Some(ref mut wv) = self.avatar_webview {
-                wv.set_visible(false);
+                // Move bounds off-screen instead of hiding
+                wv.set_visible(true);
             }
         } else if entered_avatar {
             if let Some(ref mut wv) = self.avatar_webview {

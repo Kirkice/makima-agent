@@ -71,6 +71,15 @@ async def run_agent(
         step=step,
     )
 
+    # Emit "think" animation when LLM starts thinking
+    step += 1
+    yield AgentEvent(
+        type=AgentEventType.ANIMATION,
+        data={"animation": "think"},
+        timestamp=time.time(),
+        step=step,
+    )
+
     # ── Recall memories ────────────────────────────────────────────────
     memory_context = ""
     if settings.memory_enabled:
@@ -168,6 +177,9 @@ async def run_agent(
     }
 
     try:
+        # Track if we've emitted talk_start animation yet
+        has_talk_start = False
+
         # Use astream to capture state updates including tool calls/results
         async for chunk in graph.astream(initial_state, config=config, stream_mode="updates"):
             step += 1
@@ -214,6 +226,15 @@ async def run_agent(
                                 timestamp=time.time(),
                                 step=step,
                             )
+
+                            # Emit "action" animation when LLM calls a tool (writing code, editing files, etc.)
+                            step += 1
+                            yield AgentEvent(
+                                type=AgentEventType.ANIMATION,
+                                data={"animation": "action"},
+                                timestamp=time.time(),
+                                step=step,
+                            )
                     # Tool results from tools node
                     elif hasattr(msg, "name") and node_name == "tools":
                         yield AgentEvent(
@@ -228,6 +249,17 @@ async def run_agent(
                             raw_content = str(msg.content)
                             cleaned_content, animation = extract_emotion(raw_content)
 
+                            # Emit "talk_start" animation before the first message
+                            if not has_talk_start:
+                                has_talk_start = True
+                                step += 1
+                                yield AgentEvent(
+                                    type=AgentEventType.ANIMATION,
+                                    data={"animation": "talk_start"},
+                                    timestamp=time.time(),
+                                    step=step,
+                                )
+
                             yield AgentEvent(
                                 type=AgentEventType.MESSAGE,
                                 data={"content": cleaned_content},
@@ -235,15 +267,16 @@ async def run_agent(
                                 step=step,
                             )
 
-                            # Emit animation event if emotion was detected
-                            if animation:
-                                step += 1
-                                yield AgentEvent(
-                                    type=AgentEventType.ANIMATION,
-                                    data={"animation": animation},
-                                    timestamp=time.time(),
-                                    step=step,
-                                )
+                            # Emit final emotion animation - use "idle" as fallback if no emotion detected
+                            if not animation:
+                                animation = "idle"
+                            step += 1
+                            yield AgentEvent(
+                                type=AgentEventType.ANIMATION,
+                                data={"animation": animation},
+                                timestamp=time.time(),
+                                step=step,
+                            )
 
     except Exception as e:
         logger.error("Agent execution failed", error=str(e), session_id=session_id)

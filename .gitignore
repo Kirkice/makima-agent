@@ -139,3 +139,14 @@ Cargo.lock.bak
 # Desktop app build artifacts
 apps/desktop-egui/target/
 apps/desktop-egui/Cargo.lock.bak
+
+# Sensitive files (NEVER commit secrets/keys/tokens)
+token.txt
+*.key
+*.secret
+*.pem
+*.p12
+*.pfx
+*.jks
+credentials.json
+service-account*.json
