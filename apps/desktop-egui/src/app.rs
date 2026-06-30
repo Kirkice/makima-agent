@@ -125,10 +125,10 @@ impl MakimaApp {
         let ws_bridge = Arc::new(WebSocketBridge::new(
             "127.0.0.1:9001".parse().expect("Invalid WebSocket address")
         ));
-        // Start WebSocket server in background
+        // Start WebSocket server in background (use the app's runtime, not tokio::spawn which requires an active reactor)
         {
             let bridge = ws_bridge.clone();
-            tokio::spawn(async move {
+            runtime.spawn(async move {
                 if let Err(e) = bridge.start().await {
                     tracing::error!("WebSocket bridge failed to start: {}", e);
                 }
@@ -413,7 +413,7 @@ impl MakimaApp {
                             Ok(event) => {
                                 if let Some(animation) = handle_sse_event(&mut s, event) {
                                     // Forward animation event to WebSocket bridge
-                                    ws_bridge.send_animation(&animation);
+                                    ws_bridge.send_animation(&animation, None);
                                 }
                             }
                             Err(e) => { s.set_status(format!("Stream error: {}", e)); s.chat.composer.is_streaming = false; }
@@ -469,7 +469,7 @@ fn handle_sse_event(state: &mut AppState, event: crate::state::task_state::TaskE
             if let Some(session) = state.chat.active_session_mut() {
                 if is_partial {
                     if let Some(last) = session.messages.last_mut() {
-                        if last.partial && last.msg_type == MessageType::Say { last.text = Some(text); return; }
+                        if last.partial && last.msg_type == MessageType::Say { last.text = Some(text); return None; }
                     }
                 }
                 session.messages.push(ChatMessage { ts: Utc::now().timestamp_millis(), msg_type: MessageType::Say, ask: None, say: Some(SayKind::Text), text: Some(text), partial: is_partial, reasoning: None, token_usage: None, tool_call_id: None, error: None, id: Uuid::new_v4(), session_id });

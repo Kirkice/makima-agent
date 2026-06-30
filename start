@@ -1,0 +1,11 @@
+@echo off
+echo ========================================
+echo Unity WebGL Local Server
+echo ========================================
+echo.
+echo Starting HTTP server on http://localhost:8080
+echo.
+echo Press Ctrl+C to stop
+echo.
+cd character-webgl
+python -m http.server 8080
