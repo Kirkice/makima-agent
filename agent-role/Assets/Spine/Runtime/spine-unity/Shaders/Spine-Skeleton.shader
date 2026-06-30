@@ -64,6 +64,7 @@ Shader "Spine/Skeleton" {
 
 			float4 frag (VertexOutput i) : SV_Target {
 				float4 texColor = tex2D(_MainTex, i.uv);
+				clip(texColor.a -0.95);
 
 				#if defined(_STRAIGHT_ALPHA_INPUT)
 				texColor.rgb *= texColor.a;
