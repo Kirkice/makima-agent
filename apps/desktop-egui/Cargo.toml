@@ -59,6 +59,10 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # Open URLs in browser
 open = "5"
 
+# WebSocket server for Unity bridge
+tokio-tungstenite = "0.21"
+log = "0.4"
+
 # Voice / LiveKit (optional — requires webrtc-sys native build)
 livekit = { version = "0.7", optional = true }
 livekit-api = { version = "0.5", optional = true }

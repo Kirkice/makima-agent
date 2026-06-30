@@ -9,6 +9,7 @@ from makima.prompts.sections import (
     build_capabilities_section,
     build_context_section,
     build_custom_section,
+    build_emotion_section,
     build_modes_section,
     build_personality_section,
     build_role_section,
@@ -88,6 +89,11 @@ class PromptEngine:
         custom = build_custom_section(ctx.mode)
         if custom:
             sections.append(custom)
+
+        # 8. Emotion instructions (for avatar expression)
+        emotion = build_emotion_section()
+        if emotion:
+            sections.append(emotion)
 
         # Join all sections
         prompt = "\n\n".join(sections)

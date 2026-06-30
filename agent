@@ -1,0 +1,194 @@
+using UnityEngine;
+using System;
+using System.Threading.Tasks;
+using NativeWebSocket;
+using Newtonsoft.Json;
+
+/// <summary>
+/// Unity WebSocket client that connects to the Rust desktop app's WebSocket bridge.
+/// Receives animation commands and forwards them to AgentAnimationBridge.
+/// </summary>
+public class UnityWebSocketClient : MonoBehaviour
+{
+    [Header("Connection Settings")]
+    [Tooltip("WebSocket server URL (default: ws://127.0.0.1:9001)")]
+    public string serverUrl = "ws://127.0.0.1:9001";
+    
+    [Tooltip("Auto-connect on start")]
+    public bool autoConnect = true;
+    
+    [Tooltip("Reconnect on disconnect")]
+    public bool autoReconnect = true;
+    
+    [Tooltip("Reconnect delay in seconds")]
+    public float reconnectDelay = 3f;
+
+    [Header("References")]
+    [Tooltip("AgentAnimationBridge component to send animations to")]
+    public AgentAnimationBridge animationBridge;
+
+    private WebSocket websocket;
+    private bool isConnecting = false;
+    private float reconnectTimer = 0f;
+
+    private void Start()
+    {
+        if (animationBridge == null)
+        {
+            animationBridge = FindObjectOfType<AgentAnimationBridge>();
+            if (animationBridge == null)
+            {
+                Debug.LogError("[UnityWebSocketClient] AgentAnimationBridge not found in scene!");
+                enabled = false;
+                return;
+            }
+        }
+
+        if (autoConnect)
+        {
+            Connect();
+        }
+    }
+
+    private void Update()
+    {
+        // Handle reconnection
+        if (autoReconnect && !isConnecting && (websocket == null || websocket.State != WebSocketState.Open))
+        {
+            reconnectTimer += Time.deltaTime;
+            if (reconnectTimer >= reconnectDelay)
+            {
+                reconnectTimer = 0f;
+                Connect();
+            }
+        }
+
+        // Process WebSocket messages
+        #if !UNITY_WEBGL || UNITY_EDITOR
+        if (websocket != null)
+        {
+            websocket.DispatchMessageQueue();
+        }
+        #endif
+    }
+
+    public async void Connect()
+    {
+        if (isConnecting) return;
+        isConnecting = true;
+
+        try
+        {
+            Debug.Log($"[UnityWebSocketClient] Connecting to {serverUrl}...");
+            
+            websocket = new WebSocket(serverUrl);
+
+            websocket.OnOpen += () =>
+            {
+                Debug.Log("[UnityWebSocketClient] Connected to WebSocket server");
+                isConnecting = false;
+            };
+
+            websocket.OnError += (e) =>
+            {
+                Debug.LogError($"[UnityWebSocketClient] WebSocket error: {e}");
+                isConnecting = false;
+            };
+
+            websocket.OnClose += (e) =>
+            {
+                Debug.LogWarning("[UnityWebSocketClient] WebSocket connection closed");
+                isConnecting = false;
+            };
+
+            websocket.OnMessage += (bytes) =>
+            {
+                var message = System.Text.Encoding.UTF8.GetString(bytes);
+                HandleMessage(message);
+            };
+
+            await websocket.Connect();
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[UnityWebSocketClient] Connection failed: {e.Message}");
+            isConnecting = false;
+        }
+    }
+
+    private void HandleMessage(string message)
+    {
+        try
+        {
+            // Parse JSON message: {"animation": "smile"}
+            var data = JsonConvert.DeserializeObject<AnimationMessage>(message);
+            
+            if (data != null && !string.IsNullOrEmpty(data.animation))
+            {
+                Debug.Log($"[UnityWebSocketClient] Received animation: {data.animation}");
+                
+                // Forward to AgentAnimationBridge
+                animationBridge?.PlayAnimation(data.animation);
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[UnityWebSocketClient] Failed to parse message: {e.Message}\nMessage: {message}");
+        }
+    }
+
+    public async void Disconnect()
+    {
+        if (websocket != null && websocket.State == WebSocketState.Open)
+        {
+            try
+            {
+                await websocket.Close();
+                Debug.Log("[UnityWebSocketClient] Disconnected");
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[UnityWebSocketClient] Disconnect error: {e.Message}");
+            }
+        }
+    }
+
+    private void OnDestroy()
+    {
+        Disconnect();
+    }
+
+    private void OnApplicationQuit()
+    {
+        Disconnect();
+    }
+
+    /// <summary>
+    /// Send a message to the WebSocket server
+    /// </summary>
+    public async void SendMessage(string message)
+    {
+        if (websocket != null && websocket.State == WebSocketState.Open)
+        {
+            try
+            {
+                await websocket.SendText(message);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[UnityWebSocketClient] Send error: {e.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Check if WebSocket is connected
+    /// </summary>
+    public bool IsConnected => websocket != null && websocket.State == WebSocketState.Open;
+
+    [Serializable]
+    private class AnimationMessage
+    {
+        public string animation;
+    }
+}

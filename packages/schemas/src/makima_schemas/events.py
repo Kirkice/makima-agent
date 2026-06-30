@@ -24,6 +24,7 @@ class AgentEventType(str, Enum):
     APPROVAL_RESPONDED = "approval_responded"
     CONTEXT_COMPRESSED = "context_compressed"
     RETRY_DELAYED = "retry_delayed"
+    ANIMATION = "animation"
 
 
 class AgentEvent(BaseModel):

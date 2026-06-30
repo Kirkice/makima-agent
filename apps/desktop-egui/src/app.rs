@@ -12,6 +12,7 @@ use crate::state::app_state::{AppState, ViewMode};
 use crate::ui;
 use crate::ui::dock::{normalize_layout, AppDockState, init_app_dock};
 use crate::voice::VoiceManager;
+use crate::websocket_bridge::WebSocketBridge;
 
 pub struct LoginDialogState {
     pub username: String,
@@ -45,6 +46,8 @@ pub struct MakimaApp {
     pub pending_action: Option<UiAction>,
     pub voice_manager: VoiceManager,
     pub app_dock: AppDockState,
+    /// WebSocket bridge for Unity avatar animation commands
+    pub ws_bridge: Arc<WebSocketBridge>,
     pub layout_changed: bool,
     pub last_save_frame: u64,
     pub backend_process: BackendProcess,
@@ -118,6 +121,20 @@ impl MakimaApp {
             )
         };
 
+        // Initialize WebSocket bridge for Unity avatar
+        let ws_bridge = Arc::new(WebSocketBridge::new(
+            "127.0.0.1:9001".parse().expect("Invalid WebSocket address")
+        ));
+        // Start WebSocket server in background
+        {
+            let bridge = ws_bridge.clone();
+            tokio::spawn(async move {
+                if let Err(e) = bridge.start().await {
+                    tracing::error!("WebSocket bridge failed to start: {}", e);
+                }
+            });
+        }
+
         Self {
             state,
             runtime,
@@ -129,6 +146,7 @@ impl MakimaApp {
             pending_action: None,
             voice_manager: VoiceManager::default(),
             app_dock,
+            ws_bridge,
             layout_changed: false,
             last_save_frame: 0,
             backend_process,
@@ -290,6 +308,8 @@ impl MakimaApp {
         let state = self.state.clone();
         let client = self.client.clone();
 
+        let ws_bridge = self.ws_bridge.clone();
+
         self.runtime.spawn(async move {
             let resolved_session_id = if let Some(backend_id) = backend_session_id {
                 backend_id
@@ -390,7 +410,12 @@ impl MakimaApp {
                     while let Some(event_result) = rx.recv().await {
                         let mut s = state.lock().unwrap();
                         match event_result {
-                            Ok(event) => handle_sse_event(&mut s, event),
+                            Ok(event) => {
+                                if let Some(animation) = handle_sse_event(&mut s, event) {
+                                    // Forward animation event to WebSocket bridge
+                                    ws_bridge.send_animation(&animation);
+                                }
+                            }
                             Err(e) => { s.set_status(format!("Stream error: {}", e)); s.chat.composer.is_streaming = false; }
                         }
                     }
@@ -408,7 +433,7 @@ impl MakimaApp {
     }
 }
 
-fn handle_sse_event(state: &mut AppState, event: crate::state::task_state::TaskEvent) {
+fn handle_sse_event(state: &mut AppState, event: crate::state::task_state::TaskEvent) -> Option<String> {
     use crate::state::chat_state::{AskKind, ChatMessage, MessageType, SayKind, TokenUsage};
     use crate::state::task_state::{TaskEvent, TaskStatus, TimelinePhase};
     use chrono::Utc;
@@ -530,8 +555,13 @@ fn handle_sse_event(state: &mut AppState, event: crate::state::task_state::TaskE
             }
             state.set_status(format!("Retrying in {:.1}s (attempt {}): {}", delay_seconds, attempt, reason));
         }
+        TaskEvent::Animation { animation } => {
+            // Return animation name to be forwarded to WebSocket bridge
+            return Some(animation);
+        }
         _ => {}
     }
+    None
 }
 
 fn truncate(s: &str, max: usize) -> String {

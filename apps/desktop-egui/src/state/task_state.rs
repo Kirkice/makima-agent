@@ -127,6 +127,11 @@ pub enum TaskEvent {
         delay_seconds: f64,
         reason: String,
     },
+    /// Avatar animation triggered by emotion detection
+    #[serde(rename = "animation")]
+    Animation {
+        animation: String,
+    },
 }
 
 /// A timeline entry for the task execution display

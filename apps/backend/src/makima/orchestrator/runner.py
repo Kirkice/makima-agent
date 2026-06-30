@@ -11,6 +11,7 @@ from langchain_core.messages import BaseMessage, HumanMessage
 
 from makima.orchestrator.graph import build_graph
 from makima.orchestrator.attachment_context import build_attachment_context
+from makima.orchestrator.emotion_parser import extract_emotion
 from makima.modes.registry import get_mode
 from makima.persona import get_current_persona
 from makima.memory.service import MemoryService
@@ -224,12 +225,25 @@ async def run_agent(
                     # Final AI message (no tool calls)
                     elif hasattr(msg, "content") and msg.content and node_name == "agent":
                         if not (hasattr(msg, "tool_calls") and msg.tool_calls):
+                            raw_content = str(msg.content)
+                            cleaned_content, animation = extract_emotion(raw_content)
+
                             yield AgentEvent(
                                 type=AgentEventType.MESSAGE,
-                                data={"content": str(msg.content)},
+                                data={"content": cleaned_content},
                                 timestamp=time.time(),
                                 step=step,
                             )
+
+                            # Emit animation event if emotion was detected
+                            if animation:
+                                step += 1
+                                yield AgentEvent(
+                                    type=AgentEventType.ANIMATION,
+                                    data={"animation": animation},
+                                    timestamp=time.time(),
+                                    step=step,
+                                )
 
     except Exception as e:
         logger.error("Agent execution failed", error=str(e), session_id=session_id)

@@ -13,6 +13,7 @@ mod state;
 mod theme;
 mod ui;
 mod voice;
+mod websocket_bridge;
 
 use eframe::egui::ViewportBuilder;
 
