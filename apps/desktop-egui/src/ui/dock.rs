@@ -244,6 +244,8 @@ pub fn draw_app_dock(
     dock_state: &mut AppDockState,
     pending_action: &mut Option<UiAction>,
 ) {
+    state.avatar_panel_rect = None;
+
     let style = Style::from_egui(ui.style().as_ref());
 
     DockArea::new(dock_state)

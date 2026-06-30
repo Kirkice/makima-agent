@@ -21,12 +21,13 @@ const PIXEL_COLORS: [[Option<&str>; 13]; 15] = [
     [None, Some("#9b4d62"), None, Some("#969394"), Some("#f8f3ea"), Some("#bbb9b2"), Some("#3e393b"), Some("#3e393b"), Some("#bbb9b2"), Some("#f8f3ea"), Some("#969394"), None, Some("#9b4d62")],
 ];
 
-pub fn draw(ui: &mut egui::Ui, state: &AppState) {
+pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Frame::NONE
         .fill(colors::SURFACE)
         .corner_radius(CornerRadius::same(12))
         .inner_margin(egui::Margin::same(20))
         .show(ui, |ui| {
+            state.avatar_panel_rect = Some(ui.max_rect());
             ui.vertical_centered(|ui| {
                 // Header
                 ui.colored_label(
@@ -36,6 +37,11 @@ pub fn draw(ui: &mut egui::Ui, state: &AppState) {
                 ui.colored_label(
                     colors::TEXT_MUTED,
                     egui::RichText::new("3D Avatar rendering — Unity WebView").size(13.0),
+                );
+                ui.colored_label(
+                    colors::WARNING,
+                    egui::RichText::new("Fallback mode: rebuild without disabling the `avatar` feature only if WebView support is unavailable.")
+                        .size(12.0),
                 );
                 ui.add_space(24.0);
 

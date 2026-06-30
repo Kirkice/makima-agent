@@ -71,7 +71,7 @@ tiny_http = { version = "0.12", optional = true }
 raw-window-handle = { version = "0.6", optional = true }
 
 [features]
-default = []
+default = ["avatar"]
 voice = ["livekit", "livekit-api", "cpal"]
 avatar = ["wry", "rust-embed", "tiny_http", "raw-window-handle"]  # Enable 3D avatar WebView rendering
 

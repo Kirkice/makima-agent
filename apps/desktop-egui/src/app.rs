@@ -699,10 +699,9 @@ impl eframe::App for MakimaApp {
         #[cfg(feature = "avatar")]
         {
             let view_mode = state.view_mode;
-            let conversations_width = state.conversations_width;
-            let inspector_width = state.inspector_width;
+            let avatar_panel_rect = state.avatar_panel_rect;
             drop(state);
-            self.update_avatar_webview(ctx, _frame, view_mode, conversations_width, inspector_width);
+            self.update_avatar_webview(ctx, _frame, view_mode, avatar_panel_rect);
             // Re-acquire state for the persistence block below
             state = match self.state.lock() {
                 Ok(g) => g,
@@ -1445,8 +1444,7 @@ impl MakimaApp {
         ctx: &egui::Context,
         frame: &mut eframe::Frame,
         view_mode: ViewMode,
-        conversations_width: f32,
-        inspector_width: f32,
+        avatar_panel_rect: Option<egui::Rect>,
     ) {
         use crate::ui::panels::avatar_impl;
 
@@ -1461,17 +1459,14 @@ impl MakimaApp {
         // 2. Create WebView when entering Avatar mode
         if entered_avatar {
             if let Some(port) = self.avatar_port {
-                match avatar_impl::AvatarWebView::new(port) {
+                match avatar_impl::AvatarWebView::new(port, frame) {
                     Ok(mut wv) => {
-                        let screen_rect = ctx.screen_rect();
-                        let avatar_rect = egui::Rect::from_min_max(
-                            egui::pos2(screen_rect.center().x, screen_rect.min.y),
-                            screen_rect.max,
-                        );
+                        let avatar_rect =
+                            avatar_panel_rect.unwrap_or_else(|| ctx.content_rect().shrink(12.0));
                         wv.sync_bounds(avatar_rect);
                         wv.set_visible(true);
                         self.avatar_webview = Some(wv);
-                        tracing::info!("Avatar WebView created (standalone window)");
+                        tracing::info!("Avatar WebView created");
                     }
                     Err(e) => {
                         tracing::error!("Failed to create avatar WebView: {e}");
@@ -1494,17 +1489,8 @@ impl MakimaApp {
         // 4. Sync bounds every frame when in Avatar mode
         if in_avatar_mode {
             if let Some(ref mut wv) = self.avatar_webview {
-                let screen_rect = ctx.screen_rect();
-                let avatar_rect = egui::Rect::from_min_max(
-                    egui::pos2(
-                        screen_rect.center().x + conversations_width,
-                        screen_rect.min.y + 30.0,
-                    ),
-                    egui::pos2(
-                        screen_rect.max.x - inspector_width,
-                        screen_rect.max.y - 155.0 - 32.0,
-                    ),
-                );
+                let avatar_rect =
+                    avatar_panel_rect.unwrap_or_else(|| ctx.content_rect().shrink(12.0));
                 wv.sync_bounds(avatar_rect);
             }
         }

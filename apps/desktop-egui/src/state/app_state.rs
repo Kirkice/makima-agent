@@ -182,6 +182,8 @@ pub struct AppState {
     pub conversations_width: f32,
     pub inspector_width: f32,
     pub drawer_height: f32,
+    /// Screen-space rectangle occupied by the Avatar panel during the current frame.
+    pub avatar_panel_rect: Option<egui::Rect>,
 }
 
 impl Default for AppState {
@@ -219,6 +221,7 @@ impl Default for AppState {
             conversations_width: 300.0,
             inspector_width: 420.0,
             drawer_height: 155.0,
+            avatar_panel_rect: None,
         }
     }
 }
