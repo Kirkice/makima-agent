@@ -422,6 +422,28 @@ impl MakimaApp {
                     let mut s = state.lock().unwrap();
                     s.chat.composer.is_streaming = false;
                     s.set_status("Done".to_string());
+
+                    // Collect full agent response text for TTS
+                    let agent_text: Option<String> = s.chat.active_session().and_then(|session| {
+                        session.messages.iter().rev().find_map(|msg| {
+                            if msg.msg_type == crate::state::chat_state::MessageType::Say
+                                && !msg.partial
+                                && msg.text.is_some()
+                            {
+                                msg.text.clone()
+                            } else {
+                                None
+                            }
+                        })
+                    });
+                    drop(s);
+
+                    // Speak response in background (non-blocking via tokio::spawn)
+                    if let Some(text) = agent_text {
+                        tokio::spawn(async move {
+                            crate::tts::speak(text).await;
+                        });
+                    }
                 }
                 Err(e) => {
                     let mut s = state.lock().unwrap();
