@@ -11,6 +11,7 @@ mod backend_launcher;
 mod config;
 mod state;
 mod theme;
+mod tts;
 mod ui;
 mod voice;
 mod websocket_bridge;
