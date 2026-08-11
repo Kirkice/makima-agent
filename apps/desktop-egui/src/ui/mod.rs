@@ -1,8 +1,0 @@
-pub mod shell;
-pub mod top_bar;
-pub mod recent_chat;
-pub mod chat;
-pub mod panels;
-pub mod dock;
-pub mod bottom_drawer;
-pub mod status_bar;

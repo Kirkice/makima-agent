@@ -1,1 +1,0 @@
-"""Security module — RBAC, permissions, and access control."""

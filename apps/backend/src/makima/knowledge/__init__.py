@@ -1,1 +1,0 @@
-"""Knowledge service — RAG and document retrieval."""

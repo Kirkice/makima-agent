@@ -1,9 +1,0 @@
-[submodule "external/langgraph"]
-	path = external/langgraph
-	url = git@github.com:langchain-ai/langgraph.git
-[submodule "external/mem0"]
-	path = external/mem0
-	url = git@github.com:mem0ai/mem0.git
-[submodule "external/openhands"]
-	path = external/openhands
-	url = git@github.com:OpenHands/OpenHands.git

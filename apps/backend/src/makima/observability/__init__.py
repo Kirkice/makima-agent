@@ -1,1 +1,0 @@
-"""Observability — metrics, tracing, and health checks."""

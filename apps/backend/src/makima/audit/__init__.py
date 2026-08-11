@@ -1,1 +1,0 @@
-"""Audit logging system for tracking user actions and system events."""

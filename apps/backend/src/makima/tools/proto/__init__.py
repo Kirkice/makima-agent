@@ -1,1 +1,0 @@
-"""Protocol buffer generated modules for Rust tool runtime."""
