@@ -1,6 +1,9 @@
 /**
  * Agent loop that works with AgentMessage throughout.
  * Transforms to Message[] only at the LLM call boundary.
+ *
+ * Agent Loop 全程使用面向 Agent 的消息类型，只在调用 LLM 的边界转换为 pi-ai 的统一
+ * Message[]。这样工具执行、队列和生命周期事件不需要耦合任何具体 Provider 的消息格式。
  */
 
 import {
@@ -164,6 +167,9 @@ function createAgentStream(): EventStream<AgentEvent, AgentMessage[]> {
 
 /**
  * Main loop logic shared by agentLoop and agentLoopContinue.
+ *
+ * agentLoop 与 agentLoopContinue 共享的 ReAct 主循环：模型响应后执行工具，把 tool result
+ * 追加回上下文，再继续请求模型；当没有工具、steering 或 follow-up 时才结束本轮。
  */
 async function runLoop(
 	initialContext: AgentContext,
@@ -296,6 +302,10 @@ async function runLoop(
 /**
  * Stream an assistant response from the LLM.
  * This is where AgentMessage[] gets transformed to Message[] for the LLM.
+ *
+ * 从 LLM 流式获取 assistant 响应。这里是上下文转换边界：内部 AgentMessage[] 先经过
+ * transformContext 和 convertToLlm，再组成统一 Context 交给 StreamFn；Provider 的增量
+ * 事件随后被折叠成稳定的 AssistantMessage，供工具执行和 session 持久化使用。
  */
 async function streamAssistantResponse(
 	context: AgentContext,
@@ -431,7 +441,8 @@ async function failToolCallsFromTruncatedMessage(
  * Execute tool calls according to the configured and per-tool execution mode.
  *
  * 执行 assistant 消息中的工具调用，并根据全局策略和工具自身的 executionMode，
- * 在串行与并行执行之间选择。
+ * 在串行与并行执行之间选择。每个调用最终都会生成 ToolResultMessage，回填上下文后
+ * 才能驱动下一次模型请求。
  */
 async function executeToolCalls(
 	currentContext: AgentContext,

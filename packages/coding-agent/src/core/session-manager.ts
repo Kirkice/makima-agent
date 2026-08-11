@@ -43,6 +43,12 @@ export interface NewSessionOptions {
 	parentSession?: string;
 }
 
+/**
+ * Common fields for append-only session-tree entries.
+ *
+ * 会话树中所有 entry 的公共字段。`parentId` 将线性 JSONL 日志组织成可回溯、可分支的
+ * 树；追加 entry 只需要把当前 leaf 设为新 entry 的父节点。
+ */
 export interface SessionEntryBase {
 	type: string;
 	id: string;
@@ -379,6 +385,9 @@ function getSessionContextSettings(path: SessionEntry[]): Pick<SessionContext, "
 /**
  * Project one selected session entry into LLM/runtime messages.
  * Plain custom entries are display/state entries and do not participate in context.
+ *
+ * 将一个 session entry 投影为 LLM/runtime 能理解的 AgentMessage。普通 custom entry 只保存
+ * 扩展状态，不进入上下文；compaction 和 branch summary 则会转换为摘要消息。
  */
 export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage[] {
 	if (entry.type === "message") {
@@ -457,6 +466,9 @@ export function buildContextEntries(
  * Build the session context from entries using tree traversal.
  * If leafId is provided, walks from that entry to root.
  * Handles compaction and branch summaries along the path.
+ *
+ * 从 session tree 构建当前 LLM 上下文：先按 leaf 恢复有效路径，再应用 compaction 边界，
+ * 最后把 entry 转成 AgentMessage。切换 leaf 就能切换分支，而不需要改写旧历史。
  */
 export function buildSessionContext(
 	entries: SessionEntry[],
@@ -856,6 +868,20 @@ async function listSessionsFromDir(
  * SessionManager 将 AgentSession 的稳定消息追加到 append-only JSONL，并维护可分支的会话树。
  * fileEntries 是完整日志，byId 用于按 parentId 找路径，leafId 表示当前分支所在位置。
  */
+/**
+ * Manages conversation sessions as append-only trees stored in JSONL files.
+ *
+ * Each session entry has an id and parentId forming a tree structure. The "leaf"
+ * pointer tracks the current position. Appending creates a child of the current leaf.
+ * Branching moves the leaf to an earlier entry, allowing new branches without
+ * modifying history.
+ *
+ * Use buildSessionContext() to get the resolved message list for the LLM, which
+ * handles compaction summaries and follows the path from root to current leaf.
+ *
+ * SessionManager 将 AgentSession 的稳定消息追加到 append-only JSONL，并维护可分支的会话树。
+ * fileEntries 是完整日志，byId 用于按 parentId 找路径，leafId 表示当前分支所在位置。
+ */
 export class SessionManager {
 	private sessionId: string = "";
 	private sessionFile: string | undefined;
@@ -1020,6 +1046,12 @@ export class SessionManager {
 	 * 将 entry 写入磁盘。首次 assistant 出现前先保留在内存，避免只包含启动/用户输入的
 	 * 半成品 session 文件；assistant 到达后再一次性 flush 全部历史，之后才追加写入。
 	 */
+	/**
+	 * Persist one entry, flushing the in-memory history before the first assistant response.
+	 *
+	 * 追加持久化 entry。第一条 assistant 响应到达前可能只有内存中的启动/用户输入，
+	 * 此处会先批量 flush 历史，之后再按 append-only 方式追加，避免生成半成品会话文件。
+	 */
 	_persist(entry: SessionEntry): void {
 		if (!this.persist || !this.sessionFile) return;
 
@@ -1050,6 +1082,11 @@ export class SessionManager {
 	}
 
 	/** 每次追加都同时推进内存日志、索引和 leaf，三者必须保持同一个当前分支。 */
+	/**
+	 * Append an entry and move the current leaf to it.
+	 *
+	 * 统一追加入口：entry 成为当前 leaf 的子节点，索引和 leaf 指针同步更新，然后写入文件。
+	 */
 	private _appendEntry(entry: SessionEntry): void {
 		this.fileEntries.push(entry);
 		this.byId.set(entry.id, entry);
@@ -1369,6 +1406,11 @@ export class SessionManager {
 	 * Moves the leaf pointer to the specified entry. The next appendXXX() call
 	 * will create a child of that entry, forming a new branch. Existing entries
 	 * are not modified or deleted.
+	 *
+	 * 分支只移动 leaf，不修改或删除旧 entry；下一次追加自然会从该历史节点创建新分支。
+	 */
+	/**
+	 * Move the active leaf without modifying existing history.
 	 *
 	 * 分支只移动 leaf，不修改或删除旧 entry；下一次追加自然会从该历史节点创建新分支。
 	 */

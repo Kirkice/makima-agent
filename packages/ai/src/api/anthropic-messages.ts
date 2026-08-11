@@ -45,6 +45,9 @@ import { transformMessages } from "./transform-messages.ts";
 /**
  * Resolve cache retention preference.
  * Defaults to "short" and uses PI_CACHE_RETENTION for backward compatibility.
+ *
+ * 解析 Prompt Cache 的保留时长，默认使用短缓存。这里配置的是 Anthropic/兼容 Provider
+ * 的服务端缓存策略，不是 Pi 本地 Transformer 推理层的 KV Tensor Cache。
  */
 function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEnv): CacheRetention {
 	if (cacheRetention) {
@@ -494,6 +497,13 @@ async function* iterateAnthropicEvents(
  * provider events into pi-ai's AssistantMessageEventStream for the Agent Loop.
  *
  * Anthropic Provider Adapter：把统一 Context 编码为 Messages API 请求，再把供应商事件
+ * 映射成 pi-ai 的 AssistantMessageEventStream，供 Agent Loop 使用。
+ */
+/**
+ * Anthropic Provider Adapter: converts the unified Context into a Messages API request and maps
+ * provider events into pi-ai's AssistantMessageEventStream for the Agent Loop.
+ *
+ * Anthropic Provider Adapter：把统一 Context 编码为 Anthropic Messages API 请求，再把供应商事件
  * 映射成 pi-ai 的 AssistantMessageEventStream，供 Agent Loop 使用。
  */
 export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
@@ -958,6 +968,12 @@ function createClient(
 	return { client, isOAuthToken: false };
 }
 
+/**
+ * Translate the provider-neutral context into Anthropic's request shape.
+ *
+ * 将 Provider 无关的 Context 转换为 Anthropic 请求：system prompt、消息轨迹和工具定义
+ * 分别进入 Anthropic 的对应字段，并在稳定前缀和末尾内容上放置 cache marker。
+ */
 function buildParams(
 	model: Model<"anthropic-messages">,
 	context: Context,
@@ -1306,6 +1322,12 @@ function shouldUseFineGrainedToolStreamingBeta(model: Model<"anthropic-messages"
 	return !!context.tools?.length && !getAnthropicCompat(model).supportsEagerToolInputStreaming;
 }
 
+/**
+ * Convert unified tool schemas into Anthropic tool definitions.
+ *
+ * 将统一 Tool 定义转换为 Anthropic 工具 schema。工具顺序会影响请求前缀，因此最后一个
+ * 工具可作为缓存边界；工具本身只描述能力，实际执行仍由 Agent Loop 完成。
+ */
 function convertTools(
 	tools: Tool[],
 	isOAuthToken: boolean,

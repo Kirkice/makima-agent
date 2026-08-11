@@ -101,6 +101,8 @@ export interface ThinkingBudgets {
 }
 
 // Base options all providers share
+// 所有 Provider 共享的基础请求选项。这里的缓存配置是 Provider 侧的 prompt cache，
+// 不是 Pi 在本地实现的 Transformer KV Tensor Cache。
 export type CacheRetention = "none" | "short" | "long";
 
 export type Transport = "sse" | "websocket" | "websocket-cached" | "auto";
@@ -172,6 +174,12 @@ export interface ProviderRequestOptions<TModel = Model<Api>> {
 	maxRetryDelayMs?: number;
 }
 
+/**
+ * Options used when an agent asks a provider to stream one assistant response.
+ *
+ * Agent Loop 负责组织上下文和控制循环，StreamOptions 只描述本次 Provider 请求的运行参数。
+ * 这样可以把“上下文工程”与“具体供应商的 HTTP/SSE 实现”分离开。
+ */
 export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	/**
 	 * Optional callback invoked after an HTTP response is received and before
@@ -317,6 +325,11 @@ export interface SimpleStreamOptions extends StreamOptions {
 //   returned stream, not thrown.
 // - Error termination must produce an AssistantMessage with stopReason
 //   "error" or "aborted" and errorMessage, emitted via the stream protocol.
+//
+// 带类型选项的通用流函数协议。
+// Agent Loop 传入模型、统一 Context 和 Provider 请求选项，Provider Adapter 返回统一的
+// AssistantMessageEventStream。请求失败也编码为统一错误事件，避免上层依赖某个 Provider
+// 的异常类型；这正是 Agent Loop 与 Provider Adapter 之间的稳定边界。
 export type StreamFunction<TApi extends Api = Api, TOptions extends StreamOptions = StreamOptions> = (
 	model: Model<TApi>,
 	context: Context,
@@ -367,6 +380,15 @@ export interface ToolCall {
 	namespace?: string;
 }
 
+/**
+ * Token usage and provider-reported cache accounting for one assistant response.
+ *
+ * `cacheRead` and `cacheWrite` are usage statistics reported by the provider. They
+ * describe prompt-cache activity, not a local KV tensor cache owned by pi.
+ *
+ * 一次 assistant 响应的 token 用量和 Provider 缓存统计。`cacheRead` / `cacheWrite` 用于
+ * 观察 Provider prompt cache 的命中与写入；它们不是 Pi 本地推理引擎的 KV Tensor Cache。
+ */
 export interface Usage {
 	input: number;
 	output: number;
@@ -452,6 +474,12 @@ export interface ToolResultMessage<TDetails = any> {
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
+/**
+ * The structured message union sent through the agent and provider layers.
+ *
+ * 结构化消息联合类型：用户消息、assistant 响应和工具结果共同构成 ReAct trajectory。
+ * Agent Loop 追加这些消息，Provider Adapter 再将它们转换成目标 API 的消息格式。
+ */
 export type Message = UserMessage | AssistantMessage | ToolResultMessage;
 
 export type ImagesInputContent = TextContent | ImageContent;
@@ -499,6 +527,12 @@ export type ConstrainedSamplingConfig =
 			variants: GrammarVariants;
 	  };
 
+/**
+ * A tool definition exposed to the model for the current request.
+ *
+ * 工具定义是上下文的一部分，而不是 Agent Loop 内部的任意函数引用。模型只能根据
+ * `name`、`description` 和参数 schema 生成 tool call；真正执行仍由 Agent 层负责。
+ */
 export interface Tool<TParameters extends TSchema = TSchema> {
 	name: string;
 	description: string;
@@ -506,6 +540,17 @@ export interface Tool<TParameters extends TSchema = TSchema> {
 	constrainedSampling?: false | ConstrainedSamplingConfig;
 }
 
+/**
+ * The complete context passed from the agent loop to a provider adapter.
+ *
+ * `systemPrompt` and `tools` usually form the relatively stable prefix; `messages` is the
+ * changing trajectory containing user input, assistant output, and tool results. Keeping this
+ * boundary explicit lets adapters translate one context shape into different provider APIs.
+ *
+ * 一次 LLM 请求看到的完整上下文：`systemPrompt` 提供系统指令，`messages` 保存动态对话
+ * 轨迹，`tools` 描述当前可用工具。这对应 chapter2 的上下文布局：稳定前缀（系统提示词
+ * 加工具定义）加动态 trajectory。Provider Adapter 会在这里之后做 API 专属转换。
+ */
 export interface Context {
 	systemPrompt?: string;
 	messages: Message[];
@@ -519,6 +564,10 @@ export interface Context {
  * - `done` carrying the final successful AssistantMessage, or
  * - `error` carrying the final AssistantMessage with stopReason "error" or "aborted"
  *   and errorMessage.
+ *
+ * 流事件协议：先用 `start` 创建 partial assistant，再通过 text/thinking/toolcall 的
+ * delta 事件逐步更新，最后以 `done` 或 `error` 结束。Agent Loop 只消费这套统一事件，
+ * 不需要知道 Anthropic SSE、OpenAI chunk 等 Provider 原始事件名称。
  */
 export type AssistantMessageEvent =
 	| { type: "start"; partial: AssistantMessage }

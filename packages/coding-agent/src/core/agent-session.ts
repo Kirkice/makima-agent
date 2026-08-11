@@ -11,6 +11,9 @@
  * - Session switching and branching
  *
  * Modes use this class and add their own I/O layer on top.
+ *
+ * AgentSession 是 CLI 各运行模式共享的核心编排层：连接 Agent、SessionManager 和资源加载器，
+ * 负责 system prompt、工具与 Skill 注入、事件持久化、重试、上下文压缩以及会话分支。
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -125,6 +128,9 @@ export interface ParsedSkillBlock {
 /**
  * Parse a skill block from message text.
  * Returns null if the text doesn't contain a skill block.
+ *
+ * 从用户消息中解析 `<skill>` 块。Skill 正是渐进式披露的入口：常驻提示只保留技能索引，
+ * 用户显式调用后才把完整 SKILL.md 内容注入当前消息上下文。
  */
 export function parseSkillBlock(text: string): ParsedSkillBlock | null {
 	const match = text.match(/^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]+))?$/);
@@ -1028,6 +1034,13 @@ export class AgentSession {
 		return Array.from(unique);
 	}
 
+	/**
+	 * Rebuild the stable system-prompt portion from current resources and active tools.
+	 *
+	 * 根据当前资源和激活工具重建相对稳定的 system prompt。工具列表、Skills、context files
+	 * 和扩展提示都会影响这个前缀；频繁变化的运行状态不应随意放在这里，否则会降低 Provider
+	 * prompt cache 的前缀复用率。
+	 */
 	private _rebuildSystemPrompt(toolNames: string[]): string {
 		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
 		const toolSnippets: Record<string, string> = {};
@@ -1071,6 +1084,12 @@ export class AgentSession {
 	/**
 	 * 一次用户输入可能触发多次底层 loop：首次 prompt 结束后，retry、compaction 或队列消息
 	 * 会通过 continue() 接着跑，直到没有后续工作。
+	 */
+	/**
+	 * Run Agent.prompt and handle post-run retry, compaction, and queued messages.
+	 *
+	 * 启动一轮 Agent Loop，并在结束后统一处理 retry、compaction 和队列消息。这样 Agent
+	 * 只负责执行循环，CLI 层的上下文治理策略集中在 AgentSession。
 	 */
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
 		this._isAgentRunActive = true;
@@ -1806,6 +1825,12 @@ export class AgentSession {
 	 * Manually compact the session context.
 	 * Aborts current agent operation first.
 	 * @param customInstructions Optional instructions for the compaction summary
+	 */
+	/**
+	 * Compact the current session context into a persisted summary and rebuild Agent messages.
+	 *
+	 * 将当前会话压缩为摘要 entry 并重建 Agent 消息。压缩不是删除历史：完整历史仍保留在
+	 * session tree 中，当前 LLM 上下文从 compaction boundary 之后的路径恢复。
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
 		await this.abort();

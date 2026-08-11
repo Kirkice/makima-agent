@@ -169,6 +169,9 @@ type ActiveRun = {
  *
  * `Agent` owns the current transcript, emits lifecycle events, executes tools,
  * and exposes queueing APIs for steering and follow-up messages.
+ *
+ * 有状态的 Agent Runtime：保存 transcript、队列和当前流式运行，并把底层 loop 事件
+ * 转换成对外可观察的状态。AgentSession 会在更上层负责 CLI 编排和持久化。
  */
 export class Agent {
 	private _state: MutableAgentState;
@@ -376,12 +379,6 @@ export class Agent {
 	 * 从当前 transcript 继续执行。通常是在 toolResult 已写入、需要重试，或上层准备好下一轮
 	 * 上下文之后调用；assistant 结尾时则优先消费 steering/follow-up 队列。
 	 */
-	/**
-	 * Continue from the current transcript. The last message must be a user or tool-result message.
-	 *
-	 * 从当前 transcript 继续执行。通常是在 toolResult 已写入、需要重试，或上层准备好下一轮
-	 * 上下文之后调用；assistant 结尾时则优先消费 steering/follow-up 队列。
-	 */
 	async continue(): Promise<void> {
 		if (this.activeRun) {
 			throw new Error("Agent is already processing. Wait for completion before continuing.");
@@ -459,7 +456,12 @@ export class Agent {
 		});
 	}
 
-	/** 当前运行使用快照；消息和工具数组复制后，loop 可在本轮内安全追加消息。 */
+	/**
+	 * Create the immutable input snapshot consumed by one Agent Loop run.
+	 *
+	 * 为一次 Agent Loop 创建上下文快照。复制 messages/tools 数组，避免运行期间的队列或
+	 * 外部状态变化直接改写本轮请求；真正的 Provider Context 会在 loop 的请求边界生成。
+	 */
 	private createContextSnapshot(): AgentContext {
 		return {
 			systemPrompt: this._state.systemPrompt,
