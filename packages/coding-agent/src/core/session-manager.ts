@@ -852,6 +852,10 @@ async function listSessionsFromDir(
  * Use buildSessionContext() to get the resolved message list for the LLM, which
  * handles compaction summaries and follows the path from root to current leaf.
  */
+/**
+ * SessionManager 将 AgentSession 的稳定消息追加到 append-only JSONL，并维护可分支的会话树。
+ * fileEntries 是完整日志，byId 用于按 parentId 找路径，leafId 表示当前分支所在位置。
+ */
 export class SessionManager {
 	private sessionId: string = "";
 	private sessionFile: string | undefined;
@@ -1012,6 +1016,10 @@ export class SessionManager {
 		return this.sessionFile;
 	}
 
+	/**
+	 * 将 entry 写入磁盘。首次 assistant 出现前先保留在内存，避免只包含启动/用户输入的
+	 * 半成品 session 文件；assistant 到达后再一次性 flush 全部历史，之后才追加写入。
+	 */
 	_persist(entry: SessionEntry): void {
 		if (!this.persist || !this.sessionFile) return;
 
@@ -1041,6 +1049,7 @@ export class SessionManager {
 		}
 	}
 
+	/** 每次追加都同时推进内存日志、索引和 leaf，三者必须保持同一个当前分支。 */
 	private _appendEntry(entry: SessionEntry): void {
 		this.fileEntries.push(entry);
 		this.byId.set(entry.id, entry);
@@ -1048,11 +1057,15 @@ export class SessionManager {
 		this._persist(entry);
 	}
 
-	/** Append a message as child of current leaf, then advance leaf. Returns entry id.
+	/**
+	 * Append a message as child of current leaf, then advance leaf. Returns entry id.
 	 * Does not allow writing CompactionSummaryMessage and BranchSummaryMessage directly.
 	 * Reason: we want these to be top-level entries in the session, not message session entries,
 	 * so it is easier to find them.
 	 * These need to be appended via appendCompaction() and appendBranchSummary() methods.
+	 *
+	 * AgentSession 在 message_end 时调用这里；消息成为当前 leaf 的子节点后，后续上下文恢复
+	 * 就会沿 parentId 链路看到它。
 	 */
 	appendMessage(message: Message | CustomMessage | BashExecutionMessage): string {
 		const entry: SessionMessageEntry = {
@@ -1356,6 +1369,8 @@ export class SessionManager {
 	 * Moves the leaf pointer to the specified entry. The next appendXXX() call
 	 * will create a child of that entry, forming a new branch. Existing entries
 	 * are not modified or deleted.
+	 *
+	 * 分支只移动 leaf，不修改或删除旧 entry；下一次追加自然会从该历史节点创建新分支。
 	 */
 	branch(branchFromId: string): void {
 		if (!this.byId.has(branchFromId)) {

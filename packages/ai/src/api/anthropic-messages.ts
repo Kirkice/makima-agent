@@ -384,6 +384,10 @@ function consumeLine(text: string): { line: string; rest: string } | null {
 	};
 }
 
+/**
+ * 将网络层任意分块的 SSE 字节流还原为完整事件。buffer 用来承接跨 chunk 的半行，
+ * 这一层只负责协议解码，不感知 Anthropic 的具体事件语义。
+ */
 async function* iterateSseMessages(
 	body: ReadableStream<Uint8Array>,
 	signal?: AbortSignal,
@@ -443,6 +447,7 @@ async function* iterateSseMessages(
 	}
 }
 
+/** 将 SSE 的 data JSON 转为 Anthropic 原生事件，并校验 message_start/message_stop 成对出现。 */
 async function* iterateAnthropicEvents(
 	response: Response,
 	signal?: AbortSignal,
@@ -484,6 +489,13 @@ async function* iterateAnthropicEvents(
 	}
 }
 
+/**
+ * Anthropic Provider Adapter: converts the unified Context into a Messages API request and maps
+ * provider events into pi-ai's AssistantMessageEventStream for the Agent Loop.
+ *
+ * Anthropic Provider Adapter：把统一 Context 编码为 Messages API 请求，再把供应商事件
+ * 映射成 pi-ai 的 AssistantMessageEventStream，供 Agent Loop 使用。
+ */
 export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 	model: Model<"anthropic-messages">,
 	context: Context,
@@ -514,6 +526,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			let client: Anthropic;
 			let isOAuth: boolean;
 
+			// client 可由宿主注入；否则这里统一处理 API key/OAuth、Copilot header 和缓存会话信息。
 			if (options?.client) {
 				client = options.client;
 				isOAuth = false;
@@ -570,11 +583,15 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
 			const blocks = output.content as Block[];
 
+			// From this point on, only provider events are mapped to unified events; the Agent Loop
+			// does not need to know Anthropic's event names.
+			// 从这里开始只做“供应商事件 -> 统一事件”的转换，Agent Loop 不需要知道 Anthropic 事件名。
 			for await (const event of iterateAnthropicEvents(response, options?.signal)) {
 				if (event.type === "message_start") {
 					output.responseId = event.message.id;
 					// Capture initial token usage from message_start event
 					// This ensures we have input token counts even if the stream is aborted early
+					// 从 message_start 记录初始 token 使用量，即使流提前中止，也能保留输入 token 统计。
 					output.usage.input = event.message.usage.input_tokens || 0;
 					output.usage.output = event.message.usage.output_tokens || 0;
 					output.usage.cacheRead = event.message.usage.cache_read_input_tokens || 0;
@@ -652,6 +669,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 							});
 						}
 					} else if (event.delta.type === "input_json_delta") {
+						// Tool arguments are streamed as JSON; partialJson is only a parse buffer and must not leak into the final transcript.
+						// tool 参数也是流式 JSON；partialJson 只是解析缓冲，不能泄漏到最终 transcript。
 						const index = blocks.findIndex((b) => b.index === event.index);
 						const block = blocks[index];
 						if (block && block.type === "toolCall") {
@@ -715,6 +734,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					}
 					// Only update usage fields if present (not null).
 					// Preserves input_tokens from message_start when proxies omit it in message_delta.
+					// 仅在字段存在且不为 null 时更新 usage，避免代理在 message_delta 中省略字段时覆盖已有统计。
 					if (event.usage) {
 						if (event.usage.input_tokens != null) {
 							output.usage.input = event.usage.input_tokens;
@@ -748,6 +768,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				throw new Error("Request was aborted");
 			}
 
+			// The provider stream must produce an explicit stop reason; abort/error are normalized into pi-ai error events.
+			// 供应商流必须有明确 stop reason；abort/error 统一转换为 pi-ai 的 error 事件。
 			if (output.stopReason === "pending") {
 				throw new Error("Anthropic stream ended without a stop reason");
 			}

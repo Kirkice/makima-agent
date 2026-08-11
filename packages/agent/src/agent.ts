@@ -213,6 +213,10 @@ export class Agent {
 	/** Tool execution strategy for assistant messages that contain multiple tool calls. */
 	public toolExecution: ToolExecutionMode;
 
+	/**
+	 * Agent 是有状态的运行时：保存 transcript、队列和当前流式运行，并把底层 loop 事件
+	 * 转换成对外可观察的状态。AgentSession 会在更上层负责 CLI 编排和持久化。
+	 */
 	constructor(options: AgentOptions) {
 		// Older compiled consumers may omit options or streamFn even though the current API requires them.
 		const runtimeOptions: Partial<AgentOptions> = options ?? {};
@@ -344,9 +348,18 @@ export class Agent {
 		this.clearSteeringQueue();
 	}
 
-	/** Start a new prompt from text, a single message, or a batch of messages. */
+	/**
+	 * Start a new prompt from text, a single message, or a batch of messages.
+	 *
+	 * 从新用户输入启动一轮完整 Agent Loop；如果已有运行，消息必须通过 steer/followUp 排队。
+	 */
 	async prompt(message: AgentMessage | AgentMessage[]): Promise<void>;
 	async prompt(input: string, images?: ImageContent[]): Promise<void>;
+	/**
+	 * Start a new prompt from text, a single message, or a batch of messages.
+	 *
+	 * 从新用户输入启动一轮完整 Agent Loop；如果已有运行，消息必须通过 steer/followUp 排队。
+	 */
 	async prompt(input: string | AgentMessage | AgentMessage[], images?: ImageContent[]): Promise<void> {
 		if (this.activeRun) {
 			throw new Error(
@@ -357,7 +370,18 @@ export class Agent {
 		await this.runPromptMessages(messages);
 	}
 
-	/** Continue from the current transcript. The last message must be a user or tool-result message. */
+	/**
+	 * Continue from the current transcript. The last message must be a user or tool-result message.
+	 *
+	 * 从当前 transcript 继续执行。通常是在 toolResult 已写入、需要重试，或上层准备好下一轮
+	 * 上下文之后调用；assistant 结尾时则优先消费 steering/follow-up 队列。
+	 */
+	/**
+	 * Continue from the current transcript. The last message must be a user or tool-result message.
+	 *
+	 * 从当前 transcript 继续执行。通常是在 toolResult 已写入、需要重试，或上层准备好下一轮
+	 * 上下文之后调用；assistant 结尾时则优先消费 steering/follow-up 队列。
+	 */
 	async continue(): Promise<void> {
 		if (this.activeRun) {
 			throw new Error("Agent is already processing. Wait for completion before continuing.");
@@ -406,6 +430,7 @@ export class Agent {
 		return [{ role: "user", content, timestamp: Date.now() }];
 	}
 
+	/** 将 Agent 状态快照交给通用 loop，避免 loop 直接持有可变的 Agent 内部状态。 */
 	private async runPromptMessages(
 		messages: AgentMessage[],
 		options: { skipInitialSteeringPoll?: boolean } = {},
@@ -434,6 +459,7 @@ export class Agent {
 		});
 	}
 
+	/** 当前运行使用快照；消息和工具数组复制后，loop 可在本轮内安全追加消息。 */
 	private createContextSnapshot(): AgentContext {
 		return {
 			systemPrompt: this._state.systemPrompt,
@@ -472,6 +498,7 @@ export class Agent {
 			convertToLlm: this.convertToLlm,
 			transformContext: this.transformContext,
 			getApiKey: this.getApiKey,
+			// steering 在下一次 assistant 请求前注入；follow-up 只在本轮原本准备停止时读取。
 			getSteeringMessages: async () => {
 				if (skipInitialSteeringPoll) {
 					skipInitialSteeringPoll = false;
@@ -483,6 +510,7 @@ export class Agent {
 		};
 	}
 
+	/** 建立本轮 AbortSignal 和 streaming 状态，并保证异常、收尾和 idle 等待都走同一生命周期。 */
 	private async runWithLifecycle(executor: (signal: AbortSignal) => Promise<void>): Promise<void> {
 		if (this.activeRun) {
 			throw new Error("Agent is already processing.");
@@ -552,6 +580,7 @@ export class Agent {
 				break;
 
 			case "message_end":
+				// 流式 partial message 到此才成为稳定 transcript；上层随后可安全持久化它。
 				this._state.streamingMessage = undefined;
 				this._state.messages.push(event.message);
 				break;

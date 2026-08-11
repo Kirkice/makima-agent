@@ -374,6 +374,10 @@ export class AgentSession {
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 	private _systemPromptOverride?: string;
 
+	/**
+	 * AgentSession 是 CLI 模式与 Agent core 之间的编排层：订阅事件、处理扩展和工具 hook，
+	 * 决定 retry/compaction，并把稳定消息交给 SessionManager 持久化。
+	 */
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
@@ -606,7 +610,10 @@ export class AgentSession {
 	// Track last assistant message for auto-compaction check
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
 
-	/** Internal handler for agent events - shared by subscribe and reconnect */
+	/**
+	 * Agent 的所有生命周期事件先经过这里，再同时分发给扩展/UI 和 SessionManager。
+	 * 因而 message_end 是“流式消息已经稳定，可以落盘”的关键边界。
+	 */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
@@ -636,6 +643,7 @@ export class AgentSession {
 		// Notify all listeners
 		this._emit(event.type === "agent_end" ? { ...event, willRetry: this._willRetryAfterAgentEnd(event) } : event);
 
+		// 只有 message_end 才持久化，避免把仍在增长的 partial assistant message 写进会话树。
 		// Handle session persistence
 		if (event.type === "message_end") {
 			// Check if this is a custom message from extensions
@@ -1060,6 +1068,10 @@ export class AgentSession {
 	// Prompting
 	// =========================================================================
 
+	/**
+	 * 一次用户输入可能触发多次底层 loop：首次 prompt 结束后，retry、compaction 或队列消息
+	 * 会通过 continue() 接着跑，直到没有后续工作。
+	 */
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
 		this._isAgentRunActive = true;
 		try {
@@ -1074,6 +1086,7 @@ export class AgentSession {
 		}
 	}
 
+	/** 按 retry -> compaction -> queued message 的顺序决定是否启动下一次 Agent Loop。 */
 	private async _handlePostAgentRun(): Promise<boolean> {
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
@@ -1112,6 +1125,13 @@ export class AgentSession {
 	 * - Validates model and API key before sending (when not streaming)
 	 * @throws Error if streaming and no streamingBehavior specified
 	 * @throws Error if no model selected or no API key available (when not streaming)
+	 *
+	 * It also handles extension commands/templates and validates model authentication before
+	 * entering the shared Agent lifecycle.
+	 *
+	 * CLI 的文本输入在这里被转换为 AgentMessage；运行中则根据 streamingBehavior 进入 steer
+	 * 或 follow-up 队列，而不是并发调用 Agent.prompt()。
+	 * 同时会处理扩展命令、模板展开，并在真正进入 Agent 生命周期前校验模型和认证。
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;

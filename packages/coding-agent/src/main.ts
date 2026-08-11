@@ -606,6 +606,8 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 
+	// main 只负责组装运行时：解析 CLI、确定 session，再按目标 cwd 创建服务和 AgentSession。
+	// 具体的 Agent Loop 与 I/O 由下游 runtime/mode 负责。
 	const parsed = parseArgs(args);
 	if (parsed.diagnostics.length > 0) {
 		for (const d of parsed.diagnostics) {
@@ -675,6 +677,8 @@ export async function main(args: string[], options?: MainOptions) {
 		(parsed.sessionDir ? normalizePath(parsed.sessionDir) : undefined) ??
 		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
 		startupSettingsManager.getSessionDir();
+	// 先解析 session 再创建运行时服务：被 resume 的 session 可能属于另一个项目，
+	// 因此 settings、extensions、模型和 provider 都必须绑定到 sessionManager.getCwd()。
 	let sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
 	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
@@ -712,6 +716,8 @@ export async function main(args: string[], options?: MainOptions) {
 	const resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
 	const resolvedPromptTemplatePaths = resolveCliPaths(cwd, parsed.promptTemplates);
 	const resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
+	// 这是 CLI 到 AgentSession 的装配工厂：先创建 cwd-bound services，再把模型、工具和
+	// SessionManager 交给 createAgentSessionFromServices 组合成可运行的 session。
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
 		agentDir,
@@ -840,6 +846,8 @@ export async function main(args: string[], options?: MainOptions) {
 		};
 	};
 	time("createRuntime");
+	// runtime 同时持有 services、AgentSession 和 SessionManager；interactive、print、RPC
+	// 只在最后选择不同的 I/O 外壳，共享下面这套 Agent 生命周期。
 	const runtime = await createAgentSessionRuntime(createRuntime, {
 		cwd: sessionManager.getCwd(),
 		agentDir,
@@ -865,6 +873,8 @@ export async function main(args: string[], options?: MainOptions) {
 		process.exit(0);
 	}
 
+	// 非 RPC 模式可把管道、文件参数和命令行文本合并成初始 prompt；RPC 的 stdin 属于协议通道，
+	// 不能被当作普通用户输入读取。
 	// Read piped stdin content (if any) - skip for RPC mode which uses stdin for JSON-RPC
 	let stdinContent: string | undefined;
 	if (appMode !== "rpc") {
@@ -920,6 +930,7 @@ export async function main(args: string[], options?: MainOptions) {
 			.finally(() => clearTimeout(timeout));
 	}
 
+	// 到这里底层 runtime 已经准备完成，模式分支只决定输入输出方式，不改变 Agent/Session 语义。
 	if (appMode === "rpc") {
 		printTimings();
 		await runRpcMode(runtime);
