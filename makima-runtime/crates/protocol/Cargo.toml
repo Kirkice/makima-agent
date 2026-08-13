@@ -6,5 +6,6 @@ license.workspace = true
 description = "Pi Agent Rust/TypeScript 共享协议模型"
 
 [dependencies]
+ciborium.workspace = true
 serde.workspace = true
 serde_json.workspace = true

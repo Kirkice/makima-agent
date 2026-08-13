@@ -100,6 +100,31 @@ export type ThinkingContent = Static<typeof ThinkingContentSchema>;
 export type ImageContent = Static<typeof ImageContentSchema>;
 export type ToolCallContent = Static<typeof ToolCallContentSchema>;
 
+/**
+ * Provider Host 与 Rust Core 间传递的已完成工具调用。
+ *
+ * 这不是 Provider SDK 的内部 ToolCall：字段只包含可 JSON 序列化的数据，因而可被
+ * 回放 fixture、RPC 传输和 Tool Runtime 共同消费。
+ */
+export const ToolCallSchema = StrictObject({
+	toolCallId: IdSchema,
+	toolName: IdSchema,
+	input: JsonValueSchema,
+});
+export type ToolCall = Static<typeof ToolCallSchema>;
+
+/** Tool Runtime 执行完一次调用后返回的稳定结果。 */
+export const ToolResultSchema = StrictObject({
+	toolCallId: IdSchema,
+	toolName: IdSchema,
+	input: JsonValueSchema,
+	content: Type.Array(ToolContentSchema),
+	details: Type.Optional(JsonValueSchema),
+	isError: Type.Boolean(),
+	timestamp: TimestampSchema,
+});
+export type ToolResult = Static<typeof ToolResultSchema>;
+
 export const UsageSchema = StrictObject({
 	input: Type.Integer({ minimum: 0 }),
 	output: Type.Integer({ minimum: 0 }),
@@ -199,6 +224,61 @@ export type UserTranscriptItem = Static<typeof UserTranscriptItemSchema>;
 export type AssistantTranscriptItem = Static<typeof AssistantTranscriptItemSchema>;
 export type ToolTranscriptItem = Static<typeof ToolTranscriptItemSchema>;
 export type TranscriptItem = Static<typeof TranscriptItemSchema>;
+
+/**
+ * 发往 Provider Host 的一次不可变请求快照。
+ *
+ * Host 只能依据这个 DTO 选择 Provider 并建立流；认证、SDK 选项与网络传输都留在
+ * Host 进程，不能反向泄漏到 Rust Core。
+ */
+export const ProviderRequestSchema = StrictObject({
+	requestId: IdSchema,
+	model: ModelRefSchema,
+	systemPrompt: Type.String(),
+	messages: Type.Array(TranscriptItemSchema),
+	tools: Type.Array(
+		StrictObject({
+			name: IdSchema,
+			description: Type.String(),
+			inputSchema: JsonValueSchema,
+		}),
+	),
+});
+export type ProviderRequest = Static<typeof ProviderRequestSchema>;
+
+/**
+ * Provider Host 归一化后的流事件。
+ *
+ * `done` 与 `error` 均携带终态时间；最终 assistant 内容由 Core 根据已收到的增量和
+ * `tool_call_end` 构造，以便 Host、回放和状态机共享同一可观测事件序列。
+ */
+export const ProviderStreamEventSchema = Type.Union([
+	StrictObject({ type: Type.Literal("start"), messageId: IdSchema, timestamp: TimestampSchema }),
+	StrictObject({ type: Type.Literal("text_delta"), contentIndex: Type.Integer({ minimum: 0 }), delta: Type.String() }),
+	StrictObject({
+		type: Type.Literal("thinking_delta"),
+		contentIndex: Type.Integer({ minimum: 0 }),
+		delta: Type.String(),
+		redacted: Type.Optional(Type.Boolean()),
+	}),
+	StrictObject({
+		type: Type.Literal("tool_call_delta"),
+		contentIndex: Type.Integer({ minimum: 0 }),
+		delta: Type.String(),
+	}),
+	StrictObject({
+		type: Type.Literal("tool_call_end"),
+		contentIndex: Type.Integer({ minimum: 0 }),
+		toolCall: ToolCallSchema,
+	}),
+	StrictObject({
+		type: Type.Literal("done"),
+		timestamp: TimestampSchema,
+		stopReason: Type.Union([Type.Literal("stop"), Type.Literal("length"), Type.Literal("toolUse")]),
+	}),
+	StrictObject({ type: Type.Literal("error"), timestamp: TimestampSchema, message: Type.String({ minLength: 1 }) }),
+]);
+export type ProviderStreamEvent = Static<typeof ProviderStreamEventSchema>;
 
 /** Normalized incremental activity. Snapshots remain authoritative. */
 export const TranscriptProgressSchema = Type.Union([

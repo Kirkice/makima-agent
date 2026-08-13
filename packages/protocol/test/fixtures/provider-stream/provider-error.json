@@ -1,0 +1,31 @@
+{
+  "name": "provider-error",
+  "events": [
+    {
+      "type": "start",
+      "messageId": "assistant-error-1",
+      "timestamp": 10
+    },
+    {
+      "type": "text_delta",
+      "contentIndex": 0,
+      "delta": "部分输出"
+    },
+    {
+      "type": "error",
+      "timestamp": 11,
+      "message": "网络连接中断"
+    }
+  ],
+  "expected": {
+    "eventNames": [
+      "message_start",
+      "message_update",
+      "message_end",
+      "turn_end",
+      "agent_end"
+    ],
+    "assistantText": "部分输出",
+    "assistantStatus": "error"
+  }
+}

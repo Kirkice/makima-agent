@@ -11,6 +11,10 @@ import {
 	type ClientMessage,
 	ClientMessageSchema,
 	PROTOCOL_VERSION,
+	type ProviderRequest,
+	ProviderRequestSchema,
+	type ProviderStreamEvent,
+	ProviderStreamEventSchema,
 	type ServerMessage,
 	ServerMessageSchema,
 } from "./schemas.ts";
@@ -48,6 +52,22 @@ export function parseClientMessage(value: unknown): ClientMessage {
 export function parseServerMessage(value: unknown): ServerMessage {
 	if (!isProtocolValue(value) || !Check(ServerMessageSchema, value)) {
 		throw new ProtocolValidationError("Invalid server protocol message");
+	}
+	return value;
+}
+
+/** 验证 Rust Core 发给 Provider Host 的不可变请求。 */
+export function parseProviderRequest(value: unknown): ProviderRequest {
+	if (!isProtocolValue(value) || !Check(ProviderRequestSchema, value)) {
+		throw new ProtocolValidationError("Invalid provider request");
+	}
+	return value;
+}
+
+/** 验证 Provider Host 发给 Rust Core 的单个归一化流事件。 */
+export function parseProviderStreamEvent(value: unknown): ProviderStreamEvent {
+	if (!isProtocolValue(value) || !Check(ProviderStreamEventSchema, value)) {
+		throw new ProtocolValidationError("Invalid provider stream event");
 	}
 	return value;
 }

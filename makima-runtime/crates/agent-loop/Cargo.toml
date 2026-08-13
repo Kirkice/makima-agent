@@ -1,0 +1,13 @@
+[package]
+name = "agent-loop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pi Agent Rust 回合状态机与 Provider 流适配边界"
+
+[dependencies]
+protocol = { path = "../protocol" }
+
+[dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

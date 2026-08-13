@@ -13,6 +13,8 @@ import {
 	PROTOCOL_VERSION,
 	ProtocolValidationError,
 	parseClientMessage,
+	parseProviderRequest,
+	parseProviderStreamEvent,
 	parseServerMessage,
 	type ServerHello,
 	type ServerMessage,
@@ -318,6 +320,43 @@ describe("protocol validation", () => {
 		expect(thrown).toBeInstanceOf(ProtocolValidationError);
 		expect(Object.hasOwn(thrown as object, "value")).toBe(false);
 		expect((thrown as Error).message.length).toBeLessThan(1_000);
+	});
+	test("validates Provider Host request and stream DTOs independently from server RPC", () => {
+		const request = {
+			requestId: "provider-request-1",
+			model: { provider: "test", id: "model" },
+			systemPrompt: "Be concise.",
+			messages: [
+				{
+					id: "user-1",
+					role: "user",
+					content: [{ type: "text", text: "hello" }],
+					timestamp: 1,
+				},
+			],
+			tools: [{ name: "echo", description: "Echo text", inputSchema: { type: "object" } }],
+		};
+		expect(parseProviderRequest(request)).toEqual(request);
+		expect(parseProviderStreamEvent({ type: "start", messageId: "assistant-1", timestamp: 2 })).toEqual({
+			type: "start",
+			messageId: "assistant-1",
+			timestamp: 2,
+		});
+		expect(
+			parseProviderStreamEvent({
+				type: "tool_call_end",
+				contentIndex: 1,
+				toolCall: { toolCallId: "call-1", toolName: "echo", input: { value: "hello" } },
+			}),
+		).toEqual({
+			type: "tool_call_end",
+			contentIndex: 1,
+			toolCall: { toolCallId: "call-1", toolName: "echo", input: { value: "hello" } },
+		});
+		expect(() => parseProviderRequest({ ...request, credential: "secret" })).toThrow(ProtocolValidationError);
+		expect(() => parseProviderStreamEvent({ type: "done", timestamp: 3, stopReason: "error" })).toThrow(
+			ProtocolValidationError,
+		);
 	});
 });
 

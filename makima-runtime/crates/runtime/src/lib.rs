@@ -4,7 +4,13 @@
 //! 不读取 TUI。这样可以先验证 Rust Core 的边界和数据契约，再逐步迁移
 //! Agent Loop、Session Store、Tool Runtime 与 Sandbox。
 
-use protocol::{Command, ModelRef, ProtocolError, SessionPhase, SessionSnapshot};
+/// AgentSession 领域层及其外部能力端口。
+pub mod agent_session;
+
+use protocol::{
+    Command, ModelRef, ProtocolError, ProtocolErrorCode, SessionPhase, SessionSnapshot,
+    ThinkingLevel,
+};
 use session::{JsonlSessionStore, SessionStoreError};
 
 /// 一个最小的内存 Session。
@@ -34,11 +40,19 @@ impl SessionRuntime {
         Self {
             snapshot: SessionSnapshot {
                 id: id.into(),
+                name: None,
                 cwd: cwd.into(),
+                created_at: 0,
+                updated_at: 0,
                 phase: SessionPhase::Idle,
                 model,
-                thinking_level: "medium".to_owned(),
+                thinking_level: ThinkingLevel::Medium,
+                attached: false,
+                locked: false,
                 revision: 0,
+                transcript: Vec::new(),
+                queued_steer: Vec::new(),
+                queued_steer_count: 0,
             },
         }
     }
@@ -70,13 +84,15 @@ impl SessionRuntime {
                 Ok(self.snapshot())
             }
             Command::Prompt { .. } | Command::Steer { .. } => Err(ProtocolError {
-                code: "not_implemented".to_owned(),
+                code: ProtocolErrorCode::NotImplemented,
                 message: "Rust Agent Loop 尚未接管 prompt 或 steer；请使用 TypeScript fallback。"
                     .to_owned(),
+                details: None,
             }),
             _ => Err(ProtocolError {
-                code: "invalid_request".to_owned(),
+                code: ProtocolErrorCode::InvalidRequest,
                 message: "该命令需要由上层 Session Manager 处理。".to_owned(),
+                details: None,
             }),
         }
     }
@@ -85,7 +101,7 @@ impl SessionRuntime {
 #[cfg(test)]
 mod tests {
     use super::SessionRuntime;
-    use protocol::{Command, ModelRef, SessionPhase};
+    use protocol::{Command, ModelRef, ProtocolErrorCode, SessionPhase, ThinkingLevel};
 
     fn runtime() -> SessionRuntime {
         SessionRuntime::new(
@@ -104,11 +120,11 @@ mod tests {
         let updated = runtime
             .execute(Command::SetThinking {
                 session_id: "session-1".to_owned(),
-                thinking_level: "high".to_owned(),
+                thinking_level: ThinkingLevel::High,
             })
             .expect("control command should succeed");
 
-        assert_eq!(updated.thinking_level, "high");
+        assert_eq!(updated.thinking_level, ThinkingLevel::High);
         assert_eq!(updated.revision, 1);
         assert_eq!(runtime.snapshot().phase, SessionPhase::Idle);
     }
@@ -123,6 +139,6 @@ mod tests {
             })
             .expect_err("prompt must remain on the fallback path");
 
-        assert_eq!(error.code, "not_implemented");
+        assert_eq!(error.code, ProtocolErrorCode::NotImplemented);
     }
 }

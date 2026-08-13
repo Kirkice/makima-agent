@@ -1,0 +1,50 @@
+{
+  "name": "tool-call",
+  "events": [
+    {
+      "type": "start",
+      "messageId": "assistant-tool-1",
+      "timestamp": 20
+    },
+    {
+      "type": "tool_call_delta",
+      "contentIndex": 0,
+      "delta": "{\"value\":\"hello\"}"
+    },
+    {
+      "type": "tool_call_end",
+      "contentIndex": 0,
+      "toolCall": {
+        "toolCallId": "call-1",
+        "toolName": "echo",
+        "input": {
+          "value": "hello"
+        }
+      }
+    },
+    {
+      "type": "done",
+      "timestamp": 21,
+      "stopReason": "toolUse"
+    }
+  ],
+  "expected": {
+    "eventNames": [
+      "message_start",
+      "message_update",
+      "message_update",
+      "message_end",
+      "tool_execution_start",
+      "tool_execution_end",
+      "turn_end",
+      "agent_end"
+    ],
+    "toolCall": {
+      "toolCallId": "call-1",
+      "toolName": "echo",
+      "input": {
+        "value": "hello"
+      }
+    }
+  }
+}

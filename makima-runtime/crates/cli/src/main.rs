@@ -4,7 +4,7 @@
 //! 在 Agent Loop 尚未迁移完成前，默认不接管完整用户流程，避免破坏现有
 //! TypeScript CLI 的功能。后续应增加显式的 `--runtime rust|ts|auto` 选择。
 
-use protocol::{Command, ModelRef};
+use protocol::{Command, ModelRef, ThinkingLevel};
 use runtime::SessionRuntime;
 use session::JsonlSessionStore;
 
@@ -23,7 +23,7 @@ fn main() {
     // Loop 通过 conformance tests 验证完成。
     let command = Command::SetThinking {
         session_id: "bootstrap-session".to_owned(),
-        thinking_level: "medium".to_owned(),
+        thinking_level: ThinkingLevel::Medium,
     };
 
     match runtime.execute(command) {

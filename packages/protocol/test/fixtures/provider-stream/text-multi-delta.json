@@ -1,0 +1,36 @@
+{
+  "name": "text-multi-delta",
+  "events": [
+    {
+      "type": "start",
+      "messageId": "assistant-1",
+      "timestamp": 2
+    },
+    {
+      "type": "text_delta",
+      "contentIndex": 0,
+      "delta": "你"
+    },
+    {
+      "type": "text_delta",
+      "contentIndex": 0,
+      "delta": "好"
+    },
+    {
+      "type": "done",
+      "timestamp": 3,
+      "stopReason": "stop"
+    }
+  ],
+  "expected": {
+    "eventNames": [
+      "message_start",
+      "message_update",
+      "message_update",
+      "message_end",
+      "turn_end",
+      "agent_end"
+    ],
+    "assistantText": "你好"
+  }
+}
