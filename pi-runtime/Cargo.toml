@@ -1,9 +1,19 @@
 [workspace]
 resolver = "2"
+# 每个功能模块都是独立 crate；Cargo 根据下方 crate manifest 中声明的依赖图
+# 自动按正确顺序编译，无需维护类似 C++ 工程的手工构建顺序。
 members = [
-    "crates/pi-protocol",
-    "crates/pi-core",
-    "crates/pi-cli",
+    "crates/protocol",
+    "crates/session",
+    "crates/runtime",
+    "crates/cli",
+]
+# 日常 `cargo test` / `cargo check` 覆盖当前已落地模块。新增 crate 后需显式加入。
+default-members = [
+    "crates/protocol",
+    "crates/session",
+    "crates/runtime",
+    "crates/cli",
 ]
 
 [workspace.package]

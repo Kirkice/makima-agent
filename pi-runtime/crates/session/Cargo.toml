@@ -1,9 +1,9 @@
 [package]
-name = "pi-protocol"
+name = "session"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Pi Agent Rust/TypeScript 共享协议模型"
+description = "Pi Agent Session Store 的 JSONL 持久化边界"
 
 [dependencies]
 serde.workspace = true

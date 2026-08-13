@@ -1,9 +1,10 @@
 [package]
-name = "pi-core"
+name = "runtime"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Pi Agent Rust 核心运行时的第一阶段骨架"
 
 [dependencies]
-pi-protocol = { path = "../pi-protocol" }
+protocol = { path = "../protocol" }
+session = { path = "../session" }

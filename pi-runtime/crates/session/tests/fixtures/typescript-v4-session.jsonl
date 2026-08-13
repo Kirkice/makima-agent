@@ -1,0 +1,8 @@
+{"kind":"header","version":4,"id":"ts-fixture-session","createdAt":1700000000000,"cwd":"C:/workspace/demo","parentSessionId":"parent-session","metadata":{"source":"typescript-fixture"}}
+{"kind":"entry","lane":"main","id":"root","type":"message","parentId":null,"seq":1,"timestamp":1700000000001,"message":{"role":"user","content":"hello"}}
+{"kind":"entry","lane":"main","id":"reply","type":"message","parentId":"root","seq":2,"timestamp":1700000000002,"message":{"role":"assistant","content":"world"}}
+{"kind":"record","id":"run-1","lane":"main","type":"operation_started","seq":3,"timestamp":1700000000003,"intent":{"kind":"prompt"}}
+{"kind":"record","id":"usage-1","lane":"main","type":"usage","seq":4,"timestamp":1700000000004,"usage":{"cacheRead":3,"input":5,"cacheWrite":2,"totalTokens":10,"cost":{"total":0.25}},"cause":"assistant","runId":"run-1","entryId":"reply","attempt":1,"stopReason":"stop"}
+{"kind":"record","id":"finished-1","lane":"main","type":"operation_finished","seq":5,"timestamp":1700000000005,"runId":"run-1"}
+{"kind":"fact","seq":6,"fact":"name","name":"TypeScript fixture"}
+{"kind":"fact","seq":7,"fact":"label","targetId":"reply","label":"keep"}

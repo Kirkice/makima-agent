@@ -4,7 +4,8 @@
 //! 不读取 TUI。这样可以先验证 Rust Core 的边界和数据契约，再逐步迁移
 //! Agent Loop、Session Store、Tool Runtime 与 Sandbox。
 
-use pi_protocol::{Command, ModelRef, ProtocolError, SessionPhase, SessionSnapshot};
+use protocol::{Command, ModelRef, ProtocolError, SessionPhase, SessionSnapshot};
+use session::{JsonlSessionStore, SessionStoreError};
 
 /// 一个最小的内存 Session。
 ///
@@ -17,6 +18,17 @@ pub struct SessionRuntime {
 }
 
 impl SessionRuntime {
+    /// 将 Session 的持久化边界暴露给上层编排器。
+    ///
+    /// 该方法只负责打开 JSONL Store，不会改变当前 SessionRuntime 的内存
+    /// 快照，也不会自动接管 prompt。这样可以在迁移期间由 TypeScript 继续
+    /// 负责完整 Agent 流程，而 Rust 只逐步接管持久化。
+    pub fn open_store(
+        path: impl Into<std::path::PathBuf>,
+    ) -> Result<JsonlSessionStore, SessionStoreError> {
+        JsonlSessionStore::open(path)
+    }
+
     /// 创建一个新的 Session。
     pub fn new(id: impl Into<String>, cwd: impl Into<String>, model: ModelRef) -> Self {
         Self {
@@ -73,7 +85,7 @@ impl SessionRuntime {
 #[cfg(test)]
 mod tests {
     use super::SessionRuntime;
-    use pi_protocol::{Command, ModelRef, SessionPhase};
+    use protocol::{Command, ModelRef, SessionPhase};
 
     fn runtime() -> SessionRuntime {
         SessionRuntime::new(
