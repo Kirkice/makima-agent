@@ -1,13 +1,13 @@
 # Pi Agent Rust Runtime
 
-`pi-runtime` 是 Pi Agent 的 Rust 运行时工作区。它采用一个 Cargo workspace 管理多个独立 crate，等价于 C++ 工程中“一个解决方案包含多个项目”的组织方式。
+`makima-runtime` 是 Makima Agent 的 Rust 运行时工作区。它采用一个 Cargo workspace 管理多个独立 crate，等价于 C++ 工程中“一个解决方案包含多个项目”的组织方式。
 
 每个 crate 都有自己的 [`Cargo.toml`](Cargo.toml)、源码和测试，可以独立执行 `cargo test -p <crate>`；根 Cargo workspace 负责统一版本、共享依赖和全量构建。Cargo 会从 crate manifest 的依赖声明自动计算构建顺序，不需要维护手工顺序脚本。
 
 ## 当前目录
 
 ```text
-pi-runtime/
+makima-runtime/
 ├── Cargo.toml                 # workspace、共享依赖与默认构建成员
 ├── crates/
 │   ├── protocol/              # 跨语言 Command / Event / Snapshot 契约
@@ -54,16 +54,16 @@ Provider、扩展与 TUI 保持在 TypeScript Host，通过版本化协议与 Ru
 
 ```text
 # 构建当前 workspace；Cargo 自动先构建依赖 crate。
-cargo check --manifest-path pi-runtime/Cargo.toml
+cargo check --manifest-path makima-runtime/Cargo.toml
 
 # 验证全部默认成员。
-cargo test --manifest-path pi-runtime/Cargo.toml
+cargo test --manifest-path makima-runtime/Cargo.toml
 
 # 仅验证 Session Store，适合模块级开发。
-cargo test --manifest-path pi-runtime/Cargo.toml -p session
+cargo test --manifest-path makima-runtime/Cargo.toml -p session
 
 # 对所有 crate 执行静态检查。
-cargo clippy --manifest-path pi-runtime/Cargo.toml --workspace --all-targets --all-features -- -D warnings
+cargo clippy --manifest-path makima-runtime/Cargo.toml --workspace --all-targets --all-features -- -D warnings
 ```
 
 ## 迁移状态
