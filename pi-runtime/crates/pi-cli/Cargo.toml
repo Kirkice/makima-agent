@@ -1,0 +1,14 @@
+[package]
+name = "pi-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pi Agent Rust CLI 外壳"
+
+[[bin]]
+name = "pi-rust"
+path = "src/main.rs"
+
+[dependencies]
+pi-core = { path = "../pi-core" }
+pi-protocol = { path = "../pi-protocol" }

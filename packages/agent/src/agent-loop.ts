@@ -316,15 +316,22 @@ async function streamAssistantResponse(
 ): Promise<AssistantMessage> {
 	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
 	// 这里是 provider 边界：内部 AgentMessage 先转换为通用 LLM Message，再交给 StreamFn。
+	// transformContext 通常用于压缩、裁剪或重排上下文；它仍返回 AgentMessage[]，所以这一步
+	// 还没有进入 Provider 专属协议。
 	let messages = context.messages;
 	if (config.transformContext) {
+		// 注意：这里传入 signal，使上下文处理在请求被取消时也能及时停止。
 		messages = await config.transformContext(messages, signal);
 	}
 
 	// Convert to LLM-compatible messages (AgentMessage[] → Message[])
+	// Agent 内部可能包含扩展消息、bash 消息等 Agent 专属类型；convertToLlm 负责把它们
+	// 投影为 pi-ai 能识别的 UserMessage、AssistantMessage 和 ToolResultMessage。
 	const llmMessages = await config.convertToLlm(messages);
 
 	// Build LLM context
+	// 这里把一次请求的三部分重新组合起来：稳定的 systemPrompt、动态的 messages，以及
+	// 当前激活的 tools。Provider Adapter 只接收这个统一 Context，不需要了解 Agent 内部状态。
 	const llmContext: Context = {
 		systemPrompt: context.systemPrompt,
 		messages: llmMessages,
@@ -332,22 +339,32 @@ async function streamAssistantResponse(
 	};
 
 	// Resolve API key (important for expiring tokens)
+	// 每次请求都可以重新获取凭证，而不是永久复用 Agent 启动时的 key；这适用于会过期的 OAuth
+	// token。若动态获取不到，则回退到 config.apiKey。
 	const resolvedApiKey =
 		(config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
 
+	// StreamFn 是 Agent Loop 与 Provider Adapter 的统一边界：传入模型、Context 和运行选项，
+	// 返回供应商事件已经归一化的 AssistantMessageEventStream。此处不直接处理 HTTP 或 SSE。
 	const response = await streamFunction(config.model, llmContext, {
 		...config,
 		apiKey: resolvedApiKey,
 		signal,
 	});
 
+	// partialMessage 是正在生成中的 assistant 快照。Provider 每收到一个增量事件，都会带上
+	// 当前 partial；本函数用它更新 Agent context，确保工具调用参数和文本都能实时累积。
 	let partialMessage: AssistantMessage | null = null;
+	// start 事件可能不存在于某些异常/兼容流中。这个标记用于区分“已经插入 partial”与“只收到最终消息”。
 	let addedPartial = false;
 
 	// Provider 的增量事件在这里折叠为一个不断更新的 partial assistant message。
+	// Agent Loop 不关心 Anthropic SSE 或 OpenAI chunk 的原始事件名，只消费 pi-ai 的统一事件。
 	for await (const event of response) {
 		switch (event.type) {
 			case "start":
+				// start 表示一次 assistant 响应开始。先把初始 partial 放入 context，后续事件直接
+				// 原位替换最后一条消息，避免把每个 token 都追加成一条独立 transcript。
 				partialMessage = event.partial;
 				context.messages.push(partialMessage);
 				addedPartial = true;
@@ -364,6 +381,8 @@ async function streamAssistantResponse(
 			case "toolcall_delta":
 			case "toolcall_end":
 				if (partialMessage) {
+					// event.partial 是包含当前完整累积内容的快照，而不是只包含本次 delta 的片段。
+					// 因此使用替换而非 push；实时 UI 收到 update，context 只保留一条 assistant 消息。
 					partialMessage = event.partial;
 					context.messages[context.messages.length - 1] = partialMessage;
 					await emit({
@@ -376,21 +395,28 @@ async function streamAssistantResponse(
 
 			case "done":
 			case "error": {
+				// done/error 都表示流已经终止。调用 result() 获取最终稳定消息：error 情况下，
+				// 返回的 AssistantMessage 会携带 error/aborted stopReason 和 errorMessage。
 				const finalMessage = await response.result();
 				if (addedPartial) {
+					// 将最后一个 partial 替换为最终消息，避免 transcript 同时保留半成品和成品。
 					context.messages[context.messages.length - 1] = finalMessage;
 				} else {
+					// 如果流没有发 start，就直接把最终消息加入上下文。
 					context.messages.push(finalMessage);
 				}
 				if (!addedPartial) {
+					// 没有 start 时补发 message_start，保证上层生命周期事件仍然完整。
 					await emit({ type: "message_start", message: { ...finalMessage } });
 				}
+				// message_end 是消息稳定边界：上层可以在这里更新 transcript、执行工具或持久化。
 				await emit({ type: "message_end", message: finalMessage });
 				return finalMessage;
 			}
 		}
 	}
 
+	// 防御性收尾：如果迭代器结束时没有显式进入 done/error 分支，仍从 result() 取得最终消息。
 	const finalMessage = await response.result();
 	if (addedPartial) {
 		context.messages[context.messages.length - 1] = finalMessage;
@@ -398,6 +424,7 @@ async function streamAssistantResponse(
 		context.messages.push(finalMessage);
 		await emit({ type: "message_start", message: { ...finalMessage } });
 	}
+	// 无论流以哪种方式结束，都必须发出 message_end，让 Agent Loop 得到稳定的 assistant 消息。
 	await emit({ type: "message_end", message: finalMessage });
 	return finalMessage;
 }
