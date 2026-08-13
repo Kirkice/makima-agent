@@ -89,6 +89,7 @@ pub struct SessionState {
     open_operation_positions: HashMap<String, HashMap<String, usize>>,
     log: Vec<SessionMutation>,
     lanes: HashMap<String, Option<String>>,
+    lane_order: Vec<String>,
     name: Option<String>,
     labels: HashMap<String, String>,
     stats: SessionStats,
@@ -101,6 +102,7 @@ impl SessionState {
         lanes.insert("main".to_owned(), None);
         Self {
             lanes,
+            lane_order: vec!["main".to_owned()],
             ..Self::default()
         }
     }
@@ -135,18 +137,17 @@ impl SessionState {
         self.labels.get(entry_id).map(String::as_str)
     }
 
-    /// 获取 lane 快照，按 lane 名称排序以保证跨进程结果稳定。
+    /// 获取 lane 快照，保持首次出现的 insertion order，与 TypeScript `Map` 语义一致。
     pub fn lanes(&self) -> Vec<LanePointer> {
-        let mut lanes: Vec<_> = self
-            .lanes
+        self.lane_order
             .iter()
-            .map(|(lane, leaf_id)| LanePointer {
-                lane: lane.clone(),
-                leaf_id: leaf_id.clone(),
+            .filter_map(|lane| {
+                self.lanes.get(lane).map(|leaf_id| LanePointer {
+                    lane: lane.clone(),
+                    leaf_id: leaf_id.clone(),
+                })
             })
-            .collect();
-        lanes.sort_by(|left, right| left.lane.cmp(&right.lane));
-        lanes
+            .collect()
     }
 
     /// 在全局 entry 日志中执行最小 v4 查询。
@@ -327,6 +328,9 @@ impl SessionState {
             return Err(invalid(format!("unsupported entry type: {entry_type}")));
         }
         self.ensure_unused_id(id)?;
+        if entry_type == "custom" {
+            required_string(&mutation.payload, "customType")?;
+        }
 
         if let Some(lane) = optional_string(&mutation.payload, "lane")? {
             let leaf_id = self
@@ -386,6 +390,22 @@ impl SessionState {
             return Err(invalid(format!("record references missing lane: {lane}")));
         }
         self.ensure_unused_id(id)?;
+        if record_type == "operation_started" {
+            let intent = mutation
+                .payload
+                .get("intent")
+                .and_then(Value::as_object)
+                .ok_or_else(|| invalid("operation_started intent must be an object"))?;
+            let operation_kind = required_string(intent, "kind")?;
+            if !matches!(operation_kind, "run" | "compaction" | "navigation") {
+                return Err(invalid(format!(
+                    "unsupported operation intent kind: {operation_kind}"
+                )));
+            }
+        }
+        if record_type == "operation_finished" {
+            required_string(&mutation.payload, "runId")?;
+        }
         if record_type == "usage" {
             self.apply_usage(&mutation.payload)?;
         }
@@ -418,6 +438,9 @@ impl SessionState {
             return Err(invalid(format!(
                 "lane references missing target: {leaf_id}"
             )));
+        }
+        if !self.lanes.contains_key(lane) {
+            self.lane_order.push(lane.to_owned());
         }
         self.lanes
             .insert(lane.to_owned(), leaf_id.map(str::to_owned));
@@ -665,14 +688,14 @@ mod tests {
             .apply(&mutation(
                 "record",
                 1,
-                json!({"id":"run-1","type":"operation_started","lane":"main","timestamp":1}),
+                json!({"id":"run-1","type":"operation_started","lane":"main","timestamp":1,"intent":{"kind":"run"}}),
             ))
             .unwrap();
         let error = state
             .apply(&mutation(
                 "record",
                 2,
-                json!({"id":"run-2","type":"operation_started","lane":"missing","timestamp":2}),
+                json!({"id":"run-2","type":"operation_started","lane":"missing","timestamp":2,"intent":{"kind":"run"}}),
             ))
             .unwrap_err();
         assert!(error.to_string().contains("missing lane"));
@@ -803,7 +826,7 @@ mod tests {
             .apply(&mutation(
                 "record",
                 1,
-                json!({"id":"run-1","type":"operation_started","lane":"main","timestamp":1,"intent":{"kind":"prompt"}}),
+                json!({"id":"run-1","type":"operation_started","lane":"main","timestamp":1,"intent":{"kind":"run"}}),
             ))
             .unwrap();
         state
@@ -817,7 +840,7 @@ mod tests {
             .apply(&mutation(
                 "record",
                 3,
-                json!({"id":"run-2","type":"operation_started","lane":"main","timestamp":3,"intent":{"kind":"compact"}}),
+                json!({"id":"run-2","type":"operation_started","lane":"main","timestamp":3,"intent":{"kind":"compaction"}}),
             ))
             .unwrap();
 
@@ -835,7 +858,7 @@ mod tests {
         let prompt_operations = state
             .find_records(super::RecordQuery {
                 record_type: Some("operation_started"),
-                operation_kind: Some("prompt"),
+                operation_kind: Some("run"),
                 ..Default::default()
             })
             .unwrap();

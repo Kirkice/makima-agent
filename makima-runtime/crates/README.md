@@ -8,6 +8,7 @@
 | --- | --- | --- | --- |
 | [`protocol`](protocol/Cargo.toml) | Rust/TypeScript 共享协议模型 | 无 | 已实现 |
 | [`session`](session/Cargo.toml) | JSONL v4 Session Store、状态归约和恢复 | 无 | 已实现，未接管生产路径 |
+| [`sandbox`](sandbox/Cargo.toml) | 权限策略、TS 兼容配置、`srt` 隔离后端适配与命令执行 | 无 | 已实现，Windows 禁用；尚未接管工具执行 |
 | [`runtime`](runtime/Cargo.toml) | 过渡期最小 Runtime 骨架 | `protocol`、`session` | 临时实现 |
 | [`cli`](cli/Cargo.toml) | Rust CLI 进程入口 | `runtime`、`protocol` | 第一阶段骨架 |
 
@@ -19,7 +20,7 @@
 crates/
 ├── protocol/          # 共享协议，始终位于依赖图底部
 ├── session/           # 已完成
-├── sandbox/           # 下一个底层安全策略模块
+├── sandbox/           # 已完成 TS 兼容配置、生命周期和 srt 隔离执行器
 ├── tool-runtime/      # 依赖 sandbox
 ├── agent-loop/        # 依赖 Tool Runtime Port
 ├── agent-session/     # 依赖 agent-loop 与 session

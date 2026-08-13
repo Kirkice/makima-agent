@@ -1,11 +1,10 @@
 [package]
-name = "session"
+name = "sandbox"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Pi Agent Session Store 的 JSONL 持久化边界"
+description = "Makima Agent 的文件、进程与网络安全策略边界"
 
 [dependencies]
-fs2.workspace = true
 serde.workspace = true
 serde_json.workspace = true

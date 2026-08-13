@@ -38,6 +38,7 @@ pi-*.html
 out.html
 packages/coding-agent/binaries/
 pi-runtime/target/
+makima-runtime/target/
 todo.md
 plans/
 .pi/hf-sessions/

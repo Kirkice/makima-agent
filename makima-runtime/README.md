@@ -12,6 +12,7 @@ makima-runtime/
 ├── crates/
 │   ├── protocol/              # 跨语言 Command / Event / Snapshot 契约
 │   ├── session/               # JSONL v4 Session Store
+│   ├── sandbox/               # TS 兼容的策略、配置与 OS 隔离后端适配
 │   ├── runtime/               # 临时 Runtime 骨架，后续收敛为 Agent Session 编排层
 │   └── cli/                   # Rust 进程入口
 └── README.md
@@ -30,6 +31,7 @@ session ────────┘       │
 
 - `protocol`：最底层共享数据契约，不依赖其他 Rust 模块。
 - `session`：独立持久化模块，不依赖 Agent Loop、Provider、TUI 或工具运行时。
+- `sandbox`：提供权限决策、与 TypeScript Extension 兼容的配置合并、`srt` 命令包装与执行生命周期；Windows 明确禁用，Linux/macOS 通过 `srt` 接入现有 OS 隔离后端。
 - `runtime`：当前仅包含最小 Runtime；后续拆分完成后由 `agent-session` 取代其 Session 编排职责。
 - `cli`：仅负责进程启动与命令行边界，不实现业务状态机。
 
@@ -69,5 +71,6 @@ cargo clippy --manifest-path makima-runtime/Cargo.toml --workspace --all-targets
 ## 迁移状态
 
 - `session`：JSONL v4 Store、状态归约、查询、统计、typed provisioning 与独立 fixture conformance 测试已完成；尚未替换 TypeScript 生产路径。
+- `sandbox`：已实现策略层、全局/项目 `sandbox.json` 加载与 TypeScript 一致的覆盖顺序、`--no-sandbox`/配置/平台生命周期状态、`srt` 命令包装及同步执行器。Windows 与现有 Extension 一致地禁用；Linux/macOS 要求应用分发或在 `PATH` 中提供 `srt`，由其调用 `bubblewrap` 或 `sandbox-exec` 实施 OS 级隔离。尚未接入 Tool Runtime 生产路径。
 - `runtime`：仅作为过渡期最小 Runtime；`prompt` 与 `steer` 继续回退 TypeScript。
-- `agent-loop`、`tool-runtime`、`sandbox`、`agent-session`、`rpc`：尚未创建，必须按上图逐一独立实现和验收。
+- `agent-loop`、`tool-runtime`、`agent-session`、`rpc`：尚未创建，必须按上图逐一独立实现和验收。

@@ -4,7 +4,6 @@
 //! Agent Loop、Provider、工具执行或 TUI。这样 Session Store 可以独立测试，
 //! 上层运行时也可以在迁移期间继续使用 TypeScript 实现。
 
-
 // 创建与打开 Session 文件
 
 // 创建 v4 JSONL header：Session ID、创建时间、工作目录、父 Session、元数据，见 SessionHeader。
@@ -28,8 +27,13 @@
 // Session 名称，见 JsonlSessionStore::set_name()。
 // entry 标签，见 JsonlSessionStore::set_label()。
 
+mod repo;
 mod state;
 
+pub use repo::{
+    ForkOptions, JsonlSessionCreateOptions, JsonlSessionListOptions, JsonlSessionMetadata,
+    JsonlSessionRepository, LeasedJsonlSession,
+};
 pub use state::{
     BranchBounds, EntryQuery, LanePointer, LogOptions, RecordQuery, SessionEntry, SessionRecord,
     SessionState, SessionStats,
@@ -163,12 +167,33 @@ impl JsonlSessionStore {
         id: impl Into<String>,
         cwd: impl Into<String>,
     ) -> Result<Self, SessionStoreError> {
+        Self::create_with_header(
+            path,
+            SessionHeader {
+                kind: "header".into(),
+                version: FORMAT_VERSION,
+                id: id.into(),
+                created_at: unix_millis(),
+                cwd: cwd.into(),
+                parent_session_id: None,
+                legacy_parent_session_path: None,
+                metadata: None,
+            },
+        )
+    }
+
+    /// 使用完整的已校验 v4 header 创建 Store，供 repository 与 fork 使用。
+    pub(crate) fn create_with_header(
+        path: impl Into<PathBuf>,
+        header: SessionHeader,
+    ) -> Result<Self, SessionStoreError> {
         let path = path.into();
         if path.as_os_str().is_empty() {
             return Err(SessionStoreError::InvalidArgument(
                 "session path cannot be empty".into(),
             ));
         }
+        validate_header(&header)?;
         if path.exists() {
             return Err(SessionStoreError::InvalidArgument(format!(
                 "session already exists: {}",
@@ -179,17 +204,10 @@ impl JsonlSessionStore {
             fs::create_dir_all(parent)?;
         }
 
-        let header = SessionHeader {
-            kind: "header".into(),
-            version: FORMAT_VERSION,
-            id: id.into(),
-            created_at: unix_millis(),
-            cwd: cwd.into(),
-            parent_session_id: None,
-            legacy_parent_session_path: None,
-            metadata: None,
-        };
-        let mut file = File::create(&path)?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
         write_json_line(&mut file, &header)?;
         file.sync_all()?;
 
@@ -218,8 +236,8 @@ impl JsonlSessionStore {
             return Err(invalid_format(1, "missing session header"));
         }
         let header: SessionHeader = parse_line(header_line, 1)?;
-        if header.kind != "header" || header.version != FORMAT_VERSION {
-            return Err(invalid_format(1, "unsupported session header"));
+        if let Err(error) = validate_header(&header) {
+            return Err(invalid_format(1, error.to_string()));
         }
 
         let mut mutations = Vec::new();
@@ -470,6 +488,159 @@ impl JsonlSessionStore {
         );
         self.append("lane", payload).map(|_| ())
     }
+    /// 将当前状态投影为新 Session 所需的连续 mutation 序列。
+    ///
+    /// 此处只负责复制范围和顺序，不负责目标文件创建或原子发布；后者属于
+    /// repository 层。分离两者可使 JSONL、内存或未来其他存储后端复用相同的
+    /// TypeScript branch/tree fork 语义。
+    pub(crate) fn fork_mutations(
+        &self,
+        options: ForkOptions,
+    ) -> Result<Vec<SessionMutation>, SessionStoreError> {
+        let (copied_entries, lanes) = match options {
+            ForkOptions::Tree => (
+                self.state
+                    .find_entries(EntryQuery {
+                        oldest_first: true,
+                        ..EntryQuery::default()
+                    })?
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                self.state.lanes(),
+            ),
+            ForkOptions::Branch { entry_id, position } => {
+                let explicit_entry_id = entry_id.is_some();
+                let selected_id = match entry_id {
+                    Some(id) => Some(id),
+                    None => self.state.lane_leaf("main").flatten().map(str::to_owned),
+                };
+                let target_id = match selected_id {
+                    None => None,
+                    Some(id) => {
+                        let entry = self.state.entry(&id).ok_or_else(|| {
+                            SessionStoreError::InvalidArgument(format!(
+                                "fork target not found: {id}"
+                            ))
+                        })?;
+                        if entry.get("type").and_then(Value::as_str) != Some("message") {
+                            return Err(SessionStoreError::InvalidArgument(format!(
+                                "fork target is not a message entry: {id}"
+                            )));
+                        }
+                        match position.unwrap_or(if explicit_entry_id {
+                            ForkPosition::Before
+                        } else {
+                            ForkPosition::At
+                        }) {
+                            ForkPosition::At => Some(id),
+                            ForkPosition::Before => entry
+                                .get("parentId")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                        }
+                    }
+                };
+                let entries = match target_id.as_deref() {
+                    None => Vec::new(),
+                    Some(id) => self
+                        .state
+                        .find_entries_on_branch(id, true, None)?
+                        .into_iter()
+                        .cloned()
+                        .collect(),
+                };
+                (
+                    entries,
+                    vec![LanePointer {
+                        lane: "main".into(),
+                        leaf_id: target_id,
+                    }],
+                )
+            }
+        };
+
+        let mut mutations = Vec::new();
+        let mut sequence = 1;
+        for mut entry in copied_entries.iter().cloned() {
+            entry.remove("seq");
+            mutations.push(SessionMutation {
+                kind: "entry".into(),
+                seq: sequence,
+                payload: entry,
+            });
+            sequence += 1;
+        }
+        for lane in lanes {
+            let mut payload = serde_json::Map::new();
+            payload.insert("lane".into(), Value::String(lane.lane));
+            payload.insert(
+                "leafId".into(),
+                lane.leaf_id.map_or(Value::Null, Value::String),
+            );
+            mutations.push(SessionMutation {
+                kind: "lane".into(),
+                seq: sequence,
+                payload,
+            });
+            sequence += 1;
+        }
+        if let Some(name) = self.state.name() {
+            let mut payload = serde_json::Map::new();
+            payload.insert("fact".into(), Value::String("name".into()));
+            payload.insert("name".into(), Value::String(name.to_owned()));
+            mutations.push(SessionMutation {
+                kind: "fact".into(),
+                seq: sequence,
+                payload,
+            });
+            sequence += 1;
+        }
+        for entry in copied_entries {
+            let id = entry
+                .get("id")
+                .and_then(Value::as_str)
+                .expect("validated entry id");
+            if let Some(label) = self.state.label(id) {
+                let mut payload = serde_json::Map::new();
+                payload.insert("fact".into(), Value::String("label".into()));
+                payload.insert("targetId".into(), Value::String(id.to_owned()));
+                payload.insert("label".into(), Value::String(label.to_owned()));
+                mutations.push(SessionMutation {
+                    kind: "fact".into(),
+                    seq: sequence,
+                    payload,
+                });
+                sequence += 1;
+            }
+        }
+        Ok(mutations)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForkPosition {
+    Before,
+    At,
+}
+
+fn validate_header(header: &SessionHeader) -> Result<(), SessionStoreError> {
+    if header.kind != "header" || header.version != FORMAT_VERSION {
+        return Err(SessionStoreError::InvalidArgument(
+            "unsupported session header".into(),
+        ));
+    }
+    if header.id.is_empty() || header.cwd.is_empty() {
+        return Err(SessionStoreError::InvalidArgument(
+            "session header id and cwd must be non-empty".into(),
+        ));
+    }
+    if header.parent_session_id.is_some() && header.legacy_parent_session_path.is_some() {
+        return Err(SessionStoreError::InvalidArgument(
+            "session header cannot contain both parentSessionId and legacyParentSessionPath".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn write_json_line<T: Serialize>(file: &mut File, value: &T) -> Result<(), SessionStoreError> {

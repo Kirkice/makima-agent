@@ -135,14 +135,16 @@ fn writes_typescript_v4_flattened_mutations_with_provisioned_fields() {
     let operation = store
         .append_record(NewRecord {
             lane: "main".into(),
-            fields: fields(json!({"id":"run-1","lane":"main","type":"operation_started","intent":{"kind":"prompt"}})),
+            fields: fields(json!({"id":"run-1","lane":"main","type":"operation_started","intent":{"kind":"run"}})),
         })
         .unwrap();
     assert_eq!(operation.get("seq"), Some(&json!(2)));
     assert!(operation.get("timestamp").and_then(Value::as_u64).is_some());
     let concurrent_operation = store.append_record(NewRecord {
         lane: "main".into(),
-        fields: fields(json!({"id":"run-2","lane":"main","type":"operation_started","intent":{"kind":"prompt"}})),
+        fields: fields(
+            json!({"id":"run-2","lane":"main","type":"operation_started","intent":{"kind":"run"}}),
+        ),
     });
     assert!(concurrent_operation.is_err());
     store
