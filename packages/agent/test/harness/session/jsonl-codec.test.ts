@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
 	encodeHeader,
@@ -22,7 +24,44 @@ function expectMutationRoundTrip(mutation: SessionMutation): void {
 	expect(parseMutation(encoded.trimEnd())).toEqual({ ok: true, value: mutation });
 }
 
+/**
+ * Rust 侧写出的固定 JSONL v4 样本。
+ *
+ * 此 fixture 由 Rust integration test 覆盖其状态投影；这里直接按 TypeScript
+ * codec 逐行解码，形成不依赖运行时进程或临时目录的双向格式契约。新增字段时
+ * 必须同时保证 Rust 写出仍可由 TypeScript 解码，避免只验证单向兼容。
+ */
+const RUST_V4_FIXTURE = fileURLToPath(
+	new URL("../../../../../makima-runtime/crates/session/tests/fixtures/rust-v4-session.jsonl", import.meta.url),
+);
+
 describe("JSONL v4 codec", () => {
+	it("解码 Rust 写出的 v4 fixture，并保留 header、mutation 与清除语义", () => {
+		const lines = readFileSync(RUST_V4_FIXTURE, "utf8").trimEnd().split("\n");
+		const header = parseHeader(lines[0]!);
+		expect(header).toMatchObject({
+			ok: true,
+			value: {
+				id: "rust-fixture-session",
+				legacyParentSessionPath: "C:/sessions/legacy-parent.jsonl",
+				metadata: { source: "rust-fixture", nested: { enabled: true } },
+			},
+		});
+
+		const mutations = lines.slice(1).map((line) => parseMutation(line));
+		expect(mutations.every((result) => result.ok)).toBe(true);
+		expect(
+			mutations.map((result) => {
+				if (!result.ok) throw result.error;
+				return result.value.kind;
+			}),
+		).toEqual(["entry", "entry", "lane", "record", "record", "record", "fact", "fact"]);
+		expect(mutations.at(-1)).toMatchObject({
+			ok: true,
+			value: { kind: "fact", fact: "label", targetId: "reply", label: "keep", seq: 8 },
+		});
+	});
+
 	describe("headers", () => {
 		it("round trips every header field with a resolved parent", () => {
 			expectHeaderRoundTrip({

@@ -5,7 +5,10 @@
 //! 与 fork 内容投影仍由上层 [`JsonlSessionStore`] 负责，避免 repository 持有
 //! 两份业务规则。
 
-use crate::{ForkPosition, JsonlSessionStore, SessionHeader, SessionStoreError};
+use crate::{
+    ForkPosition, JsonlSessionStore, SessionFilePublisher, SessionHeader, SessionStoreError,
+    StandardSessionFilePublisher,
+};
 use fs2::FileExt;
 use serde_json::{Map, Value};
 use std::fs::{self, File, OpenOptions};
@@ -108,6 +111,7 @@ impl LeasedJsonlSession {
 #[derive(Debug, Clone)]
 pub struct JsonlSessionRepository {
     sessions_root: PathBuf,
+    publisher: std::sync::Arc<dyn SessionFilePublisher>,
 }
 
 impl JsonlSessionRepository {
@@ -115,8 +119,25 @@ impl JsonlSessionRepository {
     ///
     /// 该操作不创建目录，保持与 TypeScript repository 构造函数相同的惰性行为。
     pub fn new(sessions_root: impl Into<PathBuf>) -> Result<Self, SessionStoreError> {
+        Self::with_publisher(
+            sessions_root,
+            std::sync::Arc::new(StandardSessionFilePublisher),
+        )
+    }
+
+    /// 使用可替换发布器构造 repository。
+    ///
+    /// 该入口只替换持久化写入原语，不改变目录布局、锁、状态归约或查询逻辑；
+    /// 因此故障注入测试可以覆盖真实编排，而无需维护一套测试专用 repository。
+    pub fn with_publisher(
+        sessions_root: impl Into<PathBuf>,
+        publisher: std::sync::Arc<dyn SessionFilePublisher>,
+    ) -> Result<Self, SessionStoreError> {
         let sessions_root = absolute_path(sessions_root.into())?;
-        Ok(Self { sessions_root })
+        Ok(Self {
+            sessions_root,
+            publisher,
+        })
     }
 
     /// 创建空 Session 并返回已持有独占写者租约的 Store。
@@ -149,7 +170,11 @@ impl JsonlSessionRepository {
             legacy_parent_session_path: None,
             metadata: options.metadata,
         };
-        let store = JsonlSessionStore::create_with_header(&path, header)?;
+        let store = JsonlSessionStore::create_with_header_and_publisher(
+            &path,
+            header,
+            self.publisher.clone(),
+        )?;
         drop(create_claim);
         Ok(LeasedJsonlSession {
             store,
@@ -171,7 +196,7 @@ impl JsonlSessionRepository {
             )));
         }
         let writer_lease = acquire_lock(writer_lock_path(&metadata.path))?;
-        let store = JsonlSessionStore::open(&metadata.path)?;
+        let store = JsonlSessionStore::open_with_publisher(&metadata.path, self.publisher.clone())?;
         if store.header().id != metadata.id {
             return Err(SessionStoreError::InvalidArgument(format!(
                 "session id does not match header: {}",
@@ -289,20 +314,24 @@ impl JsonlSessionRepository {
         };
         let result = (|| {
             let writer_lease = acquire_lock(writer_lock_path(&path))?;
-            let mut target = JsonlSessionStore::create_with_header(&temporary, header)?;
+            let mut target = JsonlSessionStore::create_with_header_and_publisher(
+                &temporary,
+                header,
+                self.publisher.clone(),
+            )?;
             for mutation in source_store.fork_mutations(options)? {
                 target.append(mutation.kind, mutation.payload)?;
             }
             drop(target);
-            fs::rename(&temporary, &path)?;
-            let store = JsonlSessionStore::open(&path)?;
+            self.publisher.rename(&temporary, &path)?;
+            let store = JsonlSessionStore::open_with_publisher(&path, self.publisher.clone())?;
             Ok(LeasedJsonlSession {
                 store,
                 _writer_lease: writer_lease,
             })
         })();
         if result.is_err() {
-            let _ = fs::remove_file(&temporary);
+            let _ = self.publisher.remove_file(&temporary);
         }
         drop(create_claim);
         result

@@ -1,0 +1,9 @@
+{"kind":"header","version":4,"id":"rust-fixture-session","createdAt":1700000000100,"cwd":"C:/workspace/demo","legacyParentSessionPath":"C:/sessions/legacy-parent.jsonl","metadata":{"source":"rust-fixture","nested":{"enabled":true}}}
+{"kind":"entry","lane":"main","id":"root","type":"message","parentId":null,"timestamp":1700000000101,"seq":1,"message":{"role":"user","content":"hello"}}
+{"kind":"entry","lane":"main","id":"reply","type":"custom","customType":"note","parentId":"root","timestamp":1700000000102,"seq":2,"data":{"text":"world"}}
+{"kind":"lane","lane":"review","leafId":"root","seq":3}
+{"kind":"record","id":"run-1","lane":"main","type":"operation_started","timestamp":1700000000103,"intent":{"kind":"run","originalPrompt":[],"initialMessages":[]},"seq":4}
+{"kind":"record","id":"usage-1","lane":"main","type":"usage","timestamp":1700000000104,"usage":{"cacheRead":3,"input":5,"cacheWrite":2,"totalTokens":10,"cost":{"total":0.25}},"seq":5}
+{"kind":"record","id":"finished-1","lane":"main","type":"operation_finished","timestamp":1700000000105,"runId":"run-1","outcome":"completed","seq":6}
+{"kind":"fact","fact":"name","name":"Rust fixture","seq":7}
+{"kind":"fact","fact":"label","targetId":"reply","label":"keep","seq":8}

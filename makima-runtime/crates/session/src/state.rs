@@ -58,12 +58,16 @@ pub struct LogOptions {
 }
 
 /// Session 累计用量。字段名称和 TypeScript `SessionStats` 保持一致的语义。
+///
+/// Provider 可以追加负数 usage 作为计费或 token 用量更正，因此 token 统计不能
+/// 使用无符号整数；否则 TypeScript 能恢复的合法 correction record 会被 Rust
+/// 拒绝，或在累计时产生溢出。
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SessionStats {
     pub message_count: u64,
-    pub cached_tokens: u64,
-    pub uncached_tokens: u64,
-    pub total_tokens: u64,
+    pub cached_tokens: i64,
+    pub uncached_tokens: i64,
+    pub total_tokens: i64,
     pub cost_total: f64,
 }
 
@@ -196,7 +200,11 @@ impl SessionState {
     ) -> Result<Vec<&SessionEntry>, SessionStoreError> {
         validate_limit(query.limit)?;
         validate_cursor(query.after_sequence)?;
-        let mut result = Vec::new();
+        // TypeScript 的 `walkToRoot()` 只会在 newest-first 查询时接收边界；
+        // oldest-first 则先读取完整 parent chain、反转为 root -> leaf，再停止。
+        // 这看似反直觉，但它决定了 root -> middle -> leaf 且 stopAt=middle 时
+        // 两种顺序分别返回 [leaf, middle] 和 [root, middle]，必须逐字对齐。
+        let mut branch = Vec::new();
         let mut current_id = Some(start);
         let mut visited = HashSet::new();
         while let Some(entry_id) = current_id {
@@ -210,16 +218,28 @@ impl SessionState {
                 .ok_or_else(|| invalid(format!("entry not found: {entry_id}")))?;
             let reached_bound = entry.get("id").and_then(Value::as_str) == bounds.stop_at_id
                 || entry.get("type").and_then(Value::as_str) == bounds.stop_at_type;
-            if entry_matches(entry, &query) {
-                result.push(entry);
-            }
-            if reached_bound || result.len() == query.limit.unwrap_or(usize::MAX) {
+            branch.push(entry);
+            if !query.oldest_first && reached_bound {
                 break;
             }
             current_id = nullable_string(entry, "parentId")?;
         }
         if query.oldest_first {
-            result.reverse();
+            branch.reverse();
+        }
+
+        let mut result = Vec::new();
+        for entry in branch {
+            let reached_bound = entry.get("id").and_then(Value::as_str) == bounds.stop_at_id
+                || entry.get("type").and_then(Value::as_str) == bounds.stop_at_type;
+            if entry_matches(entry, &query) {
+                result.push(entry);
+            }
+            if (query.oldest_first && reached_bound)
+                || result.len() == query.limit.unwrap_or(usize::MAX)
+            {
+                break;
+            }
         }
         Ok(result)
     }
@@ -229,8 +249,7 @@ impl SessionState {
         &self,
         query: RecordQuery<'_>,
     ) -> Result<Vec<&SessionRecord>, SessionStoreError> {
-        validate_limit(query.limit)?;
-        validate_cursor(query.after_sequence)?;
+        validate_record_query(&query)?;
         let mut records: Vec<&SessionRecord> = self.records.iter().collect();
         if !query.oldest_first {
             records.reverse();
@@ -406,6 +425,9 @@ impl SessionState {
         if record_type == "operation_finished" {
             required_string(&mutation.payload, "runId")?;
         }
+        if matches!(record_type, "step_attempt" | "tool_started") {
+            required_string(&mutation.payload, "runId")?;
+        }
         if record_type == "usage" {
             self.apply_usage(&mutation.payload)?;
         }
@@ -484,11 +506,18 @@ impl SessionState {
             .and_then(Value::as_object)
             .ok_or_else(|| invalid("usage record must contain an object field: usage.cost"))?;
 
-        self.stats.cached_tokens += required_u64(usage, "cacheRead")?;
-        self.stats.uncached_tokens +=
-            required_u64(usage, "input")? + required_u64(usage, "cacheWrite")?;
-        self.stats.total_tokens += required_u64(usage, "totalTokens")?;
-        self.stats.cost_total += required_f64(cost, "total")?;
+        // 先验证和提取全部字段，再更新累计值。这样 malformed usage 不会只更新
+        // 前几个计数器，保持 `apply()` 失败前后 state 的原子性。
+        let cache_read = required_i64(usage, "cacheRead")?;
+        let input = required_i64(usage, "input")?;
+        let cache_write = required_i64(usage, "cacheWrite")?;
+        let total_tokens = required_i64(usage, "totalTokens")?;
+        let cost_total = required_f64(cost, "total")?;
+
+        self.stats.cached_tokens += cache_read;
+        self.stats.uncached_tokens += input + cache_write;
+        self.stats.total_tokens += total_tokens;
+        self.stats.cost_total += cost_total;
         Ok(())
     }
 
@@ -529,6 +558,22 @@ fn nullable_string<'a>(
         )));
     }
     optional_string(payload, field)
+}
+
+/// 校验 record 查询中不能由筛选逻辑“静默忽略”的组合。
+///
+/// `operationKind` 只属于 `operation_started`。若将它与其他 record 类型混用，
+/// TypeScript 会在读取空日志前返回 `invalid_query`；必须在过滤前失败，不能因为
+/// 当前没有记录而错误地返回空数组。
+fn validate_record_query(query: &RecordQuery<'_>) -> Result<(), SessionStoreError> {
+    validate_limit(query.limit)?;
+    validate_cursor(query.after_sequence)?;
+    if query.operation_kind.is_some() && query.record_type != Some("operation_started") {
+        return Err(SessionStoreError::InvalidArgument(
+            "operation kind requires record type operation_started".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_limit(limit: Option<usize>) -> Result<(), SessionStoreError> {
@@ -599,11 +644,11 @@ fn record_matches(record: &SessionRecord, query: &RecordQuery<'_>) -> bool {
         })
 }
 
-fn required_u64(payload: &Map<String, Value>, field: &str) -> Result<u64, SessionStoreError> {
+fn required_i64(payload: &Map<String, Value>, field: &str) -> Result<i64, SessionStoreError> {
     payload
         .get(field)
-        .and_then(Value::as_u64)
-        .ok_or_else(|| invalid(format!("field {field} must be a non-negative integer")))
+        .and_then(Value::as_i64)
+        .ok_or_else(|| invalid(format!("field {field} must be an integer")))
 }
 
 fn required_f64(payload: &Map<String, Value>, field: &str) -> Result<f64, SessionStoreError> {
@@ -777,6 +822,68 @@ mod tests {
     }
 
     #[test]
+    fn applies_branch_bounds_in_the_requested_traversal_direction() {
+        let mut state = SessionState::new();
+        for (sequence, id, parent_id, entry_type) in [
+            (1, "root", serde_json::Value::Null, "message"),
+            (2, "middle", json!("root"), "custom"),
+            (3, "leaf", json!("middle"), "message"),
+        ] {
+            let mut payload = json!({
+                "id": id,
+                "type": entry_type,
+                "parentId": parent_id,
+                "timestamp": sequence,
+                "lane": "main",
+            });
+            if entry_type == "custom" {
+                payload
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("customType".to_owned(), json!("note"));
+            }
+            state.apply(&mutation("entry", sequence, payload)).unwrap();
+        }
+
+        let newest_first = state
+            .find_entries_on_branch_with_bounds(
+                "leaf",
+                super::EntryQuery::default(),
+                super::BranchBounds {
+                    stop_at_id: Some("middle"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let oldest_first = state
+            .find_entries_on_branch_with_bounds(
+                "leaf",
+                super::EntryQuery {
+                    oldest_first: true,
+                    ..Default::default()
+                },
+                super::BranchBounds {
+                    stop_at_id: Some("middle"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let newest_ids: Vec<_> = newest_first
+            .iter()
+            .map(|entry| entry.get("id").and_then(serde_json::Value::as_str))
+            .collect();
+        let oldest_ids: Vec<_> = oldest_first
+            .iter()
+            .map(|entry| entry.get("id").and_then(serde_json::Value::as_str))
+            .collect();
+        // 与 TypeScript `findEntriesOnBranch()` 一致：边界项被包含；oldest-first
+        // 会先从 root 扫描，因此同一边界会保留其之前的祖先。
+        assert_eq!(newest_ids, vec![Some("leaf"), Some("middle")]);
+        assert_eq!(oldest_ids, vec![Some("root"), Some("middle")]);
+    }
+
+    #[test]
     fn traverses_branch_and_accumulates_usage_statistics() {
         let mut state = SessionState::new();
         state
@@ -820,6 +927,62 @@ mod tests {
     }
 
     #[test]
+    fn accepts_negative_usage_corrections_without_partially_updating_statistics() {
+        let mut state = SessionState::new();
+        state
+            .apply(&mutation(
+                "record",
+                1,
+                json!({"id":"usage","type":"usage","lane":"main","timestamp":1,"usage":{"cacheRead":3,"input":10,"cacheWrite":2,"totalTokens":20,"cost":{"total":10.0}}}),
+            ))
+            .unwrap();
+        state
+            .apply(&mutation(
+                "record",
+                2,
+                json!({"id":"correction","type":"usage","lane":"main","timestamp":2,"usage":{"cacheRead":0,"input":-2,"cacheWrite":0,"totalTokens":-2,"cost":{"total":-0.5}}}),
+            ))
+            .unwrap();
+        assert_eq!(
+            state.stats(),
+            super::SessionStats {
+                message_count: 0,
+                cached_tokens: 3,
+                uncached_tokens: 10,
+                total_tokens: 18,
+                cost_total: 9.5,
+            }
+        );
+
+        let before_invalid_usage = state.stats();
+        assert!(state
+            .apply(&mutation(
+                "record",
+                3,
+                json!({"id":"broken","type":"usage","lane":"main","timestamp":3,"usage":{"cacheRead":1,"input":1,"cacheWrite":1,"totalTokens":1,"cost":{}}}),
+            ))
+            .is_err());
+        assert_eq!(state.stats(), before_invalid_usage);
+        assert_eq!(state.next_sequence(), 3);
+    }
+
+    #[test]
+    fn rejects_records_missing_their_required_run_reference() {
+        let mut state = SessionState::new();
+        for (sequence, record_type) in [(1, "step_attempt"), (1, "tool_started")] {
+            let payload = json!({
+                "id": "record",
+                "type": record_type,
+                "lane": "main",
+                "timestamp": 1,
+            });
+            assert!(state.apply(&mutation("record", sequence, payload)).is_err());
+            assert_eq!(state.next_sequence(), 1);
+            assert!(state.find_records(Default::default()).unwrap().is_empty());
+        }
+    }
+
+    #[test]
     fn queries_records_and_tracks_open_operations() {
         let mut state = SessionState::new();
         state
@@ -840,7 +1003,14 @@ mod tests {
             .apply(&mutation(
                 "record",
                 3,
-                json!({"id":"run-2","type":"operation_started","lane":"main","timestamp":3,"intent":{"kind":"compaction"}}),
+                json!({"id":"finished-1","type":"operation_finished","lane":"main","timestamp":3,"runId":"run-1"}),
+            ))
+            .unwrap();
+        state
+            .apply(&mutation(
+                "record",
+                4,
+                json!({"id":"run-2","type":"operation_started","lane":"main","timestamp":4,"intent":{"kind":"compaction"}}),
             ))
             .unwrap();
 
@@ -851,9 +1021,10 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        assert_eq!(records.len(), 2);
+        assert_eq!(records.len(), 3);
         assert_eq!(records[0].get("seq"), Some(&json!(1)));
         assert_eq!(records[1].get("seq"), Some(&json!(2)));
+        assert_eq!(records[2].get("seq"), Some(&json!(3)));
 
         let prompt_operations = state
             .find_records(super::RecordQuery {
@@ -865,19 +1036,29 @@ mod tests {
         assert_eq!(prompt_operations.len(), 1);
         assert_eq!(prompt_operations[0].get("id"), Some(&json!("run-1")));
 
+        // `operationKind` 不可脱离 `operation_started` 单独使用；该约束必须在
+        // 空读取前生效，避免损坏调用被误判为“没有匹配记录”。
+        let invalid_query = state.find_records(super::RecordQuery {
+            operation_kind: Some("run"),
+            ..Default::default()
+        });
+        assert_eq!(
+            invalid_query.unwrap_err().code(),
+            crate::SessionErrorCode::InvalidQuery
+        );
+
         let open = state.find_open_operations("main", None).unwrap();
-        assert_eq!(open.len(), 2);
+        assert_eq!(open.len(), 1);
         assert_eq!(open[0].get("id"), Some(&json!("run-2")));
 
         state
             .apply(&mutation(
                 "record",
-                4,
-                json!({"id":"finished-1","type":"operation_finished","lane":"main","timestamp":4,"runId":"run-1"}),
+                5,
+                json!({"id":"finished-2","type":"operation_finished","lane":"main","timestamp":5,"runId":"run-2"}),
             ))
             .unwrap();
         let open = state.find_open_operations("main", None).unwrap();
-        assert_eq!(open.len(), 1);
-        assert_eq!(open[0].get("id"), Some(&json!("run-2")));
+        assert!(open.is_empty());
     }
 }

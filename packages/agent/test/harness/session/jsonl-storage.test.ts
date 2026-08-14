@@ -473,7 +473,7 @@ describe("JSONL v4 per-session storage", () => {
 			"main",
 		);
 		expect(valid.seq).toBe(1);
-		expect((await reopen(root, restored)).getEntry("valid")).resolves.toEqual(valid);
+		await expect((await reopen(root, restored)).getEntry("valid")).resolves.toEqual(valid);
 	});
 
 	it("does not advance state or poison the write queue after an append failure", async () => {

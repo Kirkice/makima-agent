@@ -102,6 +102,23 @@ pub struct NewRecord {
     pub fields: serde_json::Map<String, Value>,
 }
 
+/// 与 TypeScript `SessionErrorCode` 一一对应的稳定错误分类。
+///
+/// Rust 保留底层 I/O 和格式错误的详细信息，但上层 RPC 或跨语言 conformance
+/// 不应依赖英文错误文本。通过 [`SessionStoreError::code`] 可以将不同后端的失败
+/// 归类为同一组可恢复、可展示的语义错误。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionErrorCode {
+    NotFound,
+    AlreadyExists,
+    InvalidEntry,
+    InvalidPayload,
+    InvalidLane,
+    InvalidQuery,
+    InvalidForkTarget,
+    Storage,
+}
+
 /// Session Store 的统一错误。
 #[derive(Debug)]
 pub enum SessionStoreError {
@@ -110,6 +127,68 @@ pub enum SessionStoreError {
     InvalidArgument(String),
     InvalidMutation(String),
     SequenceGap { expected: u64, actual: u64 },
+}
+
+impl SessionStoreError {
+    /// 将 Rust 细粒度错误投影为 TypeScript Session API 的稳定分类。
+    ///
+    /// 当前错误枚举仍需保留诊断文本和 I/O 原因；该方法只为 API 边界和
+    /// conformance 测试提供稳定分类，不允许调用方再从错误文本推导语义。
+    pub fn code(&self) -> SessionErrorCode {
+        match self {
+            // `create_new` 是最终的跨进程竞争裁决点。即使前置 exists 检查未命中，
+            // 此处的 AlreadyExists 仍属于稳定的目标冲突，而不是一般存储故障。
+            Self::Io(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                SessionErrorCode::AlreadyExists
+            }
+            Self::Io(_) | Self::InvalidFormat { .. } => SessionErrorCode::Storage,
+            Self::SequenceGap { .. } => SessionErrorCode::InvalidEntry,
+            Self::InvalidArgument(message) | Self::InvalidMutation(message) => {
+                classify_session_error(message)
+            }
+        }
+    }
+}
+
+/// 将尚未迁移为带分类字段的历史错误文本集中映射为公开错误码。
+///
+/// 这是过渡边界：状态机与 repository 内部仍可保留包含上下文的诊断文本，而
+/// 所有外部调用方只读取 [`SessionStoreError::code`]。新增失败路径必须复用这里
+/// 的稳定词汇，避免把文本匹配扩散到 RPC 或测试代码。
+fn classify_session_error(message: &str) -> SessionErrorCode {
+    if message.contains("fork target") {
+        SessionErrorCode::InvalidForkTarget
+    } else if message.contains("already has an open operation") {
+        // TypeScript 将持久化层的单 operation 约束报告为 storage；保持该行为，
+        // 以便调用方把该失败视为 writer/recovery 边界，而非普通输入错误。
+        SessionErrorCode::Storage
+    } else if message.contains("lane not found") || message.contains("missing lane") {
+        SessionErrorCode::InvalidLane
+    } else if message.contains("entry not found")
+        || message.contains("session not found")
+        || message.contains("missing target")
+    {
+        SessionErrorCode::NotFound
+    } else if message.contains("duplicate")
+        || message.contains("already exists")
+        || message.contains("already active")
+    {
+        SessionErrorCode::AlreadyExists
+    } else if message.contains("limit")
+        || message.contains("cursor")
+        || message.contains("operation kind")
+    {
+        SessionErrorCode::InvalidQuery
+    } else if message.contains("parent")
+        || message.contains("cycle")
+        || message.contains("unsupported entry")
+        || message.contains("unsupported record")
+        || message.contains("sequence")
+    {
+        SessionErrorCode::InvalidEntry
+    } else {
+        SessionErrorCode::InvalidPayload
+    }
 }
 
 impl std::fmt::Display for SessionStoreError {
@@ -146,6 +225,40 @@ impl From<io::Error> for SessionStoreError {
     }
 }
 
+/// Session JSONL 文件的最小可变边界。
+///
+/// 读取与目录发现仍直接使用标准库；只有会改变持久化状态的四类操作经由该端口。
+/// 这样 repository 与 store 可以在测试中精确注入 create、append、rename 失败，
+/// 同时不会把完整文件系统抽象泄漏到状态归约和查询模块。
+pub trait SessionFilePublisher: std::fmt::Debug + Send + Sync {
+    fn create_new(&self, path: &Path) -> io::Result<File>;
+    fn append(&self, path: &Path) -> io::Result<File>;
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
+    fn remove_file(&self, path: &Path) -> io::Result<()>;
+}
+
+/// 生产环境使用的标准文件系统发布器。
+#[derive(Debug, Default)]
+pub struct StandardSessionFilePublisher;
+
+impl SessionFilePublisher for StandardSessionFilePublisher {
+    fn create_new(&self, path: &Path) -> io::Result<File> {
+        OpenOptions::new().write(true).create_new(true).open(path)
+    }
+
+    fn append(&self, path: &Path) -> io::Result<File> {
+        OpenOptions::new().append(true).open(path)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        fs::rename(from, to)
+    }
+
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        fs::remove_file(path)
+    }
+}
+
 /// 一个追加式 JSONL Session Store。
 ///
 /// 每次追加都先写入完整的一行，再更新内存中的 sequence。若写入失败，
@@ -158,6 +271,7 @@ pub struct JsonlSessionStore {
     mutations: Vec<SessionMutation>,
     state: SessionState,
     next_sequence: u64,
+    publisher: std::sync::Arc<dyn SessionFilePublisher>,
 }
 
 impl JsonlSessionStore {
@@ -167,7 +281,7 @@ impl JsonlSessionStore {
         id: impl Into<String>,
         cwd: impl Into<String>,
     ) -> Result<Self, SessionStoreError> {
-        Self::create_with_header(
+        Self::create_with_header_and_publisher(
             path,
             SessionHeader {
                 kind: "header".into(),
@@ -179,13 +293,15 @@ impl JsonlSessionStore {
                 legacy_parent_session_path: None,
                 metadata: None,
             },
+            std::sync::Arc::new(StandardSessionFilePublisher),
         )
     }
 
-    /// 使用完整的已校验 v4 header 创建 Store，供 repository 与 fork 使用。
-    pub(crate) fn create_with_header(
+    /// 使用完整 v4 header 与指定发布器创建 Store，供 repository 和故障注入测试使用。
+    pub(crate) fn create_with_header_and_publisher(
         path: impl Into<PathBuf>,
         header: SessionHeader,
+        publisher: std::sync::Arc<dyn SessionFilePublisher>,
     ) -> Result<Self, SessionStoreError> {
         let path = path.into();
         if path.as_os_str().is_empty() {
@@ -204,12 +320,21 @@ impl JsonlSessionStore {
             fs::create_dir_all(parent)?;
         }
 
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
-        write_json_line(&mut file, &header)?;
-        file.sync_all()?;
+        // 只有本次调用成功取得 create-new 句柄后，才拥有失败时删除目标的权限。
+        // 若 create-new 本身失败，文件可能由并发创建者在 exists 检查后发布；此时
+        // 删除路径会破坏对方已成功创建的 Session。取得句柄后的 header 写入或
+        // sync 失败则必须清理 partial 文件，且清理错误不能覆盖原始写入错误。
+        let mut file = publisher.create_new(&path)?;
+        let create_result = (|| -> Result<(), SessionStoreError> {
+            write_json_line(&mut file, &header)?;
+            file.sync_all()?;
+            Ok(())
+        })();
+        if let Err(error) = create_result {
+            drop(file);
+            let _ = publisher.remove_file(&path);
+            return Err(error);
+        }
 
         Ok(Self {
             path,
@@ -217,6 +342,7 @@ impl JsonlSessionStore {
             mutations: Vec::new(),
             state: SessionState::new(),
             next_sequence: 1,
+            publisher,
         })
     }
 
@@ -225,6 +351,13 @@ impl JsonlSessionStore {
     /// 最后一行如果是未完成的 JSON（典型的进程中断写入），只截断到最后
     /// 一个完整换行符；中间位置的损坏则直接失败，避免悄悄丢失历史数据。
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, SessionStoreError> {
+        Self::open_with_publisher(path, std::sync::Arc::new(StandardSessionFilePublisher))
+    }
+
+    pub(crate) fn open_with_publisher(
+        path: impl Into<PathBuf>,
+        publisher: std::sync::Arc<dyn SessionFilePublisher>,
+    ) -> Result<Self, SessionStoreError> {
         let path = path.into();
         let content = fs::read_to_string(&path)?;
         let physical_lines: Vec<&str> = content.split_inclusive('\n').collect();
@@ -265,7 +398,10 @@ impl JsonlSessionStore {
                 // 只有最后一个物理行的 JSON 语法错误才能视为进程中断造成的
                 // torn tail。数据结构错误和中间行错误都必须返回给调用方。
                 Err(error) if is_last_physical_line && (error.is_syntax() || error.is_eof()) => {
-                    truncate_file(&path, byte_offset)?;
+                    // 不直接截断原文件。TypeScript Store 会先写出完整有效前缀，
+                    // 再以 rename 原子替换；这样在修复过程中断或存储失败时，调用
+                    // 方仍能保留原始损坏文件用于再次恢复或人工排查。
+                    repair_torn_tail(publisher.as_ref(), &path, &content[..byte_offset])?;
                     repaired_torn_tail = true;
                     break;
                 }
@@ -276,7 +412,7 @@ impl JsonlSessionStore {
         // 与 TypeScript Store 一致：完整但缺少结尾换行的旧文件在首次打开时
         // 修复，确保之后的 append 永远从新的物理行开始。
         if !repaired_torn_tail && !content.is_empty() && !content.ends_with('\n') {
-            let mut file = OpenOptions::new().append(true).open(&path)?;
+            let mut file = publisher.append(&path)?;
             file.write_all(b"\n")?;
             file.sync_data()?;
         }
@@ -287,6 +423,7 @@ impl JsonlSessionStore {
             next_sequence: state.next_sequence(),
             mutations,
             state,
+            publisher,
         })
     }
 
@@ -331,7 +468,7 @@ impl JsonlSessionStore {
         let mut candidate_state = self.state.clone();
         candidate_state.apply(&mutation)?;
 
-        let mut file = OpenOptions::new().append(true).open(&self.path)?;
+        let mut file = self.publisher.append(&self.path)?;
         write_json_line(&mut file, &mutation)?;
         file.sync_data()?;
 
@@ -664,11 +801,34 @@ fn invalid_format(line: usize, message: impl Into<String>) -> SessionStoreError 
     }
 }
 
-fn truncate_file(path: &Path, length: usize) -> Result<(), SessionStoreError> {
-    let file = OpenOptions::new().write(true).open(path)?;
-    file.set_len(length as u64)?;
-    file.sync_all()?;
-    Ok(())
+/// 以完整有效前缀原子修复末尾 torn tail。
+///
+/// 临时文件与目标位于同一目录，保证 `rename` 不跨文件系统。原文件只会在临时
+/// 文件已完整落盘后被替换；失败时尽力清理临时文件，但始终将原始 I/O 错误返回，
+/// 从而保持与 TypeScript `publishFileAtomically()` 相同的故障语义。
+fn repair_torn_tail(
+    publisher: &dyn SessionFilePublisher,
+    path: &Path,
+    valid_prefix: &str,
+) -> Result<(), SessionStoreError> {
+    let temporary = PathBuf::from(format!("{}.tmp", path.to_string_lossy()));
+    let result = (|| -> Result<(), SessionStoreError> {
+        // 临时路径由本函数唯一拥有；若上次异常退出遗留文件，先清理后再以
+        // create-new 打开，避免在未知内容上 truncate 后形成不可诊断的混合状态。
+        if temporary.exists() {
+            publisher.remove_file(&temporary)?;
+        }
+        let mut file = publisher.create_new(&temporary)?;
+        file.write_all(valid_prefix.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        publisher.rename(&temporary, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = publisher.remove_file(&temporary);
+    }
+    result
 }
 
 fn unix_millis() -> u64 {
@@ -679,10 +839,38 @@ fn unix_millis() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{JsonlSessionStore, SessionStoreError};
+    use super::{
+        JsonlSessionStore, SessionErrorCode, SessionFilePublisher, SessionStoreError,
+        StandardSessionFilePublisher,
+    };
     use serde_json::{Map, Value, json};
-    use std::fs::{self, OpenOptions};
-    use std::io::Write;
+    use std::fs::{self, File, OpenOptions};
+    use std::io::{self, Write};
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    #[derive(Debug, Default)]
+    struct RenameFailingPublisher {
+        standard: StandardSessionFilePublisher,
+    }
+
+    impl SessionFilePublisher for RenameFailingPublisher {
+        fn create_new(&self, path: &Path) -> io::Result<File> {
+            self.standard.create_new(path)
+        }
+
+        fn append(&self, path: &Path) -> io::Result<File> {
+            self.standard.append(path)
+        }
+
+        fn rename(&self, _from: &Path, _to: &Path) -> io::Result<()> {
+            Err(io::Error::other("injected torn-tail rename failure"))
+        }
+
+        fn remove_file(&self, path: &Path) -> io::Result<()> {
+            self.standard.remove_file(path)
+        }
+    }
 
     fn temp_path(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("session-{name}-{}.jsonl", std::process::id()))
@@ -696,6 +884,58 @@ mod tests {
         map.insert("timestamp".into(), json!(1));
         map.insert("lane".into(), json!("main"));
         map
+    }
+
+    #[test]
+    fn projects_every_public_error_category_to_the_typescript_code() {
+        // 错误文本仅用于 Rust 内部诊断；跨语言调用方只依赖 `code()`。这里集中
+        // 固化所有分类分支，避免后续修改诊断文案时悄然改变 JSONL API 契约。
+        let cases = [
+            (
+                SessionStoreError::InvalidArgument("session not found: missing".into()),
+                SessionErrorCode::NotFound,
+            ),
+            (
+                SessionStoreError::InvalidMutation("duplicate session id: repeated".into()),
+                SessionErrorCode::AlreadyExists,
+            ),
+            (
+                SessionStoreError::SequenceGap {
+                    expected: 2,
+                    actual: 3,
+                },
+                SessionErrorCode::InvalidEntry,
+            ),
+            (
+                SessionStoreError::InvalidMutation("field timestamp must be a string".into()),
+                SessionErrorCode::InvalidPayload,
+            ),
+            (
+                SessionStoreError::InvalidMutation("lane not found: review".into()),
+                SessionErrorCode::InvalidLane,
+            ),
+            (
+                SessionStoreError::InvalidArgument(
+                    "operation kind requires record type operation_started".into(),
+                ),
+                SessionErrorCode::InvalidQuery,
+            ),
+            (
+                SessionStoreError::InvalidArgument("fork target not found: missing".into()),
+                SessionErrorCode::InvalidForkTarget,
+            ),
+            (
+                SessionStoreError::InvalidFormat {
+                    line: 2,
+                    message: "malformed JSON".into(),
+                },
+                SessionErrorCode::Storage,
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.code(), expected);
+        }
     }
 
     #[test]
@@ -759,9 +999,11 @@ mod tests {
     }
 
     #[test]
-    fn repairs_an_incomplete_tail_without_losing_valid_prefix() {
+    fn repairs_an_incomplete_tail_atomically_without_losing_valid_prefix() {
         let path = temp_path("torn-tail");
+        let temporary = PathBuf::from(format!("{}.tmp", path.to_string_lossy()));
         let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&temporary);
         let mut store = JsonlSessionStore::create(&path, "session", ".").unwrap();
         store
             .append("entry", entry_payload("first", Value::Null))
@@ -773,6 +1015,111 @@ mod tests {
 
         let reopened = JsonlSessionStore::open(&path).unwrap();
         assert_eq!(reopened.mutations().len(), 1);
+        assert!(!temporary.exists(), "成功发布后不应遗留暂存文件");
+        let repaired = fs::read_to_string(&path).unwrap();
+        assert!(repaired.ends_with('\n'));
+        assert!(!repaired.contains("\"seq\":2"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn preserves_original_session_when_torn_tail_staging_fails() {
+        let path = temp_path("torn-tail-staging-failure");
+        let temporary = PathBuf::from(format!("{}.tmp", path.to_string_lossy()));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&temporary);
+        let _ = fs::remove_dir(&temporary);
+        let mut store = JsonlSessionStore::create(&path, "session", ".").unwrap();
+        store
+            .append("entry", entry_payload("first", Value::Null))
+            .unwrap();
+        drop(store);
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{\"kind\":\"entry\",\"seq\":2").unwrap();
+        drop(file);
+        let original = fs::read_to_string(&path).unwrap();
+
+        // 用同名目录稳定模拟暂存文件无法创建。此处验证失败时不能触碰目标文件，
+        // 对齐 TypeScript `publishFileAtomically()` 的故障保留语义。
+        fs::create_dir(&temporary).unwrap();
+        assert!(matches!(
+            JsonlSessionStore::open(&path),
+            Err(SessionStoreError::Io(_))
+        ));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+        fs::remove_dir(temporary).unwrap();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn preserves_original_session_when_torn_tail_rename_fails() {
+        let path = temp_path("torn-tail-rename-failure");
+        let temporary = PathBuf::from(format!("{}.tmp", path.to_string_lossy()));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&temporary);
+        let mut store = JsonlSessionStore::create(&path, "session", ".").unwrap();
+        store
+            .append("entry", entry_payload("first", Value::Null))
+            .unwrap();
+        drop(store);
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{\"kind\":\"entry\",\"seq\":2").unwrap();
+        drop(file);
+        let original = fs::read(&path).unwrap();
+
+        let error = JsonlSessionStore::open_with_publisher(
+            &path,
+            Arc::new(RenameFailingPublisher::default()),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), SessionErrorCode::Storage);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(!temporary.exists(), "rename 失败后必须清理完整暂存文件");
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn completes_a_valid_final_line_missing_its_newline() {
+        let path = temp_path("missing-final-newline");
+        let _ = fs::remove_file(&path);
+        let mut store = JsonlSessionStore::create(&path, "session", ".").unwrap();
+        store
+            .append("entry", entry_payload("first", Value::Null))
+            .unwrap();
+        drop(store);
+        let mut content = fs::read_to_string(&path).unwrap();
+        content.pop();
+        fs::write(&path, content).unwrap();
+
+        let reopened = JsonlSessionStore::open(&path).unwrap();
+        assert_eq!(reopened.mutations().len(), 1);
+        assert!(fs::read_to_string(&path).unwrap().ends_with('\n'));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn preserves_a_complete_invalid_final_mutation() {
+        let path = temp_path("complete-invalid-tail");
+        let _ = fs::remove_file(&path);
+        let mut store = JsonlSessionStore::create(&path, "session", ".").unwrap();
+        store
+            .append("entry", entry_payload("first", Value::Null))
+            .unwrap();
+        drop(store);
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{{\"kind\":\"fact\",\"seq\":2}}").unwrap();
+        drop(file);
+        let original = fs::read_to_string(&path).unwrap();
+
+        // 语法完整但不符合 mutation schema 的末行不是 torn tail。必须保留
+        // 原始字节，供调用方报错、重试或人工处理，而不能误删真实数据。
+        assert!(matches!(
+            JsonlSessionStore::open(&path),
+            Err(SessionStoreError::InvalidFormat { line: 3, .. })
+        ));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
         fs::remove_file(path).unwrap();
     }
 
