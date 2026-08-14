@@ -82,6 +82,7 @@ fn test_session() -> AgentSession<FakeAgentLoop, FakePersistence> {
     AgentSession::new(
         AgentSessionConfig {
             id: "session-1".to_owned(),
+            name: None,
             cwd: "C:/workspace".to_owned(),
             model: ModelRef {
                 provider: "test".to_owned(),
@@ -315,6 +316,7 @@ fn jsonl_persistence_writes_reopenable_v4_entries_for_session_events() {
 fn rust_agent_loop_terminal_events_drive_session_persistence_and_settlement() {
     let config = AgentSessionConfig {
         id: "session-1".to_owned(),
+        name: None,
         cwd: "C:/workspace".to_owned(),
         model: ModelRef {
             provider: "test".to_owned(),

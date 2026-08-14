@@ -58,6 +58,8 @@ pub enum AgentLoopEvent {
 pub struct AgentSessionConfig {
     /// 稳定的会话 ID。
     pub id: String,
+    /// 可选显示名称。
+    pub name: Option<String>,
     /// 会话工作目录。
     pub cwd: String,
     /// 初始模型。
@@ -91,6 +93,7 @@ where
         Self {
             state: AgentSessionState::new(
                 config.id,
+                config.name,
                 config.cwd,
                 config.model,
                 config.created_at,

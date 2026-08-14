@@ -93,7 +93,12 @@ impl SandboxRuntime {
         no_sandbox: bool,
         backend_program: Option<PathBuf>,
     ) -> Result<Self, SandboxRuntimeError> {
-        Self::initialize_for_platform(config, no_sandbox, SandboxPlatform::current(), backend_program)
+        Self::initialize_for_platform(
+            config,
+            no_sandbox,
+            SandboxPlatform::current(),
+            backend_program,
+        )
     }
 
     /// 为测试及跨平台宿主显式指定平台。
@@ -110,20 +115,32 @@ impl SandboxRuntime {
             return Ok(Self::disabled(SandboxRuntimeStatus::DisabledByConfig));
         }
         if !platform.supports_os_isolation() {
-            return Ok(Self::disabled(SandboxRuntimeStatus::UnsupportedPlatform(platform)));
+            return Ok(Self::disabled(SandboxRuntimeStatus::UnsupportedPlatform(
+                platform,
+            )));
         }
 
         let backend_program = backend_program.unwrap_or_else(|| PathBuf::from("srt"));
         if !program_is_available(&backend_program) {
-            return Ok(Self::disabled(SandboxRuntimeStatus::BackendUnavailable { program: backend_program }));
+            return Ok(Self::disabled(SandboxRuntimeStatus::BackendUnavailable {
+                program: backend_program,
+            }));
         }
 
         let settings_path = write_runtime_config(config)?;
-        Ok(Self { status: SandboxRuntimeStatus::Enabled, backend_program: Some(backend_program), settings_path: Some(settings_path) })
+        Ok(Self {
+            status: SandboxRuntimeStatus::Enabled,
+            backend_program: Some(backend_program),
+            settings_path: Some(settings_path),
+        })
     }
 
     fn disabled(status: SandboxRuntimeStatus) -> Self {
-        Self { status, backend_program: None, settings_path: None }
+        Self {
+            status,
+            backend_program: None,
+            settings_path: None,
+        }
     }
 
     /// 返回初始化结果，供 CLI/TUI 显示与决定是否回退到普通 Bash 工具。
@@ -132,12 +149,26 @@ impl SandboxRuntime {
     }
 
     /// 按 TypeScript `SandboxManager.wrapWithSandbox` 的 CLI 等价形式包装命令。
-    pub fn wrap_command(&self, command: impl Into<String>) -> Result<WrappedCommand, SandboxRuntimeError> {
-        let backend_program = self.backend_program.as_ref().ok_or_else(|| SandboxRuntimeError::NotEnabled(self.status.clone()))?;
-        let settings_path = self.settings_path.as_ref().ok_or_else(|| SandboxRuntimeError::NotEnabled(self.status.clone()))?;
+    pub fn wrap_command(
+        &self,
+        command: impl Into<String>,
+    ) -> Result<WrappedCommand, SandboxRuntimeError> {
+        let backend_program = self
+            .backend_program
+            .as_ref()
+            .ok_or_else(|| SandboxRuntimeError::NotEnabled(self.status.clone()))?;
+        let settings_path = self
+            .settings_path
+            .as_ref()
+            .ok_or_else(|| SandboxRuntimeError::NotEnabled(self.status.clone()))?;
         Ok(WrappedCommand {
             program: backend_program.clone(),
-            args: vec!["--settings".to_owned(), settings_path.display().to_string(), "-c".to_owned(), command.into()],
+            args: vec![
+                "--settings".to_owned(),
+                settings_path.display().to_string(),
+                "-c".to_owned(),
+                command.into(),
+            ],
         })
     }
 
@@ -147,7 +178,8 @@ impl SandboxRuntime {
         if let Some(path) = self.settings_path.take()
             && path.exists()
         {
-            fs::remove_file(&path).map_err(|source| SandboxRuntimeError::Cleanup { path, source })?;
+            fs::remove_file(&path)
+                .map_err(|source| SandboxRuntimeError::Cleanup { path, source })?;
         }
         self.backend_program = None;
         if matches!(self.status, SandboxRuntimeStatus::Enabled) {
@@ -168,8 +200,14 @@ impl Drop for SandboxRuntime {
 pub enum SandboxRuntimeError {
     NotEnabled(SandboxRuntimeStatus),
     SerializeConfig(serde_json::Error),
-    WriteConfig { path: PathBuf, source: std::io::Error },
-    Cleanup { path: PathBuf, source: std::io::Error },
+    WriteConfig {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    Cleanup {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 impl fmt::Display for SandboxRuntimeError {
@@ -177,8 +215,16 @@ impl fmt::Display for SandboxRuntimeError {
         match self {
             Self::NotEnabled(status) => write!(formatter, "Sandbox 未启用: {status:?}"),
             Self::SerializeConfig(source) => write!(formatter, "无法序列化 Sandbox 配置: {source}"),
-            Self::WriteConfig { path, source } => write!(formatter, "无法写入 Sandbox 临时配置 {}: {source}", path.display()),
-            Self::Cleanup { path, source } => write!(formatter, "无法删除 Sandbox 临时配置 {}: {source}", path.display()),
+            Self::WriteConfig { path, source } => write!(
+                formatter,
+                "无法写入 Sandbox 临时配置 {}: {source}",
+                path.display()
+            ),
+            Self::Cleanup { path, source } => write!(
+                formatter,
+                "无法删除 Sandbox 临时配置 {}: {source}",
+                path.display()
+            ),
         }
     }
 }
@@ -189,12 +235,24 @@ fn write_runtime_config(config: &SandboxConfig) -> Result<PathBuf, SandboxRuntim
     let mut value = serde_json::to_value(config).map_err(SandboxRuntimeError::SerializeConfig)?;
     // `enabled` 是 Extension 的宿主字段，而 `srt` 只接收 SandboxRuntimeConfig。
     // 移除它可严格保持 TypeScript `SandboxManager.initialize({...})` 的入参形状。
-    value.as_object_mut().expect("SandboxConfig always serializes as an object").remove("enabled");
+    value
+        .as_object_mut()
+        .expect("SandboxConfig always serializes as an object")
+        .remove("enabled");
     let serialized = serde_json::to_vec(&value).map_err(SandboxRuntimeError::SerializeConfig)?;
 
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-    let path = env::temp_dir().join(format!("makima-sandbox-{}-{nonce}.json", std::process::id()));
-    fs::write(&path, serialized).map_err(|source| SandboxRuntimeError::WriteConfig { path: path.clone(), source })?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let path = env::temp_dir().join(format!(
+        "makima-sandbox-{}-{nonce}.json",
+        std::process::id()
+    ));
+    fs::write(&path, serialized).map_err(|source| SandboxRuntimeError::WriteConfig {
+        path: path.clone(),
+        source,
+    })?;
     Ok(path)
 }
 
@@ -218,31 +276,72 @@ mod tests {
 
     #[test]
     fn windows_is_disabled_before_backend_lookup() {
-        let runtime = SandboxRuntime::initialize_for_platform(&SandboxConfig::default(), false, SandboxPlatform::Windows, None).unwrap();
-        assert_eq!(runtime.status(), &SandboxRuntimeStatus::UnsupportedPlatform(SandboxPlatform::Windows));
+        let runtime = SandboxRuntime::initialize_for_platform(
+            &SandboxConfig::default(),
+            false,
+            SandboxPlatform::Windows,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            runtime.status(),
+            &SandboxRuntimeStatus::UnsupportedPlatform(SandboxPlatform::Windows)
+        );
     }
 
     #[test]
     fn flag_and_configuration_disable_sandbox_with_distinct_statuses() {
-        let disabled_by_flag = SandboxRuntime::initialize_for_platform(&SandboxConfig::default(), true, SandboxPlatform::Linux, None).unwrap();
-        assert_eq!(disabled_by_flag.status(), &SandboxRuntimeStatus::DisabledByFlag);
+        let disabled_by_flag = SandboxRuntime::initialize_for_platform(
+            &SandboxConfig::default(),
+            true,
+            SandboxPlatform::Linux,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            disabled_by_flag.status(),
+            &SandboxRuntimeStatus::DisabledByFlag
+        );
 
-        let config = SandboxConfig { enabled: false, ..SandboxConfig::default() };
-        let disabled_by_config = SandboxRuntime::initialize_for_platform(&config, false, SandboxPlatform::MacOs, None).unwrap();
-        assert_eq!(disabled_by_config.status(), &SandboxRuntimeStatus::DisabledByConfig);
+        let config = SandboxConfig {
+            enabled: false,
+            ..SandboxConfig::default()
+        };
+        let disabled_by_config =
+            SandboxRuntime::initialize_for_platform(&config, false, SandboxPlatform::MacOs, None)
+                .unwrap();
+        assert_eq!(
+            disabled_by_config.status(),
+            &SandboxRuntimeStatus::DisabledByConfig
+        );
     }
 
     #[test]
     fn unavailable_backend_returns_a_non_fatal_status() {
         let path = PathBuf::from("missing-makima-sandbox-backend");
-        let runtime = SandboxRuntime::initialize_for_platform(&SandboxConfig::default(), false, SandboxPlatform::Linux, Some(path.clone())).unwrap();
-        assert_eq!(runtime.status(), &SandboxRuntimeStatus::BackendUnavailable { program: path });
+        let runtime = SandboxRuntime::initialize_for_platform(
+            &SandboxConfig::default(),
+            false,
+            SandboxPlatform::Linux,
+            Some(path.clone()),
+        )
+        .unwrap();
+        assert_eq!(
+            runtime.status(),
+            &SandboxRuntimeStatus::BackendUnavailable { program: path }
+        );
     }
 
     #[test]
     fn enabled_runtime_wraps_command_and_removes_its_config_on_reset() {
         let backend = std::env::current_exe().unwrap();
-        let mut runtime = SandboxRuntime::initialize_for_platform(&SandboxConfig::default(), false, SandboxPlatform::Linux, Some(backend.clone())).unwrap();
+        let mut runtime = SandboxRuntime::initialize_for_platform(
+            &SandboxConfig::default(),
+            false,
+            SandboxPlatform::Linux,
+            Some(backend.clone()),
+        )
+        .unwrap();
         let wrapped = runtime.wrap_command("printf sandbox").unwrap();
         assert_eq!(wrapped.program, backend);
         assert_eq!(wrapped.args[0], "--settings");
@@ -255,6 +354,9 @@ mod tests {
 
         runtime.reset().unwrap();
         assert!(!settings_path.exists());
-        assert!(matches!(runtime.wrap_command("echo no"), Err(SandboxRuntimeError::NotEnabled(_))));
+        assert!(matches!(
+            runtime.wrap_command("echo no"),
+            Err(SandboxRuntimeError::NotEnabled(_))
+        ));
     }
 }

@@ -5,10 +5,13 @@
 //! [`AgentLoopEngine::handle_provider_event`]。这种设计使事件顺序可离线回放和单元测试，
 //! 并避免核心状态机耦合 TypeScript Provider Host。
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use protocol::{
     AbortedStopReason, AssistantContent, AssistantRole, AssistantStopReason,
     AssistantTranscriptItem, ErrorStopReason, ModelRef, ProviderStreamEvent, TextOrImageContent,
-    TranscriptItem, UserRole, UserTranscriptItem,
+    ToolCall, ToolResult, ToolRole, ToolTranscriptItem, TranscriptItem, UserRole,
+    UserTranscriptItem,
 };
 
 /// Provider 流适配失败的稳定错误。
@@ -31,16 +34,23 @@ impl AgentLoopError {
     }
 }
 
-/// Provider Host 归一化后输入 Agent Loop 的最小事件集合。
+/// Provider Host 归一化后输入 Agent Loop 的事件集合。
 ///
-/// 该集合只覆盖无工具的文本 MVP。Provider 的原始 SSE 字段、认证和网络异常必须在
-/// Host 侧先归一化；工具调用、thinking、重试会在后续切片增加对应的显式事件。
+/// Provider 的原始 SSE 字段、认证和网络异常必须在 Host 侧先归一化。工具参数增量仅用于
+/// 维持流式生命周期；实际执行只能使用已经完成解析的 [`ProviderEvent::ToolCallEnded`]。
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProviderEvent {
     /// Provider 已接受请求并开始生成 assistant 项。
     Started { message_id: String, timestamp: u64 },
     /// 一个文本增量。必须在 [`ProviderEvent::Started`] 后出现。
     TextDelta { text: String },
+    /// 一个尚未完成的工具参数增量。
+    ToolCallDelta { content_index: u64, delta: String },
+    /// 一个已完成解析、允许执行的工具调用。
+    ToolCallEnded {
+        content_index: u64,
+        tool_call: ToolCall,
+    },
     /// 正常结束，并提交一个完成态 assistant 项。
     Completed {
         timestamp: u64,
@@ -50,10 +60,32 @@ pub enum ProviderEvent {
     Failed { timestamp: u64, message: String },
 }
 
-/// 将跨语言 DTO 转换为当前无工具文本状态机使用的内部事件。
+/// Tool Runtime 反馈给 Agent Loop 的稳定生命周期事件。
 ///
-/// 适配层必须在到达状态机前处理 Provider SDK 的私有字段。thinking 和工具调用的协议
-/// 已先行定义，但它们需要对应的状态机/Tool Runtime 切片，故在此阶段明确拒绝而非静默丢弃。
+/// 该枚举属于端口契约而不是具体 Tool Runtime，避免 Agent Loop 依赖工具注册、Sandbox 或
+/// 扩展宿主实现。事件顺序必须保持单个调用的开始、结束相邻，才能与 TypeScript 的串行工具
+/// 调用生命周期一致。
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolRuntimePortEvent {
+    /// 已开始处理一个完整工具调用。
+    Started { tool_call: ToolCall },
+    /// 工具已产生稳定结果；失败也以结果表示，不能中断同一批后续调用。
+    Finished { result: ToolResult },
+}
+
+/// Tool Runtime 的窄端口。
+///
+/// Agent Loop 只负责工具调用的生命周期、结果转录和下一次 Provider 请求的上下文准备；具体
+/// 工具注册、Sandbox、扩展宿主和执行策略均留在端口实现侧。当前切片固定按源顺序串行执行。
+pub trait ToolRuntimePort {
+    /// 执行一批完整工具调用，并按实际生命周期顺序返回端口事件。
+    fn execute_serial(&self, calls: Vec<ToolCall>, timestamp: u64) -> Vec<ToolRuntimePortEvent>;
+}
+
+/// 将跨语言 DTO 转换为内部状态机事件。
+///
+/// 适配层必须在到达状态机前处理 Provider SDK 的私有字段。thinking 尚未具备 transcript
+/// 状态机，仍会显式拒绝；工具调用已转入独立的 Tool Runtime Port。
 impl TryFrom<ProviderStreamEvent> for ProviderEvent {
     type Error = AgentLoopError;
 
@@ -77,10 +109,22 @@ impl TryFrom<ProviderStreamEvent> for ProviderEvent {
             ProviderStreamEvent::Error { timestamp, message } => {
                 Ok(Self::Failed { timestamp, message })
             }
-            ProviderStreamEvent::ThinkingDelta { .. }
-            | ProviderStreamEvent::ToolCallDelta { .. }
-            | ProviderStreamEvent::ToolCallEnd { .. } => Err(AgentLoopError::new(
-                "当前 Agent Loop 尚未启用 thinking 或工具调用事件。",
+            ProviderStreamEvent::ToolCallDelta {
+                content_index,
+                delta,
+            } => Ok(Self::ToolCallDelta {
+                content_index,
+                delta,
+            }),
+            ProviderStreamEvent::ToolCallEnd {
+                content_index,
+                tool_call,
+            } => Ok(Self::ToolCallEnded {
+                content_index,
+                tool_call,
+            }),
+            ProviderStreamEvent::ThinkingDelta { .. } => Err(AgentLoopError::new(
+                "当前 Agent Loop 尚未启用 thinking 事件。",
             )),
         }
     }
@@ -100,6 +144,20 @@ pub enum AgentLoopEvent {
     /// 从而保持与 TypeScript 单个 `message_update` 事件的语义一致。
     TranscriptItemUpdated(AssistantTranscriptItem),
     TranscriptItemFinished(TranscriptItem),
+    /// 已进入工具执行阶段。该事件只对应已完整解析的调用，不能由参数增量触发。
+    ToolExecutionStarted {
+        tool_call: ToolCall,
+    },
+    /// 单个工具已产生稳定结果；错误同样作为结果返回，避免中断同批后续调用。
+    ToolExecutionFinished {
+        result: ToolResult,
+    },
+    /// 工具结果已写入 transcript，可被 Provider Host 用于构造下一次请求。
+    ///
+    /// 收到该事件后状态机仍保持 active，直到后续 Provider 回合以非 toolUse 结束。
+    ToolResultsReady {
+        results: Vec<ToolResult>,
+    },
     TurnEnded {
         message: TranscriptItem,
     },
@@ -113,7 +171,11 @@ pub enum AgentLoopEvent {
 struct ActiveAssistant {
     id: String,
     timestamp: u64,
-    content: String,
+    content: Vec<AssistantContent>,
+    /// 仅记录尚未收到 terminal event 的参数片段，避免执行截断调用。
+    tool_call_deltas: BTreeMap<u64, String>,
+    /// 防止同一个 Provider content index 被重复终结并执行两次。
+    completed_tool_call_indexes: BTreeSet<u64>,
 }
 
 /// 可回放的 Agent Loop 状态机。
@@ -209,10 +271,35 @@ impl AgentLoopEngine {
         Ok(())
     }
 
-    /// 处理一个归一化 Provider 事件并返回本次产生的生命周期事件。
+    /// 处理一个不包含工具执行的归一化 Provider 事件。
+    ///
+    /// 当 Provider 以 `toolUse` 结束时，本方法在提交任何 assistant 消息前返回错误，防止调用方
+    /// 在没有 Tool Runtime 的情况下留下无法继续的工具回合。真实运行时应调用
+    /// [`AgentLoopEngine::handle_provider_event_with_tools`]。
     pub fn handle_provider_event(
         &mut self,
         event: ProviderEvent,
+    ) -> Result<Vec<AgentLoopEvent>, AgentLoopError> {
+        self.handle_provider_event_inner(event, None)
+    }
+
+    /// 处理 Provider 事件，并在 `toolUse` 终态按源顺序执行已完成的工具调用。
+    ///
+    /// 此方法只依赖 [`ToolRuntimePort`]，不依赖具体 Tool Runtime、Sandbox 或扩展实现。工具
+    /// 结果被追加为完整 transcript 项，但不会结束 Agent 回合；Provider adapter 应使用
+    /// [`AgentLoopEngine::messages`] 构造下一次请求，再继续投递新的 `start` 事件。
+    pub fn handle_provider_event_with_tools(
+        &mut self,
+        event: ProviderEvent,
+        tool_runtime: &impl ToolRuntimePort,
+    ) -> Result<Vec<AgentLoopEvent>, AgentLoopError> {
+        self.handle_provider_event_inner(event, Some(tool_runtime))
+    }
+
+    fn handle_provider_event_inner(
+        &mut self,
+        event: ProviderEvent,
+        tool_runtime: Option<&dyn ToolRuntimePort>,
     ) -> Result<Vec<AgentLoopEvent>, AgentLoopError> {
         if !self.active {
             return Err(AgentLoopError::new(
@@ -224,7 +311,9 @@ impl AgentLoopEngine {
                 ProviderEvent::Started { timestamp, .. }
                 | ProviderEvent::Completed { timestamp, .. }
                 | ProviderEvent::Failed { timestamp, .. } => timestamp,
-                ProviderEvent::TextDelta { .. } => self
+                ProviderEvent::TextDelta { .. }
+                | ProviderEvent::ToolCallDelta { .. }
+                | ProviderEvent::ToolCallEnded { .. } => self
                     .active_assistant
                     .as_ref()
                     .map_or(0, |assistant| assistant.timestamp),
@@ -238,10 +327,30 @@ impl AgentLoopEngine {
                 timestamp,
             } => self.start_assistant(message_id, timestamp)?,
             ProviderEvent::TextDelta { text } => self.append_text(text)?,
+            ProviderEvent::ToolCallDelta {
+                content_index,
+                delta,
+            } => self.append_tool_call_delta(content_index, delta)?,
+            ProviderEvent::ToolCallEnded {
+                content_index,
+                tool_call,
+            } => self.finish_tool_call(content_index, tool_call)?,
             ProviderEvent::Completed {
                 timestamp,
                 stop_reason,
-            } => self.complete_assistant(timestamp, stop_reason)?,
+            } => {
+                if stop_reason == AssistantStopReason::ToolUse && tool_runtime.is_none() {
+                    return Err(AgentLoopError::new(
+                        "收到 toolUse 终态时必须提供 Tool Runtime Port。",
+                    ));
+                }
+                let calls = self.complete_assistant(timestamp, stop_reason)?;
+                if let Some(runtime) = tool_runtime {
+                    if !calls.is_empty() {
+                        self.execute_tool_calls(calls, timestamp, runtime);
+                    }
+                }
+            }
             ProviderEvent::Failed { timestamp, message } => {
                 self.fail_assistant(timestamp, message)?
             }
@@ -262,7 +371,7 @@ impl AgentLoopEngine {
                 .as_ref()
                 .map_or_else(|| format!("aborted-{timestamp}"), |value| value.id.clone()),
             role: AssistantRole::Assistant,
-            content: assistant.map_or_else(Vec::new, |value| text_content(value.content)),
+            content: assistant.map_or_else(Vec::new, |value| value.content),
             model: self.model.clone(),
             response_model: None,
             usage: None,
@@ -286,7 +395,9 @@ impl AgentLoopEngine {
         let assistant = ActiveAssistant {
             id,
             timestamp,
-            content: String::new(),
+            content: Vec::new(),
+            tool_call_deltas: BTreeMap::new(),
+            completed_tool_call_indexes: BTreeSet::new(),
         };
         self.events.push(AgentLoopEvent::TranscriptItemStarted(
             TranscriptItem::Assistant(self.streaming_item(&assistant)),
@@ -296,22 +407,69 @@ impl AgentLoopEngine {
     }
 
     fn append_text(&mut self, text: String) -> Result<(), AgentLoopError> {
+        let model = self.model.clone();
         let assistant = self
             .active_assistant
             .as_mut()
             .ok_or_else(|| AgentLoopError::new("收到文本增量前必须先收到 Provider start。"))?;
-        assistant.content.push_str(&text);
-        let item = AssistantTranscriptItem::Streaming {
-            id: assistant.id.clone(),
-            role: AssistantRole::Assistant,
-            content: text_content(assistant.content.clone()),
-            model: self.model.clone(),
-            response_model: None,
-            usage: None,
-            timestamp: assistant.timestamp,
-        };
+        match assistant.content.last_mut() {
+            Some(AssistantContent::Text { text: accumulated }) => accumulated.push_str(&text),
+            _ => assistant.content.push(AssistantContent::Text { text }),
+        }
         self.events
-            .push(AgentLoopEvent::TranscriptItemUpdated(item));
+            .push(AgentLoopEvent::TranscriptItemUpdated(streaming_item_for(
+                &model, assistant,
+            )));
+        Ok(())
+    }
+
+    fn append_tool_call_delta(
+        &mut self,
+        content_index: u64,
+        delta: String,
+    ) -> Result<(), AgentLoopError> {
+        let model = self.model.clone();
+        let assistant = self
+            .active_assistant
+            .as_mut()
+            .ok_or_else(|| AgentLoopError::new("收到工具调用增量前必须先收到 Provider start。"))?;
+        assistant
+            .tool_call_deltas
+            .entry(content_index)
+            .or_default()
+            .push_str(&delta);
+        self.events
+            .push(AgentLoopEvent::TranscriptItemUpdated(streaming_item_for(
+                &model, assistant,
+            )));
+        Ok(())
+    }
+
+    fn finish_tool_call(
+        &mut self,
+        content_index: u64,
+        tool_call: ToolCall,
+    ) -> Result<(), AgentLoopError> {
+        let model = self.model.clone();
+        let assistant = self
+            .active_assistant
+            .as_mut()
+            .ok_or_else(|| AgentLoopError::new("收到完整工具调用前必须先收到 Provider start。"))?;
+        if !assistant.completed_tool_call_indexes.insert(content_index) {
+            return Err(AgentLoopError::new(
+                "同一个工具调用 content index 不能重复结束。",
+            ));
+        }
+        assistant.tool_call_deltas.remove(&content_index);
+        assistant.content.push(AssistantContent::ToolCall {
+            tool_call_id: tool_call.tool_call_id,
+            tool_name: tool_call.tool_name,
+            input: tool_call.input,
+        });
+        self.events
+            .push(AgentLoopEvent::TranscriptItemUpdated(streaming_item_for(
+                &model, assistant,
+            )));
         Ok(())
     }
 
@@ -319,22 +477,90 @@ impl AgentLoopEngine {
         &mut self,
         timestamp: u64,
         stop_reason: AssistantStopReason,
-    ) -> Result<(), AgentLoopError> {
-        let assistant = self.active_assistant.take().ok_or_else(|| {
+    ) -> Result<Vec<ToolCall>, AgentLoopError> {
+        let assistant = self.active_assistant.as_ref().ok_or_else(|| {
             AgentLoopError::new("收到 Provider 完成事件前必须先收到 Provider start。")
         })?;
+        if !assistant.tool_call_deltas.is_empty() {
+            return Err(AgentLoopError::new(
+                "Provider 在存在未完成工具调用增量时结束，拒绝执行不完整参数。",
+            ));
+        }
+        let calls = assistant
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                AssistantContent::ToolCall {
+                    tool_call_id,
+                    tool_name,
+                    input,
+                } => Some(ToolCall {
+                    tool_call_id: tool_call_id.clone(),
+                    tool_name: tool_name.clone(),
+                    input: input.clone(),
+                }),
+                AssistantContent::Text { .. } | AssistantContent::Thinking { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        if stop_reason == AssistantStopReason::ToolUse && calls.is_empty() {
+            return Err(AgentLoopError::new(
+                "Provider 以 toolUse 结束，但未提供完整工具调用。",
+            ));
+        }
+        if stop_reason != AssistantStopReason::ToolUse && !calls.is_empty() {
+            return Err(AgentLoopError::new(
+                "非 toolUse 的 Provider 终态不能包含工具调用。",
+            ));
+        }
+
+        let assistant = self
+            .active_assistant
+            .take()
+            .expect("已校验 Provider 完成事件存在执行中的 assistant");
         let item = TranscriptItem::Assistant(AssistantTranscriptItem::Complete {
             id: assistant.id,
             role: AssistantRole::Assistant,
-            content: text_content(assistant.content),
+            content: assistant.content,
             model: self.model.clone(),
             response_model: None,
             usage: None,
             timestamp,
             stop_reason,
         });
-        self.finish_turn(item);
-        Ok(())
+        self.events
+            .push(AgentLoopEvent::TranscriptItemFinished(item.clone()));
+        self.messages.push(item);
+
+        if calls.is_empty() && stop_reason != AssistantStopReason::ToolUse {
+            self.finish_active_turn();
+        }
+        Ok(calls)
+    }
+
+    fn execute_tool_calls(
+        &mut self,
+        calls: Vec<ToolCall>,
+        timestamp: u64,
+        tool_runtime: &dyn ToolRuntimePort,
+    ) {
+        let mut results = Vec::new();
+        for event in tool_runtime.execute_serial(calls, timestamp) {
+            match event {
+                ToolRuntimePortEvent::Started { tool_call } => {
+                    self.events
+                        .push(AgentLoopEvent::ToolExecutionStarted { tool_call });
+                }
+                ToolRuntimePortEvent::Finished { result } => {
+                    self.events.push(AgentLoopEvent::ToolExecutionFinished {
+                        result: result.clone(),
+                    });
+                    self.commit_message(TranscriptItem::Tool(tool_result_item(&result)));
+                    results.push(result);
+                }
+            }
+        }
+        self.events
+            .push(AgentLoopEvent::ToolResultsReady { results });
     }
 
     fn fail_assistant(&mut self, timestamp: u64, message: String) -> Result<(), AgentLoopError> {
@@ -344,7 +570,7 @@ impl AgentLoopEngine {
         let item = TranscriptItem::Assistant(AssistantTranscriptItem::Error {
             id: assistant.id,
             role: AssistantRole::Assistant,
-            content: text_content(assistant.content),
+            content: assistant.content,
             model: self.model.clone(),
             response_model: None,
             usage: None,
@@ -357,15 +583,7 @@ impl AgentLoopEngine {
     }
 
     fn streaming_item(&self, assistant: &ActiveAssistant) -> AssistantTranscriptItem {
-        AssistantTranscriptItem::Streaming {
-            id: assistant.id.clone(),
-            role: AssistantRole::Assistant,
-            content: text_content(assistant.content.clone()),
-            model: self.model.clone(),
-            response_model: None,
-            usage: None,
-            timestamp: assistant.timestamp,
-        }
+        streaming_item_for(&self.model, assistant)
     }
 
     fn commit_message(&mut self, item: TranscriptItem) {
@@ -380,8 +598,20 @@ impl AgentLoopEngine {
         self.events
             .push(AgentLoopEvent::TranscriptItemFinished(item.clone()));
         self.messages.push(item.clone());
-        self.events
-            .push(AgentLoopEvent::TurnEnded { message: item });
+        self.finish_active_turn_with(item);
+    }
+
+    fn finish_active_turn(&mut self) {
+        let message = self
+            .messages
+            .last()
+            .cloned()
+            .expect("完成回合前必须至少存在一条 assistant 消息");
+        self.finish_active_turn_with(message);
+    }
+
+    fn finish_active_turn_with(&mut self, message: TranscriptItem) {
+        self.events.push(AgentLoopEvent::TurnEnded { message });
         self.active = false;
         self.abort_requested = false;
         self.events.push(AgentLoopEvent::AgentEnded {
@@ -390,11 +620,46 @@ impl AgentLoopEngine {
     }
 }
 
-fn text_content(text: String) -> Vec<AssistantContent> {
-    if text.is_empty() {
-        Vec::new()
+fn streaming_item_for(model: &ModelRef, assistant: &ActiveAssistant) -> AssistantTranscriptItem {
+    AssistantTranscriptItem::Streaming {
+        id: assistant.id.clone(),
+        role: AssistantRole::Assistant,
+        content: assistant.content.clone(),
+        model: model.clone(),
+        response_model: None,
+        usage: None,
+        timestamp: assistant.timestamp,
+    }
+}
+
+fn tool_result_item(result: &ToolResult) -> ToolTranscriptItem {
+    let item_id = format!("tool-{}", result.tool_call_id);
+    if result.is_error {
+        ToolTranscriptItem::Error {
+            id: item_id,
+            role: ToolRole::Tool,
+            tool_call_id: result.tool_call_id.clone(),
+            tool_name: result.tool_name.clone(),
+            input: result.input.clone(),
+            content: result.content.clone(),
+            details: result.details.clone(),
+            usage: None,
+            timestamp: result.timestamp,
+            is_error: true,
+        }
     } else {
-        vec![AssistantContent::Text { text }]
+        ToolTranscriptItem::Complete {
+            id: item_id,
+            role: ToolRole::Tool,
+            tool_call_id: result.tool_call_id.clone(),
+            tool_name: result.tool_name.clone(),
+            input: result.input.clone(),
+            content: result.content.clone(),
+            details: result.details.clone(),
+            usage: None,
+            timestamp: result.timestamp,
+            is_error: false,
+        }
     }
 }
 
@@ -414,11 +679,15 @@ mod tests {
 
     use protocol::{
         AssistantContent, AssistantStopReason, AssistantTranscriptItem, ModelRef,
-        ProviderStreamEvent, TranscriptItem,
+        ProviderStreamEvent, TextOrImageContent, ToolCall, ToolResult, TranscriptItem,
     };
     use serde::Deserialize;
+    use serde_json::json;
 
-    use super::{AgentLoopEngine, AgentLoopEvent, ProviderEvent, user_text_item};
+    use super::{
+        AgentLoopEngine, AgentLoopEvent, ProviderEvent, ToolRuntimePort, ToolRuntimePortEvent,
+        user_text_item,
+    };
 
     /// 与 TypeScript protocol package 共用的 Provider 流回放样本。
     ///
@@ -444,6 +713,22 @@ mod tests {
             provider: "test".to_owned(),
             id: "model-a".to_owned(),
         })
+    }
+
+    /// 用预先给定的端口事件验证 Agent Loop，不把具体 Tool Runtime 引入状态机测试。
+    #[derive(Debug, Clone)]
+    struct FakeToolRuntime {
+        events: Vec<ToolRuntimePortEvent>,
+    }
+
+    impl ToolRuntimePort for FakeToolRuntime {
+        fn execute_serial(
+            &self,
+            _calls: Vec<ToolCall>,
+            _timestamp: u64,
+        ) -> Vec<ToolRuntimePortEvent> {
+            self.events.clone()
+        }
     }
 
     #[test]
@@ -572,6 +857,255 @@ mod tests {
         );
         assert!(!loop_engine.is_active());
         assert_eq!(loop_engine.messages().len(), 2);
+    }
+
+    #[test]
+    fn replays_shared_tool_call_fixture_without_ending_the_agent_turn() {
+        let fixture = load_fixture("tool-call");
+        let call = fixture
+            .events
+            .iter()
+            .find_map(|event| match event {
+                ProviderStreamEvent::ToolCallEnd { tool_call, .. } => Some(tool_call.clone()),
+                _ => None,
+            })
+            .expect("shared fixture must include a completed tool call");
+        let tool_runtime = FakeToolRuntime {
+            events: vec![
+                ToolRuntimePortEvent::Started {
+                    tool_call: call.clone(),
+                },
+                ToolRuntimePortEvent::Finished {
+                    result: ToolResult {
+                        tool_call_id: call.tool_call_id,
+                        tool_name: call.tool_name,
+                        input: call.input,
+                        content: vec![TextOrImageContent::Text {
+                            text: "echo: hello".to_owned(),
+                        }],
+                        details: None,
+                        is_error: false,
+                        timestamp: 21,
+                    },
+                },
+            ],
+        };
+        let mut loop_engine = engine();
+        loop_engine
+            .prompt(user_text_item(
+                "user-1".to_owned(),
+                "use echo".to_owned(),
+                1,
+            ))
+            .unwrap();
+        loop_engine.drain_events();
+
+        let mut events = Vec::new();
+        for provider_event in fixture.events {
+            events.extend(
+                loop_engine
+                    .handle_provider_event_with_tools(
+                        ProviderEvent::try_from(provider_event)
+                            .expect("shared fixture must use supported events"),
+                        &tool_runtime,
+                    )
+                    .expect("shared tool fixture event should be accepted"),
+            );
+        }
+
+        assert_eq!(
+            events.iter().map(event_name).collect::<Vec<_>>(),
+            fixture.expected.event_names
+        );
+        assert!(loop_engine.is_active());
+    }
+
+    #[test]
+    fn executes_tool_calls_in_serial_lifecycle_order_and_continues_the_turn() {
+        let call = ToolCall {
+            tool_call_id: "call-1".to_owned(),
+            tool_name: "echo".to_owned(),
+            input: json!({ "value": "hello" }),
+        };
+        let result = ToolResult {
+            tool_call_id: call.tool_call_id.clone(),
+            tool_name: call.tool_name.clone(),
+            input: call.input.clone(),
+            content: vec![TextOrImageContent::Text {
+                text: "echo: hello".to_owned(),
+            }],
+            details: None,
+            is_error: false,
+            timestamp: 21,
+        };
+        let tool_runtime = FakeToolRuntime {
+            events: vec![
+                ToolRuntimePortEvent::Started {
+                    tool_call: call.clone(),
+                },
+                ToolRuntimePortEvent::Finished {
+                    result: result.clone(),
+                },
+            ],
+        };
+        let mut loop_engine = engine();
+        loop_engine
+            .prompt(user_text_item(
+                "user-1".to_owned(),
+                "use echo".to_owned(),
+                1,
+            ))
+            .unwrap();
+        loop_engine.drain_events();
+
+        let mut events = loop_engine
+            .handle_provider_event_with_tools(
+                ProviderEvent::Started {
+                    message_id: "assistant-tool-1".to_owned(),
+                    timestamp: 20,
+                },
+                &tool_runtime,
+            )
+            .unwrap();
+        events.extend(
+            loop_engine
+                .handle_provider_event_with_tools(
+                    ProviderEvent::ToolCallDelta {
+                        content_index: 0,
+                        delta: "{\"value\":\"hello\"}".to_owned(),
+                    },
+                    &tool_runtime,
+                )
+                .unwrap(),
+        );
+        events.extend(
+            loop_engine
+                .handle_provider_event_with_tools(
+                    ProviderEvent::ToolCallEnded {
+                        content_index: 0,
+                        tool_call: call,
+                    },
+                    &tool_runtime,
+                )
+                .unwrap(),
+        );
+        events.extend(
+            loop_engine
+                .handle_provider_event_with_tools(
+                    ProviderEvent::Completed {
+                        timestamp: 21,
+                        stop_reason: AssistantStopReason::ToolUse,
+                    },
+                    &tool_runtime,
+                )
+                .unwrap(),
+        );
+
+        assert_eq!(
+            events.iter().map(event_name).collect::<Vec<_>>(),
+            vec![
+                "message_start",
+                "message_update",
+                "message_update",
+                "message_end",
+                "tool_execution_start",
+                "tool_execution_end",
+                "message_start",
+                "message_end",
+                "tool_results_ready",
+            ]
+        );
+        assert!(loop_engine.is_active());
+        assert_eq!(loop_engine.messages().len(), 3);
+        assert!(matches!(
+            &loop_engine.messages()[2],
+            TranscriptItem::Tool(protocol::ToolTranscriptItem::Complete { tool_call_id, .. })
+                if tool_call_id == "call-1"
+        ));
+
+        let events = loop_engine
+            .handle_provider_event_with_tools(
+                ProviderEvent::Started {
+                    message_id: "assistant-final-1".to_owned(),
+                    timestamp: 22,
+                },
+                &tool_runtime,
+            )
+            .unwrap();
+        assert_eq!(
+            events.iter().map(event_name).collect::<Vec<_>>(),
+            vec!["message_start"]
+        );
+        loop_engine
+            .handle_provider_event_with_tools(
+                ProviderEvent::TextDelta {
+                    text: "done".to_owned(),
+                },
+                &tool_runtime,
+            )
+            .unwrap();
+        let events = loop_engine
+            .handle_provider_event_with_tools(
+                ProviderEvent::Completed {
+                    timestamp: 23,
+                    stop_reason: AssistantStopReason::Stop,
+                },
+                &tool_runtime,
+            )
+            .unwrap();
+        assert_eq!(
+            events.iter().map(event_name).collect::<Vec<_>>(),
+            vec!["message_end", "turn_end", "agent_end"]
+        );
+        assert!(!loop_engine.is_active());
+    }
+
+    #[test]
+    fn rejects_incomplete_or_invalid_tool_terminal_states_without_committing() {
+        let tool_runtime = FakeToolRuntime { events: Vec::new() };
+        let mut loop_engine = engine();
+        loop_engine
+            .prompt(user_text_item(
+                "user-1".to_owned(),
+                "use tool".to_owned(),
+                1,
+            ))
+            .unwrap();
+        loop_engine.drain_events();
+        loop_engine
+            .handle_provider_event_with_tools(
+                ProviderEvent::Started {
+                    message_id: "assistant-tool-1".to_owned(),
+                    timestamp: 2,
+                },
+                &tool_runtime,
+            )
+            .unwrap();
+        loop_engine
+            .handle_provider_event_with_tools(
+                ProviderEvent::ToolCallDelta {
+                    content_index: 0,
+                    delta: "{\"value\":".to_owned(),
+                },
+                &tool_runtime,
+            )
+            .unwrap();
+
+        let error = loop_engine
+            .handle_provider_event_with_tools(
+                ProviderEvent::Completed {
+                    timestamp: 3,
+                    stop_reason: AssistantStopReason::ToolUse,
+                },
+                &tool_runtime,
+            )
+            .expect_err("truncated tool arguments must not be committed");
+        assert_eq!(
+            error.message(),
+            "Provider 在存在未完成工具调用增量时结束，拒绝执行不完整参数。"
+        );
+        assert!(loop_engine.is_active());
+        assert_eq!(loop_engine.messages().len(), 1);
     }
 
     #[test]
@@ -783,6 +1317,9 @@ mod tests {
             AgentLoopEvent::TranscriptItemStarted(_) => "message_start",
             AgentLoopEvent::TranscriptItemUpdated(_) => "message_update",
             AgentLoopEvent::TranscriptItemFinished(_) => "message_end",
+            AgentLoopEvent::ToolExecutionStarted { .. } => "tool_execution_start",
+            AgentLoopEvent::ToolExecutionFinished { .. } => "tool_execution_end",
+            AgentLoopEvent::ToolResultsReady { .. } => "tool_results_ready",
             AgentLoopEvent::TurnEnded { .. } => "turn_end",
             AgentLoopEvent::AgentEnded { .. } => "agent_end",
         }

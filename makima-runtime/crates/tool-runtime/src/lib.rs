@@ -4,6 +4,7 @@
 //! 失败归一化为共享 [`protocol::ToolResult`]。它不依赖 Provider SDK、Session Store、TUI
 //! 或具体 Sandbox 后端，因此命令工具可在外层通过一个 [`Tool`] adapter 接入。
 
+use agent_loop::{ToolRuntimePort, ToolRuntimePortEvent};
 use protocol::{TextOrImageContent, ToolCall, ToolResult};
 
 /// 工具执行过程中可观察的稳定生命周期事件。
@@ -135,6 +136,20 @@ impl<'a> ToolRuntime<'a> {
             events.push(ToolRuntimeEvent::Finished { result });
         }
         events
+    }
+}
+
+impl ToolRuntimePort for ToolRuntime<'_> {
+    fn execute_serial(&self, calls: Vec<ToolCall>, timestamp: u64) -> Vec<ToolRuntimePortEvent> {
+        ToolRuntime::execute_serial(self, calls, timestamp)
+            .into_iter()
+            .map(|event| match event {
+                ToolRuntimeEvent::Started { tool_call } => {
+                    ToolRuntimePortEvent::Started { tool_call }
+                }
+                ToolRuntimeEvent::Finished { result } => ToolRuntimePortEvent::Finished { result },
+            })
+            .collect()
     }
 }
 

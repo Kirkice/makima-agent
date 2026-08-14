@@ -9,10 +9,11 @@ mod executor;
 mod runtime;
 
 pub use config::{
-    load_config, load_config_from_paths, ConfigDiagnostic, FilesystemConfig, LoadedSandboxConfig, NetworkConfig,
-    SandboxConfig, PROJECT_CONFIG_DIRECTORY_NAME, SANDBOX_CONFIG_FILE_NAME,
+    ConfigDiagnostic, FilesystemConfig, LoadedSandboxConfig, NetworkConfig,
+    PROJECT_CONFIG_DIRECTORY_NAME, SANDBOX_CONFIG_FILE_NAME, SandboxConfig, load_config,
+    load_config_from_paths,
 };
-pub use executor::{execute_sandboxed_command, ExecutionError, ExecutionOptions, ExecutionResult};
+pub use executor::{ExecutionError, ExecutionOptions, ExecutionResult, execute_sandboxed_command};
 pub use runtime::{
     SandboxPlatform, SandboxRuntime, SandboxRuntimeError, SandboxRuntimeStatus, WrappedCommand,
 };
@@ -105,14 +106,18 @@ impl SandboxPolicy {
 
     /// 在保留既有根目录的前提下增加一个只读根目录。
     pub fn allow_read_root(mut self, root: impl Into<PathBuf>) -> Result<Self, SandboxPolicyError> {
-        self.readable_roots.push(normalize_absolute_path(root.into())?);
+        self.readable_roots
+            .push(normalize_absolute_path(root.into())?);
         Ok(self)
     }
 
     /// 在保留既有根目录的前提下增加一个可写根目录。
     ///
     /// 可写目录同时自动获得读取权限，保证读改写工具无需维护两套不一致的配置。
-    pub fn allow_write_root(mut self, root: impl Into<PathBuf>) -> Result<Self, SandboxPolicyError> {
+    pub fn allow_write_root(
+        mut self,
+        root: impl Into<PathBuf>,
+    ) -> Result<Self, SandboxPolicyError> {
         let root = normalize_absolute_path(root.into())?;
         if !self.readable_roots.contains(&root) {
             self.readable_roots.push(root.clone());
@@ -279,7 +284,13 @@ impl Sandbox for PolicySandbox {
             Ok(program) => program,
             Err(_) => return SandboxDecision::Deny(DenialReason::ProgramNotAllowed),
         };
-        if self.policy.process.allowed_programs.iter().any(|allowed| allowed == &program) {
+        if self
+            .policy
+            .process
+            .allowed_programs
+            .iter()
+            .any(|allowed| allowed == &program)
+        {
             SandboxDecision::Allow
         } else {
             SandboxDecision::Deny(DenialReason::ProgramNotAllowed)
@@ -334,8 +345,8 @@ fn is_within_root(candidate: &Path, root: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        DenialReason, FileAccess, NetworkAccess, PolicySandbox, ProcessPolicy, ProcessRequest, Sandbox,
-        SandboxDecision, SandboxPolicy,
+        DenialReason, FileAccess, NetworkAccess, PolicySandbox, ProcessPolicy, ProcessRequest,
+        Sandbox, SandboxDecision, SandboxPolicy,
     };
     use std::path::PathBuf;
 
@@ -349,8 +360,14 @@ mod tests {
         let workspace = test_root("project");
         let sandbox = PolicySandbox::new(SandboxPolicy::workspace_only(&workspace).unwrap());
 
-        assert_eq!(sandbox.check_file_access(&workspace.join("src/main.rs"), FileAccess::Read), SandboxDecision::Allow);
-        assert_eq!(sandbox.check_file_access(&workspace.join("output.txt"), FileAccess::Write), SandboxDecision::Allow);
+        assert_eq!(
+            sandbox.check_file_access(&workspace.join("src/main.rs"), FileAccess::Read),
+            SandboxDecision::Allow
+        );
+        assert_eq!(
+            sandbox.check_file_access(&workspace.join("output.txt"), FileAccess::Write),
+            SandboxDecision::Allow
+        );
     }
 
     #[test]
@@ -379,20 +396,38 @@ mod tests {
     fn write_root_also_grants_read_access() {
         let workspace = test_root("project");
         let cache = test_root("cache");
-        let policy = SandboxPolicy::workspace_only(workspace).unwrap().allow_write_root(&cache).unwrap();
+        let policy = SandboxPolicy::workspace_only(workspace)
+            .unwrap()
+            .allow_write_root(&cache)
+            .unwrap();
         let sandbox = PolicySandbox::new(policy);
 
-        assert!(sandbox.check_file_access(&cache.join("result.json"), FileAccess::Read).is_allowed());
-        assert!(sandbox.check_file_access(&cache.join("result.json"), FileAccess::Write).is_allowed());
+        assert!(
+            sandbox
+                .check_file_access(&cache.join("result.json"), FileAccess::Read)
+                .is_allowed()
+        );
+        assert!(
+            sandbox
+                .check_file_access(&cache.join("result.json"), FileAccess::Write)
+                .is_allowed()
+        );
     }
 
     #[test]
     fn network_is_denied_by_default_and_can_be_enabled() {
         let workspace = test_root("project");
         let denied = PolicySandbox::new(SandboxPolicy::workspace_only(&workspace).unwrap());
-        assert_eq!(denied.check_network_access(), SandboxDecision::Deny(DenialReason::NetworkDisabled));
+        assert_eq!(
+            denied.check_network_access(),
+            SandboxDecision::Deny(DenialReason::NetworkDisabled)
+        );
 
-        let allowed = PolicySandbox::new(SandboxPolicy::workspace_only(workspace).unwrap().with_network_access(NetworkAccess::Allow));
+        let allowed = PolicySandbox::new(
+            SandboxPolicy::workspace_only(workspace)
+                .unwrap()
+                .with_network_access(NetworkAccess::Allow),
+        );
         assert_eq!(allowed.check_network_access(), SandboxDecision::Allow);
     }
 
@@ -402,31 +437,50 @@ mod tests {
         let git = test_root("bin/git");
         let shell = test_root("bin/sh");
         let disabled = PolicySandbox::new(
-            SandboxPolicy::workspace_only(&workspace).unwrap().with_process_policy(ProcessPolicy {
-                allowed: false,
-                ..ProcessPolicy::default()
-            }),
+            SandboxPolicy::workspace_only(&workspace)
+                .unwrap()
+                .with_process_policy(ProcessPolicy {
+                    allowed: false,
+                    ..ProcessPolicy::default()
+                }),
         );
         assert_eq!(
-            disabled.check_process(&ProcessRequest { program: &git, cwd: Some(&workspace) }),
+            disabled.check_process(&ProcessRequest {
+                program: &git,
+                cwd: Some(&workspace)
+            }),
             SandboxDecision::Deny(DenialReason::ProcessDisabled)
         );
 
         let restricted = PolicySandbox::new(
-            SandboxPolicy::workspace_only(&workspace).unwrap().with_process_policy(ProcessPolicy {
-                allowed: true,
-                allowed_programs: vec![git.clone()],
-                timeout_ms: Some(5_000),
-                allowed_environment: vec!["PATH".to_owned()],
-            }),
+            SandboxPolicy::workspace_only(&workspace)
+                .unwrap()
+                .with_process_policy(ProcessPolicy {
+                    allowed: true,
+                    allowed_programs: vec![git.clone()],
+                    timeout_ms: Some(5_000),
+                    allowed_environment: vec!["PATH".to_owned()],
+                }),
         );
-        assert_eq!(restricted.check_process(&ProcessRequest { program: &git, cwd: Some(&workspace) }), SandboxDecision::Allow);
         assert_eq!(
-            restricted.check_process(&ProcessRequest { program: &shell, cwd: Some(&workspace) }),
+            restricted.check_process(&ProcessRequest {
+                program: &git,
+                cwd: Some(&workspace)
+            }),
+            SandboxDecision::Allow
+        );
+        assert_eq!(
+            restricted.check_process(&ProcessRequest {
+                program: &shell,
+                cwd: Some(&workspace)
+            }),
             SandboxDecision::Deny(DenialReason::ProgramNotAllowed)
         );
         assert_eq!(
-            restricted.check_process(&ProcessRequest { program: &git, cwd: Some(&test_root("outside")) }),
+            restricted.check_process(&ProcessRequest {
+                program: &git,
+                cwd: Some(&test_root("outside"))
+            }),
             SandboxDecision::Deny(DenialReason::ProcessWorkingDirectoryDenied)
         );
     }

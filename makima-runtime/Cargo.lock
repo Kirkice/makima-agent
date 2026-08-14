@@ -127,11 +127,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpc"
+version = "0.1.0"
+dependencies = [
+ "protocol",
+]
+
+[[package]]
 name = "runtime"
 version = "0.1.0"
 dependencies = [
  "agent-loop",
  "protocol",
+ "rpc",
  "serde_json",
  "session",
 ]
@@ -222,6 +230,7 @@ dependencies = [
 name = "tool-runtime"
 version = "0.1.0"
 dependencies = [
+ "agent-loop",
  "protocol",
  "serde_json",
 ]

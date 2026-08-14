@@ -1,8 +1,5 @@
 import { describe, expect, test } from "vitest";
-import {
-	mapAssistantMessageEvent,
-	type ProviderHostAssistantMessageEvent,
-} from "../src/index.ts";
+import { mapAssistantMessageEvent, type ProviderHostAssistantMessageEvent } from "../src/index.ts";
 
 describe("Provider Host adapter", () => {
 	test("projects TypeScript Provider events into the shared stream DTO", () => {
@@ -41,28 +38,28 @@ describe("Provider Host adapter", () => {
 
 	test("maps cancellation, provider errors, and unsupported deferred responses to errors", () => {
 		expect(
-		mapAssistantMessageEvent({
-			type: "error",
-			reason: "aborted",
-			error: { timestamp: 3 },
-		}),
-	).toEqual({ type: "error", timestamp: 3, message: "Operation aborted" });
+			mapAssistantMessageEvent({
+				type: "error",
+				reason: "aborted",
+				error: { timestamp: 3 },
+			}),
+		).toEqual({ type: "error", timestamp: 3, message: "Operation aborted" });
 
 		expect(
-		mapAssistantMessageEvent({
-			type: "error",
-			reason: "error",
-			error: { timestamp: 4, errorMessage: "网络中断" },
-		}),
-	).toEqual({ type: "error", timestamp: 4, message: "网络中断" });
+			mapAssistantMessageEvent({
+				type: "error",
+				reason: "error",
+				error: { timestamp: 4, errorMessage: "网络中断" },
+			}),
+		).toEqual({ type: "error", timestamp: 4, message: "网络中断" });
 
 		expect(
-		mapAssistantMessageEvent({
-			type: "done",
-			reason: "deferred",
-			message: { timestamp: 5 },
-		}),
-	).toEqual({
+			mapAssistantMessageEvent({
+				type: "done",
+				reason: "deferred",
+				message: { timestamp: 5 },
+			}),
+		).toEqual({
 			type: "error",
 			timestamp: 5,
 			message: "Provider deferred response is not supported by the Rust Core yet.",

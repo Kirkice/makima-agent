@@ -6,6 +6,14 @@
 
 /// AgentSession 领域层及其外部能力端口。
 pub mod agent_session;
+/// 真实 stdio 与 Unix socket RPC listener。
+pub mod listener;
+/// Rust Core 与 TypeScript Provider Host 的 framed CBOR 进程通道。
+pub mod provider_ipc;
+/// Provider stream 到 AgentSession 与 RPC progress 的运行时适配器。
+pub mod provider_runtime;
+/// 多 Session 生命周期、连接订阅与 RPC 业务适配器。
+pub mod session_manager;
 
 use protocol::{
     Command, ModelRef, ProtocolError, ProtocolErrorCode, SessionPhase, SessionSnapshot,
@@ -35,18 +43,32 @@ impl SessionRuntime {
         JsonlSessionStore::open(path)
     }
 
-    /// 创建一个新的 Session。
+    /// 创建一个使用迁移期默认值的 Session。
     pub fn new(id: impl Into<String>, cwd: impl Into<String>, model: ModelRef) -> Self {
+        Self::with_initial_state(id, cwd, model, None, ThinkingLevel::Medium, 0)
+    }
+
+    /// 创建一个保留 RPC `create` 命令初始属性的 Session。
+    ///
+    /// 管理层必须使用该构造器，避免丢失用户提供的名称、思考等级与创建时间。
+    pub fn with_initial_state(
+        id: impl Into<String>,
+        cwd: impl Into<String>,
+        model: ModelRef,
+        name: Option<String>,
+        thinking_level: ThinkingLevel,
+        created_at: u64,
+    ) -> Self {
         Self {
             snapshot: SessionSnapshot {
                 id: id.into(),
-                name: None,
+                name,
                 cwd: cwd.into(),
-                created_at: 0,
-                updated_at: 0,
+                created_at,
+                updated_at: created_at,
                 phase: SessionPhase::Idle,
                 model,
-                thinking_level: ThinkingLevel::Medium,
+                thinking_level,
                 attached: false,
                 locked: false,
                 revision: 0,

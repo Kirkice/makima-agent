@@ -9,6 +9,7 @@ members = [
     "crates/session",
     "crates/sandbox",
     "crates/runtime",
+    "crates/rpc",
     "crates/cli",
 ]
 # 日常 `cargo test` / `cargo check` 覆盖当前已落地模块。新增 crate 后需显式加入。
@@ -19,6 +20,7 @@ default-members = [
     "crates/session",
     "crates/sandbox",
     "crates/runtime",
+    "crates/rpc",
     "crates/cli",
 ]
 

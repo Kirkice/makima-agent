@@ -4,7 +4,7 @@
 //! 规则集中在这里，避免 JSONL 字段名扩散到领域状态机，也便于未来迁移到其他后端。
 
 use serde_json::{Map, Value, json};
-use session::{JsonlSessionStore, NewEntry};
+use session::{JsonlSessionStore, LeasedJsonlSession, NewEntry};
 
 use super::{PersistenceEvent, SessionPersistence, SessionPersistenceError};
 
@@ -13,8 +13,29 @@ const MAIN_LANE: &str = "main";
 
 /// 将现有 JSONL Store 作为 AgentSession 的持久化端口。
 pub struct JsonlSessionPersistence {
-    store: JsonlSessionStore,
+    store: SessionStoreLease,
     next_entry_sequence: u64,
+}
+
+enum SessionStoreLease {
+    Direct(JsonlSessionStore),
+    Leased(LeasedJsonlSession),
+}
+
+impl SessionStoreLease {
+    fn store(&self) -> &JsonlSessionStore {
+        match self {
+            Self::Direct(store) => store,
+            Self::Leased(store) => store,
+        }
+    }
+
+    fn store_mut(&mut self) -> &mut JsonlSessionStore {
+        match self {
+            Self::Direct(store) => store,
+            Self::Leased(store) => store,
+        }
+    }
 }
 
 impl JsonlSessionPersistence {
@@ -23,20 +44,38 @@ impl JsonlSessionPersistence {
     /// entry ID 仅需在 Store 内唯一，因此从当前 mutation 数量之后开始分配即可；
     /// Store 仍是唯一的 parent、timestamp 与全局 sequence 赋值者。
     pub fn new(store: JsonlSessionStore) -> Self {
+        Self::from_store(SessionStoreLease::Direct(store))
+    }
+
+    /// 接管一个带跨进程单写者租约的 Store。
+    ///
+    /// 该构造器用于生产 Session Factory；租约会与 persistence 一起存活，直到
+    /// ManagedSession 被释放，避免另一个进程同时追加同一 JSONL 文件。
+    pub fn new_leased(store: LeasedJsonlSession) -> Self {
+        Self::from_store(SessionStoreLease::Leased(store))
+    }
+
+    fn from_store(store: SessionStoreLease) -> Self {
         Self {
-            next_entry_sequence: store.mutations().len() as u64,
+            next_entry_sequence: store.store().mutations().len() as u64,
             store,
         }
     }
 
     /// 返回底层 Store 的只读引用，供仓库级查询和诊断使用。
     pub fn store(&self) -> &JsonlSessionStore {
-        &self.store
+        self.store.store()
     }
 
-    /// 取回底层 Store 的所有权，供关闭 lease 或上层切换 Session 时使用。
+    /// 取回底层 Store 的所有权。
+    ///
+    /// 若 persistence 持有 repository lease，此操作同时释放 lease；生产 runtime 应直接
+    /// 丢弃 persistence 来维持租约直到 Session 生命周期结束。
     pub fn into_store(self) -> JsonlSessionStore {
-        self.store
+        match self.store {
+            SessionStoreLease::Direct(store) => store,
+            SessionStoreLease::Leased(store) => store.into_store(),
+        }
     }
 
     fn next_entry_id(&mut self, kind: &str) -> String {
@@ -52,6 +91,7 @@ impl JsonlSessionPersistence {
         fields.insert("id".to_owned(), Value::String(self.next_entry_id(kind)));
         fields.insert("type".to_owned(), Value::String(kind.to_owned()));
         self.store
+            .store_mut()
             .append_entry(NewEntry {
                 lane: MAIN_LANE.to_owned(),
                 fields,

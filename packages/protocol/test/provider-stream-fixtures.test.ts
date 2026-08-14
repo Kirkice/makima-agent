@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { parseProviderStreamEvent, type ProviderStreamEvent } from "../src/index.ts";
+import { type ProviderStreamEvent, parseProviderStreamEvent } from "../src/index.ts";
 
 interface ProviderStreamFixture {
 	name: string;
@@ -23,7 +23,9 @@ const fixtureDirectory = fileURLToPath(new URL("./fixtures/provider-stream/", im
 async function loadFixtures(): Promise<ProviderStreamFixture[]> {
 	const names = (await readdir(fixtureDirectory)).filter((name) => name.endsWith(".json")).sort();
 	return Promise.all(
-		names.map(async (name) => JSON.parse(await readFile(`${fixtureDirectory}${name}`, "utf8")) as ProviderStreamFixture),
+		names.map(
+			async (name) => JSON.parse(await readFile(`${fixtureDirectory}${name}`, "utf8")) as ProviderStreamFixture,
+		),
 	);
 }
 

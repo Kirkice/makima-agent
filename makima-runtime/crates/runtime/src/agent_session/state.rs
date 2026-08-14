@@ -40,6 +40,7 @@ impl AgentSessionState {
     /// 创建处于空闲状态的新会话。
     pub fn new(
         id: String,
+        name: Option<String>,
         cwd: String,
         model: ModelRef,
         created_at: u64,
@@ -47,7 +48,7 @@ impl AgentSessionState {
     ) -> Self {
         Self {
             id,
-            name: None,
+            name,
             cwd,
             created_at,
             updated_at: created_at,

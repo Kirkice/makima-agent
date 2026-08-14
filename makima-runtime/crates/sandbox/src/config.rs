@@ -62,9 +62,18 @@ impl Default for SandboxConfig {
                 socks_proxy_port: None,
             },
             filesystem: FilesystemConfig {
-                deny_read: vec!["~/.ssh".to_owned(), "~/.aws".to_owned(), "~/.gnupg".to_owned()],
+                deny_read: vec![
+                    "~/.ssh".to_owned(),
+                    "~/.aws".to_owned(),
+                    "~/.gnupg".to_owned(),
+                ],
                 allow_write: vec![".".to_owned(), "/tmp".to_owned()],
-                deny_write: vec![".env".to_owned(), ".env.*".to_owned(), "*.pem".to_owned(), "*.key".to_owned()],
+                deny_write: vec![
+                    ".env".to_owned(),
+                    ".env.*".to_owned(),
+                    "*.pem".to_owned(),
+                    "*.key".to_owned(),
+                ],
                 allow_git_config: None,
             },
             ignore_violations: None,
@@ -147,7 +156,12 @@ pub struct ConfigDiagnostic {
 
 impl fmt::Display for ConfigDiagnostic {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "无法解析 Sandbox 配置 {}: {}", self.path.display(), self.message)
+        write!(
+            formatter,
+            "无法解析 Sandbox 配置 {}: {}",
+            self.path.display(),
+            self.message
+        )
     }
 }
 
@@ -164,7 +178,9 @@ pub struct LoadedSandboxConfig {
 /// `<agent_dir>/extensions/sandbox.json`，项目配置路径为 `<cwd>/.pi/sandbox.json`。
 pub fn load_config(cwd: &Path, agent_dir: &Path) -> LoadedSandboxConfig {
     let global_path = agent_dir.join("extensions").join(SANDBOX_CONFIG_FILE_NAME);
-    let project_path = cwd.join(PROJECT_CONFIG_DIRECTORY_NAME).join(SANDBOX_CONFIG_FILE_NAME);
+    let project_path = cwd
+        .join(PROJECT_CONFIG_DIRECTORY_NAME)
+        .join(SANDBOX_CONFIG_FILE_NAME);
     load_config_from_paths(&global_path, &project_path)
 }
 
@@ -176,22 +192,35 @@ pub fn load_config_from_paths(global_path: &Path, project_path: &Path) -> Loaded
     apply_file_overrides(&mut config, global_path, &mut diagnostics);
     apply_file_overrides(&mut config, project_path, &mut diagnostics);
 
-    LoadedSandboxConfig { config, diagnostics }
+    LoadedSandboxConfig {
+        config,
+        diagnostics,
+    }
 }
 
-fn apply_file_overrides(config: &mut SandboxConfig, path: &Path, diagnostics: &mut Vec<ConfigDiagnostic>) {
+fn apply_file_overrides(
+    config: &mut SandboxConfig,
+    path: &Path,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) {
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
         Err(error) => {
-            diagnostics.push(ConfigDiagnostic { path: path.to_path_buf(), message: error.to_string() });
+            diagnostics.push(ConfigDiagnostic {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            });
             return;
         }
     };
 
     match serde_json::from_str::<SandboxConfigOverrides>(&contents) {
         Ok(overrides) => merge_config(config, overrides),
-        Err(error) => diagnostics.push(ConfigDiagnostic { path: path.to_path_buf(), message: error.to_string() }),
+        Err(error) => diagnostics.push(ConfigDiagnostic {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        }),
     }
 }
 
@@ -254,24 +283,39 @@ fn merge_filesystem_config(config: &mut FilesystemConfig, overrides: FilesystemC
 
 #[cfg(test)]
 mod tests {
-    use super::{load_config, load_config_from_paths, SandboxConfig};
+    use super::{SandboxConfig, load_config, load_config_from_paths};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temporary_directory(name: &str) -> PathBuf {
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        std::env::temp_dir().join(format!("makima-sandbox-config-{name}-{}-{nonce}", std::process::id()))
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "makima-sandbox-config-{name}-{}-{nonce}",
+            std::process::id()
+        ))
     }
 
     #[test]
     fn defaults_match_the_typescript_extension() {
         let config = SandboxConfig::default();
         assert!(config.enabled);
-        assert_eq!(config.network.allowed_domains.first().map(String::as_str), Some("npmjs.org"));
-        assert_eq!(config.filesystem.deny_read, vec!["~/.ssh", "~/.aws", "~/.gnupg"]);
+        assert_eq!(
+            config.network.allowed_domains.first().map(String::as_str),
+            Some("npmjs.org")
+        );
+        assert_eq!(
+            config.filesystem.deny_read,
+            vec!["~/.ssh", "~/.aws", "~/.gnupg"]
+        );
         assert_eq!(config.filesystem.allow_write, vec![".", "/tmp"]);
-        assert_eq!(config.filesystem.deny_write, vec![".env", ".env.*", "*.pem", "*.key"]);
+        assert_eq!(
+            config.filesystem.deny_write,
+            vec![".env", ".env.*", "*.pem", "*.key"]
+        );
     }
 
     #[test]
@@ -295,8 +339,14 @@ mod tests {
         let loaded = load_config_from_paths(&global_path, &project_path);
         assert!(loaded.diagnostics.is_empty());
         assert!(loaded.config.enabled);
-        assert_eq!(loaded.config.network.allowed_domains, vec!["global.example"]);
-        assert_eq!(loaded.config.network.denied_domains, vec!["blocked.example"]);
+        assert_eq!(
+            loaded.config.network.allowed_domains,
+            vec!["global.example"]
+        );
+        assert_eq!(
+            loaded.config.network.denied_domains,
+            vec!["blocked.example"]
+        );
         assert_eq!(loaded.config.network.allow_local_binding, Some(true));
         assert_eq!(loaded.config.filesystem.allow_write, vec!["/global"]);
         assert_eq!(loaded.config.filesystem.deny_write, vec!["secret"]);

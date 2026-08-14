@@ -8,5 +8,6 @@ description = "Pi Agent Rust 核心运行时的第一阶段骨架"
 [dependencies]
 agent-loop = { path = "../agent-loop" }
 protocol = { path = "../protocol" }
+rpc = { path = "../rpc" }
 session = { path = "../session" }
 serde_json.workspace = true

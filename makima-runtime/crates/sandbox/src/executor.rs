@@ -10,9 +10,9 @@ use std::fmt;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -38,18 +38,29 @@ pub struct ExecutionResult {
 pub enum ExecutionError {
     Runtime(SandboxRuntimeError),
     InvalidWorkingDirectory(PathBuf),
-    Spawn { program: PathBuf, source: std::io::Error },
+    Spawn {
+        program: PathBuf,
+        source: std::io::Error,
+    },
     Wait(std::io::Error),
     Aborted,
-    TimedOut { timeout: Duration },
+    TimedOut {
+        timeout: Duration,
+    },
 }
 
 impl fmt::Display for ExecutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Runtime(source) => write!(formatter, "无法包装 Sandbox 命令: {source}"),
-            Self::InvalidWorkingDirectory(path) => write!(formatter, "工作目录不存在或不是目录: {}", path.display()),
-            Self::Spawn { program, source } => write!(formatter, "无法启动 Sandbox 后端 {}: {source}", program.display()),
+            Self::InvalidWorkingDirectory(path) => {
+                write!(formatter, "工作目录不存在或不是目录: {}", path.display())
+            }
+            Self::Spawn { program, source } => write!(
+                formatter,
+                "无法启动 Sandbox 后端 {}: {source}",
+                program.display()
+            ),
             Self::Wait(source) => write!(formatter, "等待 Sandbox 命令失败: {source}"),
             Self::Aborted => formatter.write_str("aborted"),
             Self::TimedOut { timeout } => write!(formatter, "timeout:{}", timeout.as_secs()),
@@ -73,7 +84,9 @@ pub fn execute_sandboxed_command(
     if !options.cwd.is_dir() {
         return Err(ExecutionError::InvalidWorkingDirectory(options.cwd.clone()));
     }
-    let wrapped = runtime.wrap_command(command).map_err(ExecutionError::Runtime)?;
+    let wrapped = runtime
+        .wrap_command(command)
+        .map_err(ExecutionError::Runtime)?;
     let mut child = Command::new(&wrapped.program)
         .args(&wrapped.args)
         .current_dir(&options.cwd)
@@ -81,7 +94,10 @@ pub fn execute_sandboxed_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|source| ExecutionError::Spawn { program: wrapped.program, source })?;
+        .map_err(|source| ExecutionError::Spawn {
+            program: wrapped.program,
+            source,
+        })?;
 
     let (sender, receiver) = mpsc::channel();
     let stdout = child.stdout.take().expect("stdout is piped");
@@ -94,8 +110,19 @@ pub fn execute_sandboxed_command(
             on_output(&chunk);
         }
 
-        if options.cancellation.as_ref().is_some_and(|flag| flag.load(Ordering::Acquire)) {
-            return terminate_and_report(&mut child, stdout_reader, stderr_reader, &receiver, on_output, ExecutionError::Aborted);
+        if options
+            .cancellation
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            return terminate_and_report(
+                &mut child,
+                stdout_reader,
+                stderr_reader,
+                &receiver,
+                on_output,
+                ExecutionError::Aborted,
+            );
         }
         if let Some(timeout) = options.timeout
             && started_at.elapsed() >= timeout
@@ -114,7 +141,9 @@ pub fn execute_sandboxed_command(
                 drain_output(&receiver, on_output);
                 join_reader(stdout_reader);
                 join_reader(stderr_reader);
-                return Ok(ExecutionResult { exit_code: status.code() });
+                return Ok(ExecutionResult {
+                    exit_code: status.code(),
+                });
             }
             Ok(None) => thread::sleep(Duration::from_millis(10)),
             Err(source) => {
@@ -178,11 +207,11 @@ fn join_reader(reader: thread::JoinHandle<()>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{execute_sandboxed_command, ExecutionError, ExecutionOptions};
+    use super::{ExecutionError, ExecutionOptions, execute_sandboxed_command};
     use crate::{SandboxConfig, SandboxPlatform, SandboxRuntime};
     use std::path::PathBuf;
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
     fn enabled_runtime() -> SandboxRuntime {
@@ -198,8 +227,13 @@ mod tests {
     #[test]
     fn rejects_missing_working_directory_before_starting_backend() {
         let runtime = enabled_runtime();
-        let options = ExecutionOptions { cwd: PathBuf::from("missing-makima-sandbox-directory"), timeout: None, cancellation: None };
-        let error = execute_sandboxed_command(&runtime, "echo ignored", &options, &mut |_| {}).unwrap_err();
+        let options = ExecutionOptions {
+            cwd: PathBuf::from("missing-makima-sandbox-directory"),
+            timeout: None,
+            cancellation: None,
+        };
+        let error =
+            execute_sandboxed_command(&runtime, "echo ignored", &options, &mut |_| {}).unwrap_err();
         assert!(matches!(error, ExecutionError::InvalidWorkingDirectory(_)));
     }
 
@@ -211,7 +245,8 @@ mod tests {
             timeout: None,
             cancellation: Some(Arc::new(AtomicBool::new(true))),
         };
-        let error = execute_sandboxed_command(&runtime, "echo ignored", &options, &mut |_| {}).unwrap_err();
+        let error =
+            execute_sandboxed_command(&runtime, "echo ignored", &options, &mut |_| {}).unwrap_err();
         assert_eq!(error.to_string(), "aborted");
     }
 
@@ -223,7 +258,8 @@ mod tests {
             timeout: Some(Duration::ZERO),
             cancellation: None,
         };
-        let error = execute_sandboxed_command(&runtime, "echo ignored", &options, &mut |_| {}).unwrap_err();
+        let error =
+            execute_sandboxed_command(&runtime, "echo ignored", &options, &mut |_| {}).unwrap_err();
         assert_eq!(error.to_string(), "timeout:0");
     }
 }

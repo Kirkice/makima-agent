@@ -36,8 +36,9 @@
       "message_end",
       "tool_execution_start",
       "tool_execution_end",
-      "turn_end",
-      "agent_end"
+      "message_start",
+      "message_end",
+      "tool_results_ready"
     ],
     "toolCall": {
       "toolCallId": "call-1",

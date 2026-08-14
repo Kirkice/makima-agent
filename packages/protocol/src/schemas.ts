@@ -280,6 +280,30 @@ export const ProviderStreamEventSchema = Type.Union([
 ]);
 export type ProviderStreamEvent = Static<typeof ProviderStreamEventSchema>;
 
+/**
+ * Rust Core 发往 Provider Host 的独立进程消息。
+ *
+ * 该通道与客户端 RPC 共用 CBOR + length-prefix framing，但不复用客户端命令。每个
+ * `requestId` 只能用于一次 request；abort 可重复发送，Host 必须将其视为幂等操作。
+ */
+export const ProviderHostRequestSchema = Type.Union([
+	StrictObject({ type: Type.Literal("request"), request: ProviderRequestSchema }),
+	StrictObject({ type: Type.Literal("abort"), requestId: IdSchema }),
+]);
+export type ProviderHostRequest = Static<typeof ProviderHostRequestSchema>;
+
+/**
+ * Provider Host 回传 Rust Core 的独立进程消息。
+ *
+ * 每个 request 产生零个或多个 event，并且恰好以一个 complete 收尾。Host 失败时先发送
+ * 共享 `error` stream event，再发送 complete，使 Core 可为每个请求维持单一终态路径。
+ */
+export const ProviderHostResponseSchema = Type.Union([
+	StrictObject({ type: Type.Literal("event"), requestId: IdSchema, event: ProviderStreamEventSchema }),
+	StrictObject({ type: Type.Literal("complete"), requestId: IdSchema }),
+]);
+export type ProviderHostResponse = Static<typeof ProviderHostResponseSchema>;
+
 /** Normalized incremental activity. Snapshots remain authoritative. */
 export const TranscriptProgressSchema = Type.Union([
 	StrictObject({

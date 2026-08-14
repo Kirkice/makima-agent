@@ -41,9 +41,7 @@ type ProviderHostContent = { type: "thinking"; redacted?: boolean } | { type: st
  * `tool_call_end` 重建 transcript，因此它们不会产生跨进程事件。`deferred` 尚未进入
  * Rust Core 的恢复流程，明确转换为稳定错误，避免把未实现语义伪装成正常完成。
  */
-export function mapAssistantMessageEvent(
-	event: ProviderHostAssistantMessageEvent,
-): ProviderStreamEvent | undefined {
+export function mapAssistantMessageEvent(event: ProviderHostAssistantMessageEvent): ProviderStreamEvent | undefined {
 	switch (event.type) {
 		case "start":
 			return {

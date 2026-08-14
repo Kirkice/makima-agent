@@ -11,6 +11,10 @@ import {
 	type ClientMessage,
 	ClientMessageSchema,
 	PROTOCOL_VERSION,
+	type ProviderHostRequest,
+	ProviderHostRequestSchema,
+	type ProviderHostResponse,
+	ProviderHostResponseSchema,
 	type ProviderRequest,
 	ProviderRequestSchema,
 	type ProviderStreamEvent,
@@ -68,6 +72,22 @@ export function parseProviderRequest(value: unknown): ProviderRequest {
 export function parseProviderStreamEvent(value: unknown): ProviderStreamEvent {
 	if (!isProtocolValue(value) || !Check(ProviderStreamEventSchema, value)) {
 		throw new ProtocolValidationError("Invalid provider stream event");
+	}
+	return value;
+}
+
+/** 验证 Rust Core 发给 Provider Host 的进程消息。 */
+export function parseProviderHostRequest(value: unknown): ProviderHostRequest {
+	if (!isProtocolValue(value) || !Check(ProviderHostRequestSchema, value)) {
+		throw new ProtocolValidationError("Invalid provider host request");
+	}
+	return value;
+}
+
+/** 验证 Provider Host 发给 Rust Core 的进程消息。 */
+export function parseProviderHostResponse(value: unknown): ProviderHostResponse {
+	if (!isProtocolValue(value) || !Check(ProviderHostResponseSchema, value)) {
+		throw new ProtocolValidationError("Invalid provider host response");
 	}
 	return value;
 }
@@ -185,6 +205,56 @@ export function createClientMessageDecoder(options?: FrameDecoderOptions): Clien
 
 export function createServerMessageDecoder(options?: FrameDecoderOptions): ServerMessageDecoder {
 	return new ServerMessageDecoder(options);
+}
+
+/** Validates and encodes one complete Provider Host request frame. */
+export function encodeProviderHostRequest(message: ProviderHostRequest, options?: FrameDecoderOptions): Uint8Array {
+	return encodeProtocolMessage(message, parseProviderHostRequest, "provider host request", options);
+}
+
+/** Validates and encodes one complete Provider Host response frame. */
+export function encodeProviderHostResponse(message: ProviderHostResponse, options?: FrameDecoderOptions): Uint8Array {
+	return encodeProtocolMessage(message, parseProviderHostResponse, "provider host response", options);
+}
+
+export class ProviderHostRequestDecoder {
+	private readonly decoder: ValidatedMessageDecoder<ProviderHostRequest>;
+
+	constructor(options?: FrameDecoderOptions) {
+		this.decoder = new ValidatedMessageDecoder("provider host request", parseProviderHostRequest, options);
+	}
+
+	push(chunk: Uint8Array): ProviderHostRequest[] {
+		return this.decoder.push(chunk);
+	}
+
+	end(): void {
+		this.decoder.end();
+	}
+}
+
+export class ProviderHostResponseDecoder {
+	private readonly decoder: ValidatedMessageDecoder<ProviderHostResponse>;
+
+	constructor(options?: FrameDecoderOptions) {
+		this.decoder = new ValidatedMessageDecoder("provider host response", parseProviderHostResponse, options);
+	}
+
+	push(chunk: Uint8Array): ProviderHostResponse[] {
+		return this.decoder.push(chunk);
+	}
+
+	end(): void {
+		this.decoder.end();
+	}
+}
+
+export function createProviderHostRequestDecoder(options?: FrameDecoderOptions): ProviderHostRequestDecoder {
+	return new ProviderHostRequestDecoder(options);
+}
+
+export function createProviderHostResponseDecoder(options?: FrameDecoderOptions): ProviderHostResponseDecoder {
+	return new ProviderHostResponseDecoder(options);
 }
 
 export function isSupportedProtocolVersion(version: number): version is typeof PROTOCOL_VERSION {

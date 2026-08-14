@@ -91,6 +91,16 @@ impl DerefMut for LeasedJsonlSession {
     }
 }
 
+impl LeasedJsonlSession {
+    /// 取回 Store 并释放跨进程单写者租约。
+    ///
+    /// 此操作会使调用方失去 repository 层面的排他写入保证；生产 runtime 通常应
+    /// 直接丢弃 lease，而不是调用该方法。
+    pub fn into_store(self) -> JsonlSessionStore {
+        self.store
+    }
+}
+
 /// 与 TypeScript JSONL v4 目录布局兼容的文件系统 repository。
 ///
 /// 每个绝对 `cwd` 映射到根目录下的一个子目录。数据文件使用 ISO UTC 时间戳

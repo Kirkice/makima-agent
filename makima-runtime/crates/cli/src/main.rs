@@ -1,76 +1,51 @@
-//! Pi Agent Rust CLI 的第一阶段入口。
+//! Pi Agent Rust Core 的 stdio RPC 入口。
 //!
-//! 该入口目前只验证 Rust Core 可以独立启动和处理安全的控制命令。
-//! 在 Agent Loop 尚未迁移完成前，默认不接管完整用户流程，避免破坏现有
-//! TypeScript CLI 的功能。后续应增加显式的 `--runtime rust|ts|auto` 选择。
+//! stdin/stdout 专用于 framed-CBOR RPC。Provider Host 的凭证和诊断仍由其子进程的
+//! 环境与 stderr 管理；本进程不会向 stdout 写入任何非协议文本。
 
-use protocol::{Command, ModelRef, ThinkingLevel};
-use runtime::SessionRuntime;
-use session::JsonlSessionStore;
+use std::sync::{Arc, Mutex};
+
+use protocol::ModelRef;
+use runtime::{
+    listener::serve_stdio,
+    session_manager::{AgentSessionFactory, ConnectionSessionHandler, SessionManager},
+};
 
 fn main() {
-    let mut runtime = SessionRuntime::new(
-        "bootstrap-session",
-        ".",
-        ModelRef {
-            provider: "unconfigured".to_owned(),
-            id: "unconfigured".to_owned(),
-        },
-    );
-
-    // 第一阶段只执行不会调用模型的控制命令，用于验证 Rust Core 的最小闭环。
-    // 完整 prompt 仍由 TypeScript fallback 处理，直到 Provider Bridge 和 Agent
-    // Loop 通过 conformance tests 验证完成。
-    let command = Command::SetThinking {
-        session_id: "bootstrap-session".to_owned(),
-        thinking_level: ThinkingLevel::Medium,
+    let session_root = std::env::var_os("PI_RUNTIME_SESSION_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(".pi").join("sessions"));
+    let default_model = ModelRef {
+        provider: std::env::var("PI_MODEL_PROVIDER").unwrap_or_else(|_| "unconfigured".to_owned()),
+        id: std::env::var("PI_MODEL_ID").unwrap_or_else(|_| "unconfigured".to_owned()),
     };
-
-    match runtime.execute(command) {
-        Ok(snapshot) => println!(
-            "Rust Core ready: session={} revision={}",
-            snapshot.id, snapshot.revision
-        ),
+    let factory = match AgentSessionFactory::new(session_root) {
+        Ok(factory) => factory,
         Err(error) => {
-            eprintln!("Rust Core error [{}]: {}", error.code, error.message);
+            eprintln!(
+                "Rust Core 初始化 Session Store 失败 [{}]: {}",
+                error.code, error.message
+            );
             std::process::exit(1);
         }
-    }
+    };
+    let manager = Arc::new(Mutex::new(SessionManager::new(
+        "rust-core",
+        ".",
+        default_model,
+        Vec::new(),
+        factory,
+    )));
+    let handler = ConnectionSessionHandler::new("stdio", manager, unix_millis);
 
-    // 仅验证 Session Store 可以独立创建、追加和重新打开；真实用户 Session
-    // 仍由 TypeScript Host 管理，避免在迁移阶段改变现有 CLI 的存储路径。
-    let demo_path = std::env::temp_dir().join("runtime-session-store-demo.jsonl");
-    let _ = std::fs::remove_file(&demo_path);
-    match verify_session_store(&demo_path) {
-        Ok(sequence) => println!(
-            "Session Store ready: path={} seq={sequence}",
-            demo_path.display()
-        ),
-        Err(error) => {
-            eprintln!("Session Store error: {error}");
-            std::process::exit(1);
-        }
+    if let Err(error) = serve_stdio("stdio", handler) {
+        eprintln!("Rust Core RPC 失败: {error}");
+        std::process::exit(1);
     }
 }
 
-/// 以真实 v4 entry 验证 Store 的创建、追加及恢复路径。
-///
-/// 这是迁移阶段的自检，不访问用户目录，也不接管 TypeScript 的真实 Session。
-fn verify_session_store(path: &std::path::Path) -> Result<u64, session::SessionStoreError> {
-    let _ = std::fs::remove_file(path);
-    let mut store = JsonlSessionStore::create(path, "bootstrap-session", ".")?;
-    let mut entry = serde_json::Map::new();
-    entry.insert(
-        "id".into(),
-        serde_json::Value::String("bootstrap-entry".into()),
-    );
-    entry.insert("type".into(), serde_json::Value::String("message".into()));
-    entry.insert("parentId".into(), serde_json::Value::Null);
-    entry.insert("timestamp".into(), serde_json::Value::from(0));
-    entry.insert("lane".into(), serde_json::Value::String("main".into()));
-    let mutation = store.append("entry", entry)?;
-    drop(store);
-    JsonlSessionStore::open(path)?;
-    let _ = std::fs::remove_file(path);
-    Ok(mutation.seq)
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis() as u64)
 }

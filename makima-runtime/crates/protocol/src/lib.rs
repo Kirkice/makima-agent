@@ -211,6 +211,44 @@ pub enum ProviderStreamEvent {
     },
 }
 
+/// Rust Core 发往 TypeScript Provider Host 的进程消息。
+///
+/// 该通道复用协议的 CBOR 与长度前缀 framing，但独立于面向客户端的 RPC 命令。一个
+/// `request_id` 在 Host 存活期间只能对应一次 request；`abort` 可重复发送且必须幂等。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ProviderHostRequest {
+    Request { request: ProviderRequest },
+    Abort { request_id: String },
+}
+
+/// TypeScript Provider Host 回传给 Rust Core 的进程消息。
+///
+/// 每个请求先产生零个或多个 `event`，再以唯一的 `complete` 收尾。Host 无法解析或执行
+/// 请求时会先发送共享的 `ProviderStreamEvent::Error`，随后仍发送 `complete`；Core 因而
+/// 无需为单请求错误建立第二套状态机。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ProviderHostResponse {
+    Event {
+        request_id: String,
+        event: ProviderStreamEvent,
+    },
+    Complete {
+        request_id: String,
+    },
+}
+
 /// 统一用量对象，与 TypeScript `UsageSchema` 的字段和 JSON 命名保持一致。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
