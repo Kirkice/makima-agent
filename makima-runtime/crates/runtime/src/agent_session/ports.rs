@@ -88,6 +88,7 @@ pub fn session_events_from_rust_agent_loop(
             | RustAgentLoopEvent::TranscriptItemStarted(_)
             | RustAgentLoopEvent::TranscriptItemUpdated(_)
             | RustAgentLoopEvent::ToolExecutionStarted { .. }
+            | RustAgentLoopEvent::ToolExecutionUpdated { .. }
             | RustAgentLoopEvent::ToolExecutionFinished { .. }
             | RustAgentLoopEvent::ToolResultsReady { .. }
             | RustAgentLoopEvent::TurnEnded { .. } => None,

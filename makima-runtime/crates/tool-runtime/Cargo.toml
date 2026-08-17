@@ -8,4 +8,5 @@ description = "Pi Agent Rust 单工具串行执行运行时"
 [dependencies]
 agent-loop = { path = "../agent-loop" }
 protocol = { path = "../protocol" }
+sandbox = { path = "../sandbox" }
 serde_json = { workspace = true }

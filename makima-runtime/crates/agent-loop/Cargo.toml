@@ -7,6 +7,7 @@ description = "Pi Agent Rust 回合状态机与 Provider 流适配边界"
 
 [dependencies]
 protocol = { path = "../protocol" }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 serde = { workspace = true }

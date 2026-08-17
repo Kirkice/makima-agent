@@ -6,12 +6,15 @@
 
 use std::collections::VecDeque;
 
-use agent_loop::{AgentLoopEngine, AgentLoopEvent as RustAgentLoopEvent, ProviderEvent};
+use agent_loop::{
+    AgentLoopEngine, AgentLoopEvent as RustAgentLoopEvent, ProviderEvent, ToolRuntimePort,
+};
 use protocol::{
     ActiveTranscriptItem, AssistantTranscriptItem, FinishedTranscriptItem, ProviderHostResponse,
-    ProviderRequest, ProviderStreamEvent, ServerEvent, SessionPhase, ToolTranscriptItem,
+    ProviderRequest, ProviderStreamEvent, ServerEvent, SessionPhase, ToolRole, ToolTranscriptItem,
     TranscriptItem, TranscriptProgress,
 };
+use tool_runtime::ToolRuntime;
 
 use crate::agent_session::{
     AgentSession, JsonlSessionPersistence, session_events_from_rust_agent_loop,
@@ -103,6 +106,7 @@ pub struct ProviderStreamDriver<P> {
     transport: P,
     active_request_id: Option<String>,
     active_request_terminal: bool,
+    continuation_pending: bool,
     next_request_sequence: u64,
     system_prompt: String,
 }
@@ -117,6 +121,7 @@ where
             transport,
             active_request_id: None,
             active_request_terminal: false,
+            continuation_pending: false,
             next_request_sequence: 0,
             system_prompt: system_prompt.into(),
         }
@@ -131,6 +136,7 @@ where
     pub fn start(
         &mut self,
         session: &mut AgentSession<AgentLoopEngine, JsonlSessionPersistence>,
+        tool_runtime: &ToolRuntime,
         timestamp: u64,
     ) -> Result<Vec<ServerEvent>, String> {
         if self.active_request_id.is_some() {
@@ -148,7 +154,7 @@ where
             model: session.snapshot().model,
             system_prompt: self.system_prompt.clone(),
             messages: session.agent_loop().messages().to_vec(),
-            tools: Vec::new(),
+            tools: tool_runtime.definitions(),
         };
         self.transport.request(request)?;
         self.active_request_id = Some(request_id);
@@ -171,13 +177,36 @@ where
     pub fn poll(
         &mut self,
         session: &mut AgentSession<AgentLoopEngine, JsonlSessionPersistence>,
+        tool_runtime: &mut ToolRuntime,
         timestamp: u64,
     ) -> Result<Vec<ServerEvent>, String> {
-        let responses = match self.transport.try_receive()? {
-            Some(responses) => responses,
-            None => return Ok(Vec::new()),
-        };
         let mut events = Vec::new();
+        let tool_events = ToolRuntimePort::poll(tool_runtime, timestamp);
+        if !tool_events.is_empty() {
+            let loop_events = if session.agent_loop().is_abort_requested() {
+                // Runtime 已为活动及排队调用生成取消终态；Agent Loop 只结算 assistant abort，
+                // 不持久化取消后到达的工具结果，也绝不能再启动 continuation。
+                self.continuation_pending = false;
+                session.agent_loop_mut().settle_abort(timestamp)
+            } else {
+                session
+                    .agent_loop_mut()
+                    .handle_tool_runtime_events(tool_events)
+                    .map_err(|error| error.message().to_owned())?
+            };
+            if loop_events
+                .iter()
+                .any(|event| matches!(event, RustAgentLoopEvent::ToolResultsReady { .. }))
+            {
+                self.continuation_pending = true;
+            }
+            self.apply_loop_events(session, loop_events, timestamp, &mut events)?;
+            self.maybe_start_continuation(session, tool_runtime, timestamp, &mut events)?;
+        }
+
+        let Some(responses) = self.transport.try_receive()? else {
+            return Ok(events);
+        };
         for response in responses {
             match response {
                 ProviderHostResponse::Event { request_id, event } => {
@@ -187,7 +216,13 @@ where
                     if self.active_request_terminal {
                         continue;
                     }
-                    self.apply_provider_event(session, event, timestamp, &mut events)?;
+                    self.apply_provider_event(
+                        session,
+                        tool_runtime,
+                        event,
+                        timestamp,
+                        &mut events,
+                    )?;
                     if session.snapshot().phase != SessionPhase::Turn {
                         self.active_request_terminal = true;
                     }
@@ -197,6 +232,7 @@ where
                     if !self.active_request_terminal {
                         self.apply_provider_event(
                             session,
+                            tool_runtime,
                             ProviderStreamEvent::Error {
                                 timestamp,
                                 message: "Provider Host 在发送终态事件前结束请求。".to_owned(),
@@ -207,10 +243,27 @@ where
                     }
                     self.active_request_id = None;
                     self.active_request_terminal = false;
+                    self.maybe_start_continuation(session, tool_runtime, timestamp, &mut events)?;
                 }
             }
         }
         Ok(events)
+    }
+
+    /// Provider complete 与工具批次结束可按任意顺序到达。只有两个条件同时满足时才消费
+    /// pending 标记并启动一次 continuation，避免丢失续轮或重复请求。
+    fn maybe_start_continuation(
+        &mut self,
+        session: &mut AgentSession<AgentLoopEngine, JsonlSessionPersistence>,
+        tool_runtime: &ToolRuntime,
+        timestamp: u64,
+        output: &mut Vec<ServerEvent>,
+    ) -> Result<(), String> {
+        if self.continuation_pending && self.active_request_id.is_none() {
+            self.continuation_pending = false;
+            output.extend(self.start(session, tool_runtime, timestamp)?);
+        }
+        Ok(())
     }
 
     fn require_active_request(&self, request_id: &str) -> Result<(), String> {
@@ -228,6 +281,7 @@ where
     fn apply_provider_event(
         &mut self,
         session: &mut AgentSession<AgentLoopEngine, JsonlSessionPersistence>,
+        tool_runtime: &mut ToolRuntime,
         stream_event: ProviderStreamEvent,
         timestamp: u64,
         output: &mut Vec<ServerEvent>,
@@ -242,8 +296,19 @@ where
             ProviderEvent::try_from(stream_event).map_err(|error| error.message().to_owned())?;
         let loop_events = session
             .agent_loop_mut()
-            .handle_provider_event(provider_event)
+            .handle_provider_event_with_tools(provider_event, tool_runtime)
             .map_err(|error| error.message().to_owned())?;
+        if session.agent_loop().is_waiting_for_tools() {
+            // Provider 的 done 已到达，但 continuation 必须等待整个工具批次稳定结束。
+            self.active_request_terminal = true;
+        }
+        if loop_events
+            .iter()
+            .any(|event| matches!(event, RustAgentLoopEvent::ToolResultsReady { .. }))
+        {
+            self.continuation_pending = true;
+            self.active_request_terminal = true;
+        }
         self.apply_loop_events(session, loop_events, timestamp, output)
     }
 
@@ -256,7 +321,7 @@ where
     ) -> Result<(), String> {
         let session_id = session.snapshot().id;
         for event in &loop_events {
-            if let Some(progress) = progress_for_loop_event(event) {
+            if let Some(progress) = progress_for_loop_event(event, timestamp) {
                 output.push(ServerEvent::SessionProgress {
                     session_id: session_id.clone(),
                     progress,
@@ -273,7 +338,10 @@ where
     }
 }
 
-fn progress_for_loop_event(event: &RustAgentLoopEvent) -> Option<TranscriptProgress> {
+fn progress_for_loop_event(
+    event: &RustAgentLoopEvent,
+    timestamp: u64,
+) -> Option<TranscriptProgress> {
     match event {
         RustAgentLoopEvent::TranscriptItemStarted(item) => {
             Some(TranscriptProgress::ItemStarted { item: item.clone() })
@@ -284,9 +352,42 @@ fn progress_for_loop_event(event: &RustAgentLoopEvent) -> Option<TranscriptProgr
         RustAgentLoopEvent::TranscriptItemFinished(item) => {
             finished_item(item.clone()).map(|item| TranscriptProgress::ItemFinished { item })
         }
+        RustAgentLoopEvent::ToolExecutionStarted { tool_call } => {
+            Some(TranscriptProgress::ItemStarted {
+                item: TranscriptItem::Tool(ToolTranscriptItem::Running {
+                    id: format!("tool-{}", tool_call.tool_call_id),
+                    role: ToolRole::Tool,
+                    tool_call_id: tool_call.tool_call_id.clone(),
+                    tool_name: tool_call.tool_name.clone(),
+                    input: tool_call.input.clone(),
+                    content: Vec::new(),
+                    details: None,
+                    usage: None,
+                    timestamp,
+                    is_error: false,
+                }),
+            })
+        }
+        RustAgentLoopEvent::ToolExecutionUpdated {
+            tool_call,
+            content,
+            details,
+        } => Some(TranscriptProgress::ItemUpdated {
+            item: ActiveTranscriptItem::Tool(ToolTranscriptItem::Running {
+                id: format!("tool-{}", tool_call.tool_call_id),
+                role: ToolRole::Tool,
+                tool_call_id: tool_call.tool_call_id.clone(),
+                tool_name: tool_call.tool_name.clone(),
+                input: tool_call.input.clone(),
+                content: content.clone(),
+                details: details.clone(),
+                usage: None,
+                timestamp,
+                is_error: false,
+            }),
+        }),
         RustAgentLoopEvent::AgentStarted
         | RustAgentLoopEvent::TurnStarted
-        | RustAgentLoopEvent::ToolExecutionStarted { .. }
         | RustAgentLoopEvent::ToolExecutionFinished { .. }
         | RustAgentLoopEvent::ToolResultsReady { .. }
         | RustAgentLoopEvent::TurnEnded { .. }
@@ -425,7 +526,12 @@ mod tests {
         fs,
         ops::{Deref, DerefMut},
         path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicU64, Ordering},
+        },
+        thread,
+        time::{Duration, Instant},
     };
 
     use protocol::{
@@ -433,12 +539,13 @@ mod tests {
         ProviderHostResponse, ProviderStreamEvent, SessionPhase, ThinkingLevel, TranscriptItem,
     };
     use session::JsonlSessionStore;
+    use tool_runtime::{Tool, ToolExecutionContext, ToolExecutionError, ToolOutput, ToolRuntime};
 
     use super::{
         AgentLoopEngine, AgentSession, JsonlSessionPersistence, ProviderStreamDriver,
         QueuedProviderStreamPort,
     };
-    use crate::agent_session::AgentSessionConfig;
+    use crate::{agent_session::AgentSessionConfig, provider_ipc::ProviderHostStreamPort};
 
     static STORE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -513,9 +620,44 @@ mod tests {
     }
 
     fn event(event: ProviderStreamEvent) -> ProviderHostResponse {
+        event_for("session-1-provider-1", event)
+    }
+
+    fn event_for(request_id: &str, event: ProviderStreamEvent) -> ProviderHostResponse {
         ProviderHostResponse::Event {
-            request_id: "session-1-provider-1".to_owned(),
+            request_id: request_id.to_owned(),
             event,
+        }
+    }
+
+    struct ControlledTool {
+        release: Arc<AtomicBool>,
+    }
+
+    impl Tool for ControlledTool {
+        fn definition(&self) -> protocol::ToolDefinition {
+            protocol::ToolDefinition {
+                name: "controlled".to_owned(),
+                description: "可控制完成时机的测试工具".to_owned(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+            }
+        }
+
+        fn execute(
+            &self,
+            _call: &protocol::ToolCall,
+            context: &ToolExecutionContext,
+        ) -> Result<ToolOutput, ToolExecutionError> {
+            context.report_update(ToolOutput::text("working"));
+            while !self.release.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(1));
+            }
+            context.report_update(ToolOutput::text("late update"));
+            Ok(ToolOutput::text("late result"))
         }
     }
 
@@ -543,7 +685,7 @@ mod tests {
         prompt(&mut session, 100);
 
         let initial_progress = driver
-            .start(&mut session, 100)
+            .start(&mut session, &ToolRuntime::new(), 100)
             .expect("request should start");
         assert!(initial_progress.iter().any(|event| matches!(
             event,
@@ -553,7 +695,10 @@ mod tests {
             }
         )));
 
-        let progress = driver.poll(&mut session, 102).expect("stream should apply");
+        let mut tool_runtime = ToolRuntime::new();
+        let progress = driver
+            .poll(&mut session, &mut tool_runtime, 102)
+            .expect("stream should apply");
         let transport = driver.into_transport();
         assert_eq!(transport.requests().len(), 1);
         assert_eq!(transport.requests()[0].system_prompt, "system prompt");
@@ -576,12 +721,160 @@ mod tests {
     }
 
     #[test]
+    fn executes_tool_call_and_starts_a_provider_continuation_after_complete() {
+        use std::fs;
+
+        use tool_runtime::ReadTool;
+
+        let workspace = std::env::temp_dir().join(format!(
+            "provider-runtime-tool-{}",
+            STORE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("hello.txt"), "hello from tool").unwrap();
+        let transport = QueuedProviderStreamPort::with_responses([vec![
+            event(ProviderStreamEvent::Start {
+                message_id: "assistant-tool".to_owned(),
+                timestamp: 101,
+            }),
+            event(ProviderStreamEvent::ToolCallDelta {
+                content_index: 0,
+                delta: "{\"path\":\"hello.txt\"}".to_owned(),
+            }),
+            event(ProviderStreamEvent::ToolCallEnd {
+                content_index: 0,
+                tool_call: protocol::ToolCall {
+                    tool_call_id: "call-1".to_owned(),
+                    tool_name: "read".to_owned(),
+                    input: serde_json::json!({ "path": "hello.txt" }),
+                },
+            }),
+            event(ProviderStreamEvent::Done {
+                timestamp: 102,
+                stop_reason: AssistantStopReason::ToolUse,
+            }),
+            ProviderHostResponse::Complete {
+                request_id: "session-1-provider-1".to_owned(),
+            },
+        ]]);
+        let mut tool_runtime = ToolRuntime::new();
+        tool_runtime
+            .register(ReadTool::new(&workspace).unwrap())
+            .unwrap();
+        let mut driver = ProviderStreamDriver::new(transport, "system prompt");
+        let mut session = test_session();
+        prompt(&mut session, 100);
+        driver.start(&mut session, &tool_runtime, 100).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while driver.transport.requests().len() < 2 {
+            driver.poll(&mut session, &mut tool_runtime, 102).unwrap();
+            assert!(Instant::now() < deadline, "tool continuation should start");
+            thread::yield_now();
+        }
+
+        let transport = driver.into_transport();
+        assert_eq!(transport.requests().len(), 2);
+        assert_eq!(transport.requests()[0].tools[0].name, "read");
+        assert_eq!(transport.requests()[1].request_id, "session-1-provider-2");
+        assert!(matches!(
+            transport.requests()[1].messages.last(),
+            Some(TranscriptItem::Tool(_))
+        ));
+        assert!(matches!(
+            session.snapshot().transcript.last(),
+            Some(TranscriptItem::Tool(protocol::ToolTranscriptItem::Complete { content, .. }))
+                if matches!(content.as_slice(), [protocol::TextOrImageContent::Text { text }] if text == "hello from tool")
+        ));
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn node_provider_host_executes_a_complete_rust_tool_round_over_framed_cbor() {
+        use tool_runtime::ReadTool;
+
+        let sequence = STORE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let workspace = std::env::temp_dir().join(format!(
+            "provider-host-tool-round-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&workspace).expect("temporary workspace should be created");
+        fs::write(workspace.join("hello.txt"), "hello from the Rust read tool")
+            .expect("read fixture should be written");
+
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../packages/provider-host/test/e2e-tool-round-host.ts");
+        let transport = ProviderHostStreamPort::spawn(
+            "node",
+            ["--experimental-strip-types".as_ref(), fixture.as_os_str()],
+        )
+        .expect("real Node Provider Host should start");
+        let mut tool_runtime = ToolRuntime::new();
+        tool_runtime
+            .register(ReadTool::new(&workspace).expect("read tool should initialize"))
+            .expect("read tool should register");
+        let mut driver = ProviderStreamDriver::new(transport, "system prompt");
+        let mut session = test_session();
+        prompt(&mut session, 100);
+        let mut progress = driver
+            .start(&mut session, &tool_runtime, 100)
+            .expect("first Provider request should start");
+
+        // transport 的 reader 在独立线程中解码 stdout。测试按生产方式非阻塞轮询，而不是
+        // 直接读取子进程，确保覆盖 request、framing、Host 映射、continuation 和最终结算。
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while session.snapshot().phase != SessionPhase::Idle {
+            assert!(
+                Instant::now() < deadline,
+                "Node Provider Host tool round should settle before timeout"
+            );
+            progress.extend(
+                driver
+                    .poll(&mut session, &mut tool_runtime, 105)
+                    .expect("Provider Host responses should apply"),
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let transcript = session.snapshot().transcript;
+        assert_eq!(transcript.len(), 4);
+        assert!(matches!(
+            &transcript[1],
+            TranscriptItem::Assistant(AssistantTranscriptItem::Complete { content, .. })
+                if matches!(content.as_slice(), [AssistantContent::ToolCall { tool_call_id, tool_name, .. }]
+                    if tool_call_id == "read-call-1" && tool_name == "read")
+        ));
+        assert!(matches!(
+            &transcript[2],
+            TranscriptItem::Tool(protocol::ToolTranscriptItem::Complete { content, is_error, .. })
+                if !is_error && matches!(content.as_slice(), [protocol::TextOrImageContent::Text { text }]
+                    if text == "hello from the Rust read tool")
+        ));
+        assert!(matches!(
+            &transcript[3],
+            TranscriptItem::Assistant(AssistantTranscriptItem::Complete { content, .. })
+                if matches!(content.as_slice(), [AssistantContent::Text { text }]
+                    if text == "Rust runtime completed the tool round")
+        ));
+        assert!(progress.iter().any(|event| matches!(
+            event,
+            protocol::ServerEvent::SessionProgress {
+                progress: protocol::TranscriptProgress::ItemStarted {
+                    item: TranscriptItem::Tool(_)
+                },
+                ..
+            }
+        )));
+
+        fs::remove_dir_all(workspace).expect("temporary workspace should be removed");
+    }
+
+    #[test]
     fn forwards_abort_for_the_active_provider_request() {
         let mut driver = ProviderStreamDriver::new(QueuedProviderStreamPort::default(), "");
         let mut session = test_session();
         prompt(&mut session, 100);
         driver
-            .start(&mut session, 100)
+            .start(&mut session, &ToolRuntime::new(), 100)
             .expect("request should start");
         session
             .execute_at(
@@ -612,11 +905,12 @@ mod tests {
         let mut session = test_session();
         prompt(&mut session, 100);
         driver
-            .start(&mut session, 100)
+            .start(&mut session, &ToolRuntime::new(), 100)
             .expect("request should start");
 
+        let mut tool_runtime = ToolRuntime::new();
         driver
-            .poll(&mut session, 102)
+            .poll(&mut session, &mut tool_runtime, 102)
             .expect("incomplete stream should normalize to error");
 
         assert_eq!(session.snapshot().phase, SessionPhase::Idle);
@@ -639,11 +933,12 @@ mod tests {
         let mut session = test_session();
         prompt(&mut session, 100);
         driver
-            .start(&mut session, 100)
+            .start(&mut session, &ToolRuntime::new(), 100)
             .expect("request should start");
 
+        let mut tool_runtime = ToolRuntime::new();
         let error = driver
-            .poll(&mut session, 101)
+            .poll(&mut session, &mut tool_runtime, 101)
             .expect_err("foreign response must be rejected");
         assert!(error.contains("request ID 不匹配"));
     }
@@ -672,11 +967,12 @@ mod tests {
         let mut session = test_session();
         prompt(&mut session, 100);
         driver
-            .start(&mut session, 100)
+            .start(&mut session, &ToolRuntime::new(), 100)
             .expect("request should start");
 
+        let mut tool_runtime = ToolRuntime::new();
         driver
-            .poll(&mut session, 102)
+            .poll(&mut session, &mut tool_runtime, 102)
             .expect("thinking delta should not fail a text-only session");
         assert_eq!(session.snapshot().phase, SessionPhase::Idle);
     }
@@ -700,7 +996,7 @@ mod tests {
         let mut session = test_session();
         prompt(&mut session, 100);
         driver
-            .start(&mut session, 100)
+            .start(&mut session, &ToolRuntime::new(), 100)
             .expect("request should start");
         session
             .execute_at(
@@ -712,8 +1008,9 @@ mod tests {
             .expect("session abort should be accepted");
         driver.abort().expect("provider abort should be forwarded");
 
+        let mut tool_runtime = ToolRuntime::new();
         driver
-            .poll(&mut session, 102)
+            .poll(&mut session, &mut tool_runtime, 102)
             .expect("provider error should settle the abort");
 
         assert_eq!(session.snapshot().phase, SessionPhase::Idle);
@@ -723,5 +1020,106 @@ mod tests {
                 AssistantTranscriptItem::Aborted { .. }
             ))
         ));
+    }
+
+    #[test]
+    fn abort_during_tool_execution_drops_late_output_and_next_prompt_starts_cleanly() {
+        let transport = QueuedProviderStreamPort::with_responses([vec![
+            event(ProviderStreamEvent::Start {
+                message_id: "assistant-tool".to_owned(),
+                timestamp: 101,
+            }),
+            event(ProviderStreamEvent::ToolCallEnd {
+                content_index: 0,
+                tool_call: protocol::ToolCall {
+                    tool_call_id: "controlled-1".to_owned(),
+                    tool_name: "controlled".to_owned(),
+                    input: serde_json::json!({}),
+                },
+            }),
+            event(ProviderStreamEvent::Done {
+                timestamp: 102,
+                stop_reason: AssistantStopReason::ToolUse,
+            }),
+            ProviderHostResponse::Complete {
+                request_id: "session-1-provider-1".to_owned(),
+            },
+        ]]);
+        let release = Arc::new(AtomicBool::new(false));
+        let mut tool_runtime = ToolRuntime::new().with_timeout(None);
+        tool_runtime
+            .register(ControlledTool {
+                release: Arc::clone(&release),
+            })
+            .unwrap();
+        let mut driver = ProviderStreamDriver::new(transport, "");
+        let mut session = test_session();
+        prompt(&mut session, 100);
+        driver.start(&mut session, &tool_runtime, 100).unwrap();
+        driver.poll(&mut session, &mut tool_runtime, 102).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let progress = loop {
+            let progress = driver.poll(&mut session, &mut tool_runtime, 103).unwrap();
+            if progress.iter().any(|event| {
+                matches!(
+                    event,
+                    protocol::ServerEvent::SessionProgress {
+                        progress: protocol::TranscriptProgress::ItemUpdated {
+                            item: protocol::ActiveTranscriptItem::Tool(_)
+                        },
+                        ..
+                    }
+                )
+            }) {
+                break progress;
+            }
+            assert!(Instant::now() < deadline, "tool progress should arrive");
+            thread::yield_now();
+        };
+        assert!(!progress.is_empty());
+
+        session
+            .execute_at(
+                Command::Abort {
+                    session_id: "session-1".to_owned(),
+                },
+                104,
+            )
+            .unwrap();
+        tool_runtime.cancel();
+        driver.abort().unwrap();
+        driver.poll(&mut session, &mut tool_runtime, 105).unwrap();
+        assert_eq!(session.snapshot().phase, SessionPhase::Idle);
+        assert!(matches!(
+            session.snapshot().transcript.last(),
+            Some(TranscriptItem::Assistant(
+                AssistantTranscriptItem::Aborted { .. }
+            ))
+        ));
+        assert!(!session.snapshot().transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Tool(protocol::ToolTranscriptItem::Complete { tool_call_id, .. })
+                | TranscriptItem::Tool(protocol::ToolTranscriptItem::Error { tool_call_id, .. })
+                if tool_call_id == "controlled-1"
+        )));
+
+        release.store(true, Ordering::Release);
+        thread::sleep(Duration::from_millis(10));
+        assert!(
+            driver
+                .poll(&mut session, &mut tool_runtime, 106)
+                .unwrap()
+                .is_empty()
+        );
+
+        prompt(&mut session, 107);
+        tool_runtime.reset_cancellation();
+        driver.start(&mut session, &tool_runtime, 107).unwrap();
+        assert_eq!(driver.transport.requests().len(), 2);
+        assert_eq!(
+            driver.transport.requests()[1].request_id,
+            "session-1-provider-2"
+        );
     }
 }

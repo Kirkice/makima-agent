@@ -10,4 +10,5 @@ agent-loop = { path = "../agent-loop" }
 protocol = { path = "../protocol" }
 rpc = { path = "../rpc" }
 session = { path = "../session" }
+tool-runtime = { path = "../tool-runtime" }
 serde_json.workspace = true

@@ -91,7 +91,12 @@ pub enum ModelInput {
 
 /// 用户或工具输出允许的内容块。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum TextOrImageContent {
     Text { text: String },
     Image { data: String, mime_type: String },
@@ -99,7 +104,12 @@ pub enum TextOrImageContent {
 
 /// Assistant 内容块。工具调用的输入只能承载 JSON 值，不能跨边界传递内部对象。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum AssistantContent {
     Text {
         text: String,
@@ -1006,11 +1016,12 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ClientMessage, Command, CommandResult, ErrorResponse, EventEnvelope, ModelCost, ModelInput,
-        ModelMetadata, ModelRef, PROTOCOL_VERSION, ProtocolError, ProtocolErrorCode,
-        ProviderRequest, ProviderStreamEvent, ServerEvent, ServerHelloError, ServerMessage,
-        ServerSnapshot, SessionMetadata, SuccessResponse, ThinkingLevel, ToolCall, ToolDefinition,
-        TranscriptDeltaKind, TranscriptItem, TranscriptProgress,
+        AssistantContent, ClientMessage, Command, CommandResult, ErrorResponse, EventEnvelope,
+        ModelCost, ModelInput, ModelMetadata, ModelRef, PROTOCOL_VERSION, ProtocolError,
+        ProtocolErrorCode, ProviderRequest, ProviderStreamEvent, ServerEvent, ServerHelloError,
+        ServerMessage, ServerSnapshot, SessionMetadata, SuccessResponse, TextOrImageContent,
+        ThinkingLevel, ToolCall, ToolDefinition, TranscriptDeltaKind, TranscriptItem,
+        TranscriptProgress,
     };
 
     #[test]
@@ -1032,6 +1043,32 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<Command>(encoded).expect("command should deserialize"),
             command
+        );
+    }
+
+    #[test]
+    fn content_variant_fields_use_typescript_camel_case_names() {
+        assert_eq!(
+            serde_json::to_value(AssistantContent::ToolCall {
+                tool_call_id: "call-1".to_owned(),
+                tool_name: "read".to_owned(),
+                input: json!({ "path": "hello.txt" }),
+            })
+            .expect("tool call content should serialize"),
+            json!({
+                "type": "toolCall",
+                "toolCallId": "call-1",
+                "toolName": "read",
+                "input": { "path": "hello.txt" },
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(TextOrImageContent::Image {
+                data: "aGVsbG8=".to_owned(),
+                mime_type: "image/png".to_owned(),
+            })
+            .expect("image content should serialize"),
+            json!({ "type": "image", "data": "aGVsbG8=", "mimeType": "image/png" })
         );
     }
 

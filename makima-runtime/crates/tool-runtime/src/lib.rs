@@ -1,42 +1,130 @@
-//! Rust Core 的最小 Tool Runtime。
+//! Rust Core 的生产 Tool Runtime。
 //!
-//! Agent Loop 只负责决定何时执行工具；本 crate 负责按调用顺序定位工具、执行并把成功或
-//! 失败归一化为共享 [`protocol::ToolResult`]。它不依赖 Provider SDK、Session Store、TUI
-//! 或具体 Sandbox 后端，因此命令工具可在外层通过一个 [`Tool`] adapter 接入。
+//! Agent Loop 只决定何时调用工具；本 crate 负责工具目录、Provider 可见定义、参数校验、
+//! 取消、超时以及稳定结果归一化。具体工具只依赖 [`ToolExecutionContext`]，不会接触
+//! Provider、Session Store 或 RPC，从而可以独立测试和替换。
+
+mod read;
+
+use std::{
+    collections::{BTreeSet, VecDeque},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender, TryRecvError},
+    },
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
+};
 
 use agent_loop::{ToolRuntimePort, ToolRuntimePortEvent};
-use protocol::{TextOrImageContent, ToolCall, ToolResult};
+use protocol::{TextOrImageContent, ToolCall, ToolDefinition, ToolResult};
+use serde_json::Value;
+
+pub use read::ReadTool;
 
 /// 工具执行过程中可观察的稳定生命周期事件。
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolRuntimeEvent {
-    /// 已接收调用，尚未进入工具实现。
-    Started { tool_call: ToolCall },
-    /// 工具执行完成；业务失败同样通过结果表达，不中断后续串行调用。
-    Finished { result: ToolResult },
+    Started {
+        tool_call: ToolCall,
+    },
+    Updated {
+        tool_call_id: String,
+        content: Vec<TextOrImageContent>,
+        details: Option<Value>,
+    },
+    Finished {
+        result: ToolResult,
+    },
 }
 
-/// 单个工具的实现边界。
+/// 一次工具批次共享的取消令牌。
 ///
-/// 工具实现可以在内部调用 Sandbox、文件系统或扩展宿主，但不能把这些依赖泄漏给
-/// [`ToolRuntime`]。所有错误必须转换为可展示的稳定文本。
-pub trait Tool {
-    /// Provider 可见的唯一工具名。
-    fn name(&self) -> &str;
+/// 使用独立类型而不是暴露 `AtomicBool`，避免工具实现依赖运行时内部同步细节。
+#[derive(Debug, Clone, Default)]
+pub struct CancellationToken {
+    cancelled: Arc<AtomicBool>,
+}
 
-    /// 执行一次已经完成参数解析的工具调用。
-    fn execute(&self, call: &ToolCall) -> Result<ToolOutput, ToolExecutionError>;
+impl CancellationToken {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+}
+
+/// 单次工具调用的只读执行上下文。
+#[derive(Debug, Clone)]
+pub struct ToolExecutionContext {
+    cancellation: CancellationToken,
+    deadline: Option<Instant>,
+    updates: Sender<WorkerEvent>,
+    tool_call_id: String,
+}
+
+impl ToolExecutionContext {
+    fn new(
+        cancellation: CancellationToken,
+        deadline: Option<Instant>,
+        updates: Sender<WorkerEvent>,
+        tool_call_id: String,
+    ) -> Self {
+        Self {
+            cancellation,
+            deadline,
+            updates,
+            tool_call_id,
+        }
+    }
+
+    /// 发布可丢弃的运行中完整快照。Runtime 在调用已结算后会隔离迟到更新。
+    pub fn report_update(&self, output: ToolOutput) {
+        let _ = self.updates.send(WorkerEvent::Updated {
+            tool_call_id: self.tool_call_id.clone(),
+            output,
+        });
+    }
+
+    /// 在 I/O 边界调用，统一产生与工具实现无关的取消/超时错误。
+    pub fn check_active(&self) -> Result<(), ToolExecutionError> {
+        if self.cancellation.is_cancelled() {
+            return Err(ToolExecutionError::new("Tool execution aborted"));
+        }
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(ToolExecutionError::new("Tool execution timed out"));
+        }
+        Ok(())
+    }
+}
+
+/// 单个工具的生产边界。工具必须可跨 Session worker 安全持有。
+pub trait Tool: Send + Sync {
+    /// 返回完整 Provider 声明；名称同时是 Runtime 的唯一注册键。
+    fn definition(&self) -> ToolDefinition;
+
+    /// 执行一次已通过通用 JSON Schema 校验的调用。
+    fn execute(
+        &self,
+        call: &ToolCall,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolOutput, ToolExecutionError>;
 }
 
 /// 成功工具调用产生的内容与可选 JSON 详情。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolOutput {
     pub content: Vec<TextOrImageContent>,
-    pub details: Option<serde_json::Value>,
+    pub details: Option<Value>,
 }
 
 impl ToolOutput {
-    /// 创建纯文本工具输出。
     pub fn text(text: impl Into<String>) -> Self {
         Self {
             content: vec![TextOrImageContent::Text { text: text.into() }],
@@ -45,118 +133,405 @@ impl ToolOutput {
     }
 }
 
-/// 工具执行失败的稳定错误。
+/// 可安全写入 transcript 的工具错误。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolExecutionError {
     message: String,
 }
 
 impl ToolExecutionError {
-    /// 创建不包含后端内部细节的执行错误。
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
         }
     }
 
-    /// 返回可安全写入 Tool Result 的错误文本。
     pub fn message(&self) -> &str {
         &self.message
     }
 }
 
-/// 注册或调用参数不合法时返回的错误。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolRuntimeError {
     DuplicateToolName(String),
     EmptyToolName,
+    InvalidToolSchema(String),
+    BatchAlreadyActive,
 }
 
-/// 串行 Tool Runtime。
+#[derive(Debug)]
+enum WorkerEvent {
+    Updated {
+        tool_call_id: String,
+        output: ToolOutput,
+    },
+    Finished(Result<ToolOutput, ToolExecutionError>),
+}
+
+struct ActiveExecution {
+    call: ToolCall,
+    timestamp: u64,
+    deadline: Option<Instant>,
+    receiver: Receiver<WorkerEvent>,
+    worker: JoinHandle<()>,
+}
+
+/// Session-owned 串行 Tool Runtime。
 ///
-/// 保持注册顺序和调用顺序；未找到的工具也被转成 `is_error: true` 结果，确保 Agent Loop
-/// 可将其作为正常轨迹写入下一轮 Provider 请求，而不是因一个调用中断整个回合。
-pub struct ToolRuntime<'a> {
-    tools: Vec<&'a dyn Tool>,
+/// 每个调用在独立 worker 中执行，Session 线程只做非阻塞轮询。Rust 无法安全强杀任意线程，
+/// 因此 timeout/abort 会立即产生唯一逻辑终态并隔离该 worker 的迟到输出；worker 自然返回后由
+/// `reap_workers` 回收。可终止的进程工具仍应在自己的取消实现中 kill/wait 子进程。
+pub struct ToolRuntime {
+    tools: Vec<Arc<dyn Tool>>,
+    cancellation: CancellationToken,
+    timeout: Option<Duration>,
+    pending: VecDeque<ToolCall>,
+    active: Option<ActiveExecution>,
+    retired_workers: Vec<JoinHandle<()>>,
+    batch_timestamp: u64,
 }
 
-impl<'a> ToolRuntime<'a> {
-    /// 创建空工具注册表。
+impl ToolRuntime {
     pub fn new() -> Self {
-        Self { tools: Vec::new() }
+        Self {
+            tools: Vec::new(),
+            cancellation: CancellationToken::default(),
+            timeout: Some(Duration::from_secs(120)),
+            pending: VecDeque::new(),
+            active: None,
+            retired_workers: Vec::new(),
+            batch_timestamp: 0,
+        }
     }
 
-    /// 注册一个名称唯一的工具。
-    pub fn register(&mut self, tool: &'a dyn Tool) -> Result<(), ToolRuntimeError> {
-        let name = tool.name();
-        if name.is_empty() {
+    pub fn with_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    pub fn register(&mut self, tool: impl Tool + 'static) -> Result<(), ToolRuntimeError> {
+        let definition = tool.definition();
+        if definition.name.is_empty() {
             return Err(ToolRuntimeError::EmptyToolName);
         }
+        validate_definition(&definition)?;
         if self
             .tools
             .iter()
-            .any(|registered| registered.name() == name)
+            .any(|registered| registered.definition().name == definition.name)
         {
-            return Err(ToolRuntimeError::DuplicateToolName(name.to_owned()));
+            return Err(ToolRuntimeError::DuplicateToolName(definition.name));
         }
-        self.tools.push(tool);
+        self.tools.push(Arc::new(tool));
         Ok(())
     }
 
-    /// 依次执行所有工具调用，并为每一个调用发出 start / end 事件。
-    pub fn execute_serial(
-        &self,
+    pub fn definitions(&self) -> Vec<ToolDefinition> {
+        self.tools.iter().map(|tool| tool.definition()).collect()
+    }
+
+    pub fn cancel(&mut self) {
+        self.cancellation.cancel();
+    }
+
+    /// 新 Agent run 开始前重置上一次 run 的取消状态。
+    ///
+    /// 取消只属于当前执行批次；若令牌永久保持 cancelled，同一 Session 后续 prompt 的所有
+    /// 工具都会被错误拒绝。
+    pub fn reset_cancellation(&mut self) {
+        if self.has_active_batch() {
+            return;
+        }
+        self.cancellation = CancellationToken::default();
+    }
+
+    pub fn start_serial(
+        &mut self,
         calls: impl IntoIterator<Item = ToolCall>,
         timestamp: u64,
-    ) -> Vec<ToolRuntimeEvent> {
+    ) -> Result<Vec<ToolRuntimeEvent>, ToolRuntimeError> {
+        if self.has_active_batch() {
+            return Err(ToolRuntimeError::BatchAlreadyActive);
+        }
+        self.reap_workers();
+        self.cancellation = CancellationToken::default();
+        self.pending = calls.into_iter().collect();
+        self.batch_timestamp = timestamp;
         let mut events = Vec::new();
-        for call in calls {
-            events.push(ToolRuntimeEvent::Started {
-                tool_call: call.clone(),
-            });
-            let result = match self.tools.iter().find(|tool| tool.name() == call.tool_name) {
-                Some(tool) => match tool.execute(&call) {
-                    Ok(output) => ToolResult {
-                        tool_call_id: call.tool_call_id.clone(),
-                        tool_name: call.tool_name.clone(),
-                        input: call.input.clone(),
-                        content: output.content,
-                        details: output.details,
-                        is_error: false,
-                        timestamp,
-                    },
-                    Err(error) => error_result(&call, timestamp, error.message()),
-                },
-                None => error_result(
-                    &call,
-                    timestamp,
-                    format!("Unknown tool: {}", call.tool_name),
-                ),
+        self.start_next(&mut events);
+        Ok(events)
+    }
+
+    pub fn poll(&mut self, timestamp: u64) -> Vec<ToolRuntimeEvent> {
+        self.reap_workers();
+        let mut events = Vec::new();
+        loop {
+            if self.active.is_none() {
+                self.start_next(&mut events);
+                if self.active.is_none() {
+                    break;
+                }
+            }
+
+            let forced_error = if self.cancellation.is_cancelled() {
+                Some("Tool execution aborted")
+            } else if self
+                .active
+                .as_ref()
+                .and_then(|execution| execution.deadline)
+                .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                Some("Tool execution timed out")
+            } else {
+                None
             };
-            events.push(ToolRuntimeEvent::Finished { result });
+            if let Some(message) = forced_error {
+                self.finish_active_with_error(timestamp, message, &mut events);
+                if self.cancellation.is_cancelled() {
+                    // TypeScript 串行执行在 AbortSignal 生效后会停止本批次，不再为尚未启动的
+                    // 调用产生 start/result。清空队列同时避免取消后误执行具有副作用的工具。
+                    self.pending.clear();
+                    break;
+                }
+                continue;
+            }
+
+            let worker_event = self
+                .active
+                .as_ref()
+                .expect("active execution was checked")
+                .receiver
+                .try_recv();
+            match worker_event {
+                Ok(WorkerEvent::Updated {
+                    tool_call_id,
+                    output,
+                }) => events.push(ToolRuntimeEvent::Updated {
+                    tool_call_id,
+                    content: output.content,
+                    details: output.details,
+                }),
+                Ok(WorkerEvent::Finished(output)) => {
+                    self.finish_active(output, &mut events);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.finish_active_with_error(
+                        timestamp,
+                        "Tool worker stopped without a result",
+                        &mut events,
+                    );
+                }
+            }
         }
         events
     }
-}
 
-impl ToolRuntimePort for ToolRuntime<'_> {
-    fn execute_serial(&self, calls: Vec<ToolCall>, timestamp: u64) -> Vec<ToolRuntimePortEvent> {
-        ToolRuntime::execute_serial(self, calls, timestamp)
-            .into_iter()
-            .map(|event| match event {
-                ToolRuntimeEvent::Started { tool_call } => {
-                    ToolRuntimePortEvent::Started { tool_call }
+    pub fn has_active_batch(&self) -> bool {
+        self.active.is_some() || !self.pending.is_empty()
+    }
+
+    fn start_next(&mut self, events: &mut Vec<ToolRuntimeEvent>) {
+        let Some(call) = self.pending.pop_front() else {
+            return;
+        };
+        events.push(ToolRuntimeEvent::Started {
+            tool_call: call.clone(),
+        });
+        let deadline = self
+            .timeout
+            .and_then(|duration| Instant::now().checked_add(duration));
+        let cancellation = self.cancellation.clone();
+        let tool = self
+            .tools
+            .iter()
+            .find(|tool| tool.definition().name == call.tool_name)
+            .cloned();
+        let validation = tool
+            .as_ref()
+            .and_then(|tool| validate_input(&tool.definition().input_schema, &call.input).err());
+        let (sender, receiver) = mpsc::channel();
+        let worker_call = call.clone();
+        let worker = thread::spawn(move || {
+            let output = match (tool, validation) {
+                (None, _) => Err(ToolExecutionError::new(format!(
+                    "Tool {} not found",
+                    worker_call.tool_name
+                ))),
+                (Some(_), Some(message)) => Err(ToolExecutionError::new(message)),
+                (Some(tool), None) => {
+                    let context = ToolExecutionContext::new(
+                        cancellation,
+                        deadline,
+                        sender.clone(),
+                        worker_call.tool_call_id.clone(),
+                    );
+                    context
+                        .check_active()
+                        .and_then(|()| tool.execute(&worker_call, &context))
                 }
-                ToolRuntimeEvent::Finished { result } => ToolRuntimePortEvent::Finished { result },
-            })
-            .collect()
+            };
+            let _ = sender.send(WorkerEvent::Finished(output));
+        });
+        self.active = Some(ActiveExecution {
+            call,
+            timestamp: self.batch_timestamp,
+            deadline,
+            receiver,
+            worker,
+        });
+    }
+
+    fn finish_active(
+        &mut self,
+        output: Result<ToolOutput, ToolExecutionError>,
+        events: &mut Vec<ToolRuntimeEvent>,
+    ) {
+        let execution = self.active.take().expect("active execution must exist");
+        let result = match output {
+            Ok(output) => ToolResult {
+                tool_call_id: execution.call.tool_call_id.clone(),
+                tool_name: execution.call.tool_name.clone(),
+                input: execution.call.input.clone(),
+                content: output.content,
+                details: output.details,
+                is_error: false,
+                timestamp: execution.timestamp,
+            },
+            Err(error) => error_result(&execution.call, execution.timestamp, error.message()),
+        };
+        self.retired_workers.push(execution.worker);
+        events.push(ToolRuntimeEvent::Finished { result });
+    }
+
+    fn finish_active_with_error(
+        &mut self,
+        timestamp: u64,
+        message: &str,
+        events: &mut Vec<ToolRuntimeEvent>,
+    ) {
+        let execution = self.active.take().expect("active execution must exist");
+        self.retired_workers.push(execution.worker);
+        events.push(ToolRuntimeEvent::Finished {
+            result: error_result(&execution.call, timestamp, message),
+        });
+    }
+
+    fn reap_workers(&mut self) {
+        let mut index = 0;
+        while index < self.retired_workers.len() {
+            if self.retired_workers[index].is_finished() {
+                let worker = self.retired_workers.swap_remove(index);
+                let _ = worker.join();
+            } else {
+                index += 1;
+            }
+        }
     }
 }
 
-impl Default for ToolRuntime<'_> {
+impl ToolRuntimePort for ToolRuntime {
+    fn start_serial(
+        &mut self,
+        calls: Vec<ToolCall>,
+        timestamp: u64,
+    ) -> Result<Vec<ToolRuntimePortEvent>, String> {
+        ToolRuntime::start_serial(self, calls, timestamp)
+            .map(|events| events.into_iter().map(port_event).collect())
+            .map_err(|error| format!("Tool Runtime 无法启动批次：{error:?}"))
+    }
+
+    fn poll(&mut self, timestamp: u64) -> Vec<ToolRuntimePortEvent> {
+        ToolRuntime::poll(self, timestamp)
+            .into_iter()
+            .map(port_event)
+            .collect()
+    }
+
+    fn cancel(&mut self) {
+        ToolRuntime::cancel(self);
+    }
+
+    fn has_active_batch(&self) -> bool {
+        ToolRuntime::has_active_batch(self)
+    }
+}
+
+fn port_event(event: ToolRuntimeEvent) -> ToolRuntimePortEvent {
+    match event {
+        ToolRuntimeEvent::Started { tool_call } => ToolRuntimePortEvent::Started { tool_call },
+        ToolRuntimeEvent::Updated {
+            tool_call_id,
+            content,
+            details,
+        } => ToolRuntimePortEvent::Updated {
+            tool_call_id,
+            content,
+            details,
+        },
+        ToolRuntimeEvent::Finished { result } => ToolRuntimePortEvent::Finished { result },
+    }
+}
+
+impl Default for ToolRuntime {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn validate_definition(definition: &ToolDefinition) -> Result<(), ToolRuntimeError> {
+    if definition.input_schema.get("type").and_then(Value::as_str) != Some("object") {
+        return Err(ToolRuntimeError::InvalidToolSchema(definition.name.clone()));
+    }
+    Ok(())
+}
+
+/// 校验生产内置工具使用的 JSON Schema 子集：object、required、properties、
+/// additionalProperties 及 string/number/integer/boolean。未知 schema 关键字由具体工具继续校验。
+fn validate_input(schema: &Value, input: &Value) -> Result<(), String> {
+    let object = input
+        .as_object()
+        .ok_or_else(|| "Tool input must be a JSON object".to_owned())?;
+    let required = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<BTreeSet<_>>();
+    for property in required {
+        if !object.contains_key(property) {
+            return Err(format!(
+                "Tool input is missing required property: {property}"
+            ));
+        }
+    }
+    let properties = schema.get("properties").and_then(Value::as_object);
+    if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
+        for key in object.keys() {
+            if !properties.is_some_and(|properties| properties.contains_key(key)) {
+                return Err(format!("Tool input contains unknown property: {key}"));
+            }
+        }
+    }
+    if let Some(properties) = properties {
+        for (name, value) in object {
+            let Some(property) = properties.get(name) else {
+                continue;
+            };
+            let valid = match property.get("type").and_then(Value::as_str) {
+                Some("string") => value.is_string(),
+                Some("number") => value.is_number(),
+                Some("integer") => value.as_i64().is_some() || value.as_u64().is_some(),
+                Some("boolean") => value.is_boolean(),
+                _ => true,
+            };
+            if !valid {
+                return Err(format!("Tool input property has invalid type: {name}"));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn error_result(call: &ToolCall, timestamp: u64, message: impl Into<String>) -> ToolResult {
@@ -175,113 +550,359 @@ fn error_result(call: &ToolCall, timestamp: u64, message: impl Into<String>) -> 
 
 #[cfg(test)]
 mod tests {
-    use protocol::{TextOrImageContent, ToolCall};
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use protocol::{TextOrImageContent, ToolCall, ToolDefinition};
     use serde_json::json;
 
     use super::{
-        Tool, ToolExecutionError, ToolOutput, ToolRuntime, ToolRuntimeError, ToolRuntimeEvent,
+        Tool, ToolExecutionContext, ToolExecutionError, ToolOutput, ToolRuntime, ToolRuntimeError,
+        ToolRuntimeEvent,
     };
 
     struct EchoTool;
 
     impl Tool for EchoTool {
-        fn name(&self) -> &str {
-            "echo"
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "echo".to_owned(),
+                description: "Echo input".to_owned(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": { "value": { "type": "string" } },
+                    "required": ["value"],
+                    "additionalProperties": false
+                }),
+            }
         }
 
-        fn execute(&self, call: &ToolCall) -> Result<ToolOutput, ToolExecutionError> {
+        fn execute(
+            &self,
+            call: &ToolCall,
+            context: &ToolExecutionContext,
+        ) -> Result<ToolOutput, ToolExecutionError> {
+            context.check_active()?;
             Ok(ToolOutput::text(format!("echo: {}", call.input)))
         }
     }
 
-    struct FailingTool;
+    struct ControlledTool {
+        release: Arc<AtomicBool>,
+    }
 
-    impl Tool for FailingTool {
-        fn name(&self) -> &str {
-            "fail"
+    impl Tool for ControlledTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "controlled".to_owned(),
+                description: "可控制完成时机的测试工具".to_owned(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+            }
         }
 
-        fn execute(&self, _call: &ToolCall) -> Result<ToolOutput, ToolExecutionError> {
-            Err(ToolExecutionError::new("command failed"))
+        fn execute(
+            &self,
+            _call: &ToolCall,
+            context: &ToolExecutionContext,
+        ) -> Result<ToolOutput, ToolExecutionError> {
+            context.report_update(ToolOutput::text("working"));
+            // 故意不检查取消，模拟无法协作取消的第三方阻塞工具。Runtime 必须仍能按时产生
+            // 逻辑终态，并隔离 release 后返回的迟到结果。
+            while !self.release.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(1));
+            }
+            context.report_update(ToolOutput::text("late update"));
+            Ok(ToolOutput::text("late result"))
         }
     }
 
-    #[test]
-    fn executes_registered_and_unknown_tools_in_source_order() {
-        let echo = EchoTool;
-        let mut runtime = ToolRuntime::new();
-        runtime.register(&echo).expect("tool should register");
+    fn run_to_completion(
+        runtime: &mut ToolRuntime,
+        calls: Vec<ToolCall>,
+        timestamp: u64,
+    ) -> Vec<ToolRuntimeEvent> {
+        let mut events = runtime.start_serial(calls, timestamp).unwrap();
+        while runtime.has_active_batch() {
+            events.extend(runtime.poll(timestamp));
+            std::thread::yield_now();
+        }
+        events
+    }
 
-        let events = runtime.execute_serial(
-            [
+    #[test]
+    fn owns_definitions_and_executes_calls_in_source_order() {
+        let mut runtime = ToolRuntime::new();
+        runtime.register(EchoTool).unwrap();
+        assert_eq!(runtime.definitions()[0].name, "echo");
+
+        let events = run_to_completion(
+            &mut runtime,
+            vec![
                 ToolCall {
-                    tool_call_id: "call-1".to_owned(),
-                    tool_name: "echo".to_owned(),
-                    input: json!({ "value": "hello" }),
+                    tool_call_id: "1".into(),
+                    tool_name: "echo".into(),
+                    input: json!({"value":"hello"}),
                 },
                 ToolCall {
-                    tool_call_id: "call-2".to_owned(),
-                    tool_name: "missing".to_owned(),
+                    tool_call_id: "2".into(),
+                    tool_name: "missing".into(),
                     input: json!({}),
                 },
             ],
             9,
         );
-
         assert!(matches!(events[0], ToolRuntimeEvent::Started { .. }));
-        assert!(matches!(events[2], ToolRuntimeEvent::Started { .. }));
-        let ToolRuntimeEvent::Finished { result } = &events[1] else {
-            panic!("second event should finish the first call")
-        };
-        assert!(!result.is_error);
-        assert_eq!(result.timestamp, 9);
+        let results = events
+            .iter()
+            .filter_map(|event| match event {
+                ToolRuntimeEvent::Finished { result } => Some(result),
+                ToolRuntimeEvent::Started { .. } | ToolRuntimeEvent::Updated { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(!results[0].is_error);
         assert_eq!(
-            result.content,
+            results[1].content,
             vec![TextOrImageContent::Text {
-                text: "echo: {\"value\":\"hello\"}".to_owned(),
-            }]
-        );
-        let ToolRuntimeEvent::Finished { result } = &events[3] else {
-            panic!("fourth event should finish the second call")
-        };
-        assert!(result.is_error);
-        assert_eq!(
-            result.content,
-            vec![TextOrImageContent::Text {
-                text: "Unknown tool: missing".to_owned()
+                text: "Tool missing not found".into()
             }]
         );
     }
 
     #[test]
-    fn converts_tool_failures_to_error_results_and_rejects_duplicate_names() {
-        let echo = EchoTool;
-        let failing = FailingTool;
+    fn validates_arguments_and_resets_cancellation_between_runs() {
         let mut runtime = ToolRuntime::new();
-        runtime.register(&echo).unwrap();
+        runtime.register(EchoTool).unwrap();
         assert_eq!(
-            runtime.register(&echo),
-            Err(ToolRuntimeError::DuplicateToolName("echo".to_owned()))
+            runtime.register(EchoTool),
+            Err(ToolRuntimeError::DuplicateToolName("echo".into()))
         );
-        runtime.register(&failing).unwrap();
-
-        let events = runtime.execute_serial(
-            [ToolCall {
-                tool_call_id: "call-1".to_owned(),
-                tool_name: "fail".to_owned(),
-                input: json!({}),
+        let invalid = run_to_completion(
+            &mut runtime,
+            vec![ToolCall {
+                tool_call_id: "1".into(),
+                tool_name: "echo".into(),
+                input: json!({"value": 1}),
             }],
-            10,
+            1,
         );
-        let ToolRuntimeEvent::Finished { result } = &events[1] else {
-            panic!("second event should finish the call")
-        };
+        let result = invalid
+            .iter()
+            .find_map(|event| match event {
+                ToolRuntimeEvent::Finished { result } => Some(result),
+                ToolRuntimeEvent::Started { .. } | ToolRuntimeEvent::Updated { .. } => None,
+            })
+            .unwrap();
         assert!(result.is_error);
         assert_eq!(
             result.content,
             vec![TextOrImageContent::Text {
-                text: "command failed".to_owned()
+                text: "Tool input property has invalid type: value".into()
             }]
+        );
+
+        runtime.cancel();
+        runtime.reset_cancellation();
+        let next_run = run_to_completion(
+            &mut runtime,
+            vec![ToolCall {
+                tool_call_id: "3".into(),
+                tool_name: "echo".into(),
+                input: json!({"value":"next run"}),
+            }],
+            3,
+        );
+        let result = next_run
+            .iter()
+            .find_map(|event| match event {
+                ToolRuntimeEvent::Finished { result } => Some(result),
+                ToolRuntimeEvent::Started { .. } | ToolRuntimeEvent::Updated { .. } => None,
+            })
+            .unwrap();
+        assert!(!result.is_error);
+        assert_eq!(
+            result.content,
+            vec![TextOrImageContent::Text {
+                text: "echo: {\"value\":\"next run\"}".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn reports_progress_without_blocking_the_session_thread() {
+        let release = Arc::new(AtomicBool::new(false));
+        let mut runtime = ToolRuntime::new().with_timeout(None);
+        runtime
+            .register(ControlledTool {
+                release: Arc::clone(&release),
+            })
+            .unwrap();
+
+        let started_at = Instant::now();
+        let events = runtime
+            .start_serial(
+                [ToolCall {
+                    tool_call_id: "slow-1".into(),
+                    tool_name: "controlled".into(),
+                    input: json!({}),
+                }],
+                10,
+            )
+            .unwrap();
+        assert!(started_at.elapsed() < Duration::from_millis(50));
+        assert!(matches!(
+            events.as_slice(),
+            [ToolRuntimeEvent::Started { .. }]
+        ));
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let update = loop {
+            if let Some(update) = runtime
+                .poll(11)
+                .into_iter()
+                .find(|event| matches!(event, ToolRuntimeEvent::Updated { .. }))
+            {
+                break update;
+            }
+            assert!(Instant::now() < deadline, "progress update should arrive");
+            thread::yield_now();
+        };
+        assert!(matches!(
+            update,
+            ToolRuntimeEvent::Updated { content, .. }
+                if content == vec![TextOrImageContent::Text { text: "working".into() }]
+        ));
+        release.store(true, Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while runtime.has_active_batch() {
+            let _ = runtime.poll(12);
+            assert!(Instant::now() < deadline, "controlled tool should finish");
+            thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn timeout_has_one_terminal_and_drops_late_updates_and_output() {
+        let release = Arc::new(AtomicBool::new(false));
+        let mut runtime = ToolRuntime::new().with_timeout(Some(Duration::from_millis(10)));
+        runtime
+            .register(ControlledTool {
+                release: Arc::clone(&release),
+            })
+            .unwrap();
+        let mut events = runtime
+            .start_serial(
+                [ToolCall {
+                    tool_call_id: "slow-timeout".into(),
+                    tool_name: "controlled".into(),
+                    input: json!({}),
+                }],
+                20,
+            )
+            .unwrap();
+        thread::sleep(Duration::from_millis(20));
+        events.extend(runtime.poll(21));
+        assert!(!runtime.has_active_batch());
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, ToolRuntimeEvent::Finished { .. }))
+                .count(),
+            1
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ToolRuntimeEvent::Finished { result }
+                if result.is_error
+                    && matches!(result.content.as_slice(), [TextOrImageContent::Text { text }]
+                        if text == "Tool execution timed out")
+        )));
+
+        release.store(true, Ordering::Release);
+        thread::sleep(Duration::from_millis(10));
+        assert!(
+            runtime.poll(22).is_empty(),
+            "late worker output must be isolated"
+        );
+        assert!(
+            runtime.retired_workers.is_empty(),
+            "naturally returned timed-out workers must be joined"
+        );
+    }
+
+    #[test]
+    fn cancel_settles_active_skips_pending_calls_then_allows_a_clean_next_batch() {
+        let release = Arc::new(AtomicBool::new(false));
+        let mut runtime = ToolRuntime::new().with_timeout(None);
+        runtime
+            .register(ControlledTool {
+                release: Arc::clone(&release),
+            })
+            .unwrap();
+        runtime.register(EchoTool).unwrap();
+        let mut events = runtime
+            .start_serial(
+                [
+                    ToolCall {
+                        tool_call_id: "active".into(),
+                        tool_name: "controlled".into(),
+                        input: json!({}),
+                    },
+                    ToolCall {
+                        tool_call_id: "pending".into(),
+                        tool_name: "echo".into(),
+                        input: json!({"value": "never runs"}),
+                    },
+                ],
+                30,
+            )
+            .unwrap();
+        runtime.cancel();
+        events.extend(runtime.poll(31));
+        assert!(!runtime.has_active_batch());
+        let results = events
+            .iter()
+            .filter_map(|event| match event {
+                ToolRuntimeEvent::Finished { result } => Some(result),
+                ToolRuntimeEvent::Started { .. } | ToolRuntimeEvent::Updated { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].tool_call_id, "active");
+        assert!(results.iter().all(|result| result.is_error));
+        assert!(results.iter().all(|result| matches!(
+            result.content.as_slice(),
+            [TextOrImageContent::Text { text }] if text == "Tool execution aborted"
+        )));
+
+        let next = run_to_completion(
+            &mut runtime,
+            vec![ToolCall {
+                tool_call_id: "next".into(),
+                tool_name: "echo".into(),
+                input: json!({"value": "clean"}),
+            }],
+            32,
+        );
+        assert!(next.iter().any(|event| matches!(
+            event,
+            ToolRuntimeEvent::Finished { result } if !result.is_error
+        )));
+        release.store(true, Ordering::Release);
+        thread::sleep(Duration::from_millis(10));
+        assert!(runtime.poll(33).is_empty());
+        assert!(
+            runtime.retired_workers.is_empty(),
+            "naturally returned cancelled workers must be joined"
         );
     }
 }

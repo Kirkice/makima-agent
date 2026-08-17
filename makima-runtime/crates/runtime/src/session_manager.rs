@@ -252,6 +252,7 @@ impl SessionFactory for AgentSessionFactory {
 struct AgentManagedSession<P> {
     session: AgentSession<AgentLoopEngine, JsonlSessionPersistence>,
     provider_driver: ProviderStreamDriver<P>,
+    tool_runtime: tool_runtime::ToolRuntime,
     pending_provider_events: Vec<ServerEvent>,
 }
 
@@ -266,9 +267,17 @@ where
         system_prompt: impl Into<String>,
     ) -> Self {
         let loop_engine = AgentLoopEngine::new(config.model.clone());
+        let mut tool_runtime = tool_runtime::ToolRuntime::new();
+        tool_runtime
+            .register(
+                tool_runtime::ReadTool::new(&config.cwd)
+                    .expect("AgentSession cwd 应在创建 Session 时完成有效性校验"),
+            )
+            .expect("内置 read 工具定义必须保持有效且名称唯一");
         Self {
             session: AgentSession::new(config, loop_engine, persistence),
             provider_driver: ProviderStreamDriver::new(transport, system_prompt),
+            tool_runtime,
             pending_provider_events: Vec::new(),
         }
     }
@@ -288,13 +297,17 @@ where
         let timestamp = unix_millis();
         let snapshot = self.session.execute_at(command, timestamp)?;
         if is_prompt {
+            // 取消状态只属于刚结束的 run。必须在 Session 接受新 prompt 后再重置，避免无效
+            // prompt 意外清除仍在执行中的取消信号，也避免 abort 污染同一 Session 的后续回合。
+            self.tool_runtime.reset_cancellation();
             let events = self
                 .provider_driver
-                .start(&mut self.session, timestamp)
+                .start(&mut self.session, &self.tool_runtime, timestamp)
                 .map_err(provider_error)?;
             self.pending_provider_events.extend(events);
         }
         if is_abort {
+            self.tool_runtime.cancel();
             self.provider_driver.abort().map_err(provider_error)?;
         }
         Ok(snapshot)
@@ -304,7 +317,7 @@ where
         let mut events = std::mem::take(&mut self.pending_provider_events);
         events.extend(
             self.provider_driver
-                .poll(&mut self.session, timestamp)
+                .poll(&mut self.session, &mut self.tool_runtime, timestamp)
                 .map_err(provider_error)?,
         );
         Ok(events)

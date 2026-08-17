@@ -12,7 +12,6 @@ import type {
 	Usage,
 	UserMessage,
 } from "@earendil-works/pi-ai";
-import { streamSimple } from "@earendil-works/pi-ai/compat";
 import {
 	type JsonValue,
 	type ModelRef,
@@ -39,7 +38,12 @@ export interface ProviderContextConverter {
 	toContext(request: ProviderRequest): Context;
 }
 
-/** 允许测试或特殊 Host 注入流实现；生产默认使用 pi-ai 的 `streamSimple`。 */
+/**
+ * Provider SDK 流端口。
+ *
+ * 核心 Host 不导入具体 Provider catalog；生产入口负责注入 `streamSimple`，测试和嵌入场景可注入
+ * 确定性实现。这样仅加载协议转换与 stdio 边界时，不会触发模型数据或 Provider 注册副作用。
+ */
 export type ProviderStreamFactory = (
 	model: Model<Api>,
 	context: Context,
@@ -49,7 +53,7 @@ export type ProviderStreamFactory = (
 export interface ProviderHostOptions {
 	modelResolver: ProviderModelResolver;
 	contextConverter?: ProviderContextConverter;
-	stream?: ProviderStreamFactory;
+	stream: ProviderStreamFactory;
 	requestOptions?: Omit<SimpleStreamOptions, "signal">;
 	defaultTimeoutMs?: number;
 	now?: () => number;
@@ -73,7 +77,7 @@ export class ProviderHost {
 	constructor(options: ProviderHostOptions) {
 		this.modelResolver = options.modelResolver;
 		this.contextConverter = options.contextConverter ?? defaultProviderContextConverter;
-		this.stream = options.stream ?? streamSimple;
+		this.stream = options.stream;
 		this.requestOptions = options.requestOptions ?? {};
 		this.defaultTimeoutMs = options.defaultTimeoutMs;
 		this.now = options.now ?? Date.now;

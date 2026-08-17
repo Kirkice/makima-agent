@@ -5,7 +5,7 @@
 //! [`AgentLoopEngine::handle_provider_event`]。这种设计使事件顺序可离线回放和单元测试，
 //! 并避免核心状态机耦合 TypeScript Provider Host。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use protocol::{
     AbortedStopReason, AssistantContent, AssistantRole, AssistantStopReason,
@@ -60,26 +60,41 @@ pub enum ProviderEvent {
     Failed { timestamp: u64, message: String },
 }
 
-/// Tool Runtime 反馈给 Agent Loop 的稳定生命周期事件。
+/// Tool Runtime 反馈给 Agent Loop 的生命周期事件。
 ///
-/// 该枚举属于端口契约而不是具体 Tool Runtime，避免 Agent Loop 依赖工具注册、Sandbox 或
-/// 扩展宿主实现。事件顺序必须保持单个调用的开始、结束相邻，才能与 TypeScript 的串行工具
-/// 调用生命周期一致。
+/// 端口事件只使用共享协议值，不暴露 worker、channel 或 Sandbox。`Updated` 是可丢弃的运行中
+/// 快照；只有 `Finished` 可以写入稳定 transcript。同一调用必须且只能产生一个终态。
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolRuntimePortEvent {
-    /// 已开始处理一个完整工具调用。
-    Started { tool_call: ToolCall },
-    /// 工具已产生稳定结果；失败也以结果表示，不能中断同一批后续调用。
-    Finished { result: ToolResult },
+    Started {
+        tool_call: ToolCall,
+    },
+    Updated {
+        tool_call_id: String,
+        content: Vec<TextOrImageContent>,
+        details: Option<serde_json::Value>,
+    },
+    Finished {
+        result: ToolResult,
+    },
 }
 
-/// Tool Runtime 的窄端口。
+/// 非阻塞 Tool Runtime 的窄端口。
 ///
-/// Agent Loop 只负责工具调用的生命周期、结果转录和下一次 Provider 请求的上下文准备；具体
-/// 工具注册、Sandbox、扩展宿主和执行策略均留在端口实现侧。当前切片固定按源顺序串行执行。
+/// `start_serial` 只提交任务，不能等待工具完成；调用方在自己的事件循环中调用 `poll`。
+/// 这使 Provider、RPC 与 Session 线程不会被文件、进程或扩展工具阻塞。
 pub trait ToolRuntimePort {
-    /// 执行一批完整工具调用，并按实际生命周期顺序返回端口事件。
-    fn execute_serial(&self, calls: Vec<ToolCall>, timestamp: u64) -> Vec<ToolRuntimePortEvent>;
+    fn start_serial(
+        &mut self,
+        calls: Vec<ToolCall>,
+        timestamp: u64,
+    ) -> Result<Vec<ToolRuntimePortEvent>, String>;
+
+    fn poll(&mut self, timestamp: u64) -> Vec<ToolRuntimePortEvent>;
+
+    fn cancel(&mut self);
+
+    fn has_active_batch(&self) -> bool;
 }
 
 /// 将跨语言 DTO 转换为内部状态机事件。
@@ -148,6 +163,12 @@ pub enum AgentLoopEvent {
     ToolExecutionStarted {
         tool_call: ToolCall,
     },
+    /// 工具运行中的完整快照。更新不会持久化，迟到更新由 Tool Runtime 丢弃。
+    ToolExecutionUpdated {
+        tool_call: ToolCall,
+        content: Vec<TextOrImageContent>,
+        details: Option<serde_json::Value>,
+    },
     /// 单个工具已产生稳定结果；错误同样作为结果返回，避免中断同批后续调用。
     ToolExecutionFinished {
         result: ToolResult,
@@ -188,6 +209,9 @@ pub struct AgentLoopEngine {
     active: bool,
     abort_requested: bool,
     active_assistant: Option<ActiveAssistant>,
+    active_tool_calls: VecDeque<ToolCall>,
+    active_tool_call: Option<ToolCall>,
+    tool_results: Vec<ToolResult>,
     queued_steer: Vec<UserTranscriptItem>,
     messages: Vec<TranscriptItem>,
     events: Vec<AgentLoopEvent>,
@@ -201,6 +225,9 @@ impl AgentLoopEngine {
             active: false,
             abort_requested: false,
             active_assistant: None,
+            active_tool_calls: VecDeque::new(),
+            active_tool_call: None,
+            tool_results: Vec::new(),
             queued_steer: Vec::new(),
             messages: Vec::new(),
             events: Vec::new(),
@@ -271,6 +298,16 @@ impl AgentLoopEngine {
         Ok(())
     }
 
+    /// 当前回合是否已经收到取消请求、正在等待运行时完成逻辑结算。
+    pub fn is_abort_requested(&self) -> bool {
+        self.abort_requested
+    }
+
+    /// 工具批次是否尚未全部产生稳定终态。
+    pub fn is_waiting_for_tools(&self) -> bool {
+        self.active_tool_call.is_some() || !self.active_tool_calls.is_empty()
+    }
+
     /// 处理一个不包含工具执行的归一化 Provider 事件。
     ///
     /// 当 Provider 以 `toolUse` 结束时，本方法在提交任何 assistant 消息前返回错误，防止调用方
@@ -291,7 +328,7 @@ impl AgentLoopEngine {
     pub fn handle_provider_event_with_tools(
         &mut self,
         event: ProviderEvent,
-        tool_runtime: &impl ToolRuntimePort,
+        tool_runtime: &mut impl ToolRuntimePort,
     ) -> Result<Vec<AgentLoopEvent>, AgentLoopError> {
         self.handle_provider_event_inner(event, Some(tool_runtime))
     }
@@ -299,7 +336,7 @@ impl AgentLoopEngine {
     fn handle_provider_event_inner(
         &mut self,
         event: ProviderEvent,
-        tool_runtime: Option<&dyn ToolRuntimePort>,
+        tool_runtime: Option<&mut dyn ToolRuntimePort>,
     ) -> Result<Vec<AgentLoopEvent>, AgentLoopError> {
         if !self.active {
             return Err(AgentLoopError::new(
@@ -347,7 +384,7 @@ impl AgentLoopEngine {
                 let calls = self.complete_assistant(timestamp, stop_reason)?;
                 if let Some(runtime) = tool_runtime {
                     if !calls.is_empty() {
-                        self.execute_tool_calls(calls, timestamp, runtime);
+                        self.start_tool_calls(calls, timestamp, runtime)?;
                     }
                 }
             }
@@ -359,12 +396,82 @@ impl AgentLoopEngine {
         Ok(self.drain_events())
     }
 
+    /// 接收非阻塞 Tool Runtime 当前已经就绪的事件。
+    pub fn handle_tool_runtime_events(
+        &mut self,
+        events: Vec<ToolRuntimePortEvent>,
+    ) -> Result<Vec<AgentLoopEvent>, AgentLoopError> {
+        for event in events {
+            match event {
+                ToolRuntimePortEvent::Started { tool_call } => {
+                    if self.active_tool_call.is_some() {
+                        return Err(AgentLoopError::new("前一个工具调用尚未结束。"));
+                    }
+                    let expected = self.active_tool_calls.pop_front().ok_or_else(|| {
+                        AgentLoopError::new("Tool Runtime 启动了未提交的工具调用。")
+                    })?;
+                    if expected != tool_call {
+                        return Err(AgentLoopError::new("Tool Runtime 改变了工具调用顺序。"));
+                    }
+                    self.active_tool_call = Some(tool_call.clone());
+                    self.events
+                        .push(AgentLoopEvent::ToolExecutionStarted { tool_call });
+                }
+                ToolRuntimePortEvent::Updated {
+                    tool_call_id,
+                    content,
+                    details,
+                } => {
+                    let tool_call = self
+                        .active_tool_call
+                        .as_ref()
+                        .ok_or_else(|| AgentLoopError::new("工具开始前不能发送运行中更新。"))?;
+                    if tool_call.tool_call_id != tool_call_id {
+                        return Err(AgentLoopError::new("工具更新不属于当前调用。"));
+                    }
+                    self.events.push(AgentLoopEvent::ToolExecutionUpdated {
+                        tool_call: tool_call.clone(),
+                        content,
+                        details,
+                    });
+                }
+                ToolRuntimePortEvent::Finished { result } => {
+                    let tool_call = self
+                        .active_tool_call
+                        .take()
+                        .ok_or_else(|| AgentLoopError::new("工具开始前不能产生终态。"))?;
+                    if tool_call.tool_call_id != result.tool_call_id
+                        || tool_call.tool_name != result.tool_name
+                    {
+                        return Err(AgentLoopError::new("工具终态不属于当前调用。"));
+                    }
+                    self.events.push(AgentLoopEvent::ToolExecutionFinished {
+                        result: result.clone(),
+                    });
+                    self.commit_message(TranscriptItem::Tool(tool_result_item(&result)));
+                    self.tool_results.push(result);
+                    if self.active_tool_calls.is_empty() {
+                        self.events.push(AgentLoopEvent::ToolResultsReady {
+                            results: std::mem::take(&mut self.tool_results),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(self.drain_events())
+    }
+
     /// 当 Provider adapter 已确认取消生效、但没有可用的终态流事件时调用。
     pub fn settle_abort(&mut self, timestamp: u64) -> Vec<AgentLoopEvent> {
         if !self.active {
             return Vec::new();
         }
 
+        // 取消后的工具 worker 可能仍会自然返回，但其结果不再属于当前回合。清空 Agent Loop
+        // 的批次状态，确保迟到终态不能污染 transcript，也不会阻塞同一 Session 的下一 prompt。
+        self.active_tool_calls.clear();
+        self.active_tool_call = None;
+        self.tool_results.clear();
         let assistant = self.active_assistant.take();
         let item = TranscriptItem::Assistant(AssistantTranscriptItem::Aborted {
             id: assistant
@@ -537,30 +644,25 @@ impl AgentLoopEngine {
         Ok(calls)
     }
 
-    fn execute_tool_calls(
+    fn start_tool_calls(
         &mut self,
         calls: Vec<ToolCall>,
         timestamp: u64,
-        tool_runtime: &dyn ToolRuntimePort,
-    ) {
-        let mut results = Vec::new();
-        for event in tool_runtime.execute_serial(calls, timestamp) {
-            match event {
-                ToolRuntimePortEvent::Started { tool_call } => {
-                    self.events
-                        .push(AgentLoopEvent::ToolExecutionStarted { tool_call });
-                }
-                ToolRuntimePortEvent::Finished { result } => {
-                    self.events.push(AgentLoopEvent::ToolExecutionFinished {
-                        result: result.clone(),
-                    });
-                    self.commit_message(TranscriptItem::Tool(tool_result_item(&result)));
-                    results.push(result);
-                }
-            }
+        tool_runtime: &mut dyn ToolRuntimePort,
+    ) -> Result<(), AgentLoopError> {
+        if self.is_waiting_for_tools() {
+            return Err(AgentLoopError::new("当前工具批次尚未结束。"));
         }
-        self.events
-            .push(AgentLoopEvent::ToolResultsReady { results });
+        self.active_tool_calls = calls.iter().cloned().collect();
+        self.tool_results.clear();
+        let events = tool_runtime
+            .start_serial(calls, timestamp)
+            .map_err(AgentLoopError::new)?;
+        // 内部处理函数会 drain 完整事件队列。这里必须把结果放回队列，保证同一次 Provider
+        // done 已生成的 assistant message_end 先于工具生命周期事件交给上层，且不会被静默吞掉。
+        let emitted = self.handle_tool_runtime_events(events)?;
+        self.events.extend(emitted);
+        Ok(())
     }
 
     fn fail_assistant(&mut self, timestamp: u64, message: String) -> Result<(), AgentLoopError> {
@@ -719,15 +821,29 @@ mod tests {
     #[derive(Debug, Clone)]
     struct FakeToolRuntime {
         events: Vec<ToolRuntimePortEvent>,
+        active: bool,
     }
 
     impl ToolRuntimePort for FakeToolRuntime {
-        fn execute_serial(
-            &self,
+        fn start_serial(
+            &mut self,
             _calls: Vec<ToolCall>,
             _timestamp: u64,
-        ) -> Vec<ToolRuntimePortEvent> {
-            self.events.clone()
+        ) -> Result<Vec<ToolRuntimePortEvent>, String> {
+            self.active = false;
+            Ok(self.events.clone())
+        }
+
+        fn poll(&mut self, _timestamp: u64) -> Vec<ToolRuntimePortEvent> {
+            Vec::new()
+        }
+
+        fn cancel(&mut self) {
+            self.active = false;
+        }
+
+        fn has_active_batch(&self) -> bool {
+            self.active
         }
     }
 
@@ -870,7 +986,7 @@ mod tests {
                 _ => None,
             })
             .expect("shared fixture must include a completed tool call");
-        let tool_runtime = FakeToolRuntime {
+        let mut tool_runtime = FakeToolRuntime {
             events: vec![
                 ToolRuntimePortEvent::Started {
                     tool_call: call.clone(),
@@ -889,6 +1005,7 @@ mod tests {
                     },
                 },
             ],
+            active: false,
         };
         let mut loop_engine = engine();
         loop_engine
@@ -907,7 +1024,7 @@ mod tests {
                     .handle_provider_event_with_tools(
                         ProviderEvent::try_from(provider_event)
                             .expect("shared fixture must use supported events"),
-                        &tool_runtime,
+                        &mut tool_runtime,
                     )
                     .expect("shared tool fixture event should be accepted"),
             );
@@ -938,7 +1055,7 @@ mod tests {
             is_error: false,
             timestamp: 21,
         };
-        let tool_runtime = FakeToolRuntime {
+        let mut tool_runtime = FakeToolRuntime {
             events: vec![
                 ToolRuntimePortEvent::Started {
                     tool_call: call.clone(),
@@ -947,6 +1064,7 @@ mod tests {
                     result: result.clone(),
                 },
             ],
+            active: false,
         };
         let mut loop_engine = engine();
         loop_engine
@@ -964,7 +1082,7 @@ mod tests {
                     message_id: "assistant-tool-1".to_owned(),
                     timestamp: 20,
                 },
-                &tool_runtime,
+                &mut tool_runtime,
             )
             .unwrap();
         events.extend(
@@ -974,7 +1092,7 @@ mod tests {
                         content_index: 0,
                         delta: "{\"value\":\"hello\"}".to_owned(),
                     },
-                    &tool_runtime,
+                    &mut tool_runtime,
                 )
                 .unwrap(),
         );
@@ -985,7 +1103,7 @@ mod tests {
                         content_index: 0,
                         tool_call: call,
                     },
-                    &tool_runtime,
+                    &mut tool_runtime,
                 )
                 .unwrap(),
         );
@@ -996,7 +1114,7 @@ mod tests {
                         timestamp: 21,
                         stop_reason: AssistantStopReason::ToolUse,
                     },
-                    &tool_runtime,
+                    &mut tool_runtime,
                 )
                 .unwrap(),
         );
@@ -1029,7 +1147,7 @@ mod tests {
                     message_id: "assistant-final-1".to_owned(),
                     timestamp: 22,
                 },
-                &tool_runtime,
+                &mut tool_runtime,
             )
             .unwrap();
         assert_eq!(
@@ -1041,7 +1159,7 @@ mod tests {
                 ProviderEvent::TextDelta {
                     text: "done".to_owned(),
                 },
-                &tool_runtime,
+                &mut tool_runtime,
             )
             .unwrap();
         let events = loop_engine
@@ -1050,7 +1168,7 @@ mod tests {
                     timestamp: 23,
                     stop_reason: AssistantStopReason::Stop,
                 },
-                &tool_runtime,
+                &mut tool_runtime,
             )
             .unwrap();
         assert_eq!(
@@ -1062,7 +1180,10 @@ mod tests {
 
     #[test]
     fn rejects_incomplete_or_invalid_tool_terminal_states_without_committing() {
-        let tool_runtime = FakeToolRuntime { events: Vec::new() };
+        let mut tool_runtime = FakeToolRuntime {
+            events: Vec::new(),
+            active: false,
+        };
         let mut loop_engine = engine();
         loop_engine
             .prompt(user_text_item(
@@ -1078,7 +1199,7 @@ mod tests {
                     message_id: "assistant-tool-1".to_owned(),
                     timestamp: 2,
                 },
-                &tool_runtime,
+                &mut tool_runtime,
             )
             .unwrap();
         loop_engine
@@ -1087,7 +1208,7 @@ mod tests {
                     content_index: 0,
                     delta: "{\"value\":".to_owned(),
                 },
-                &tool_runtime,
+                &mut tool_runtime,
             )
             .unwrap();
 
@@ -1097,7 +1218,7 @@ mod tests {
                     timestamp: 3,
                     stop_reason: AssistantStopReason::ToolUse,
                 },
-                &tool_runtime,
+                &mut tool_runtime,
             )
             .expect_err("truncated tool arguments must not be committed");
         assert_eq!(
@@ -1318,6 +1439,7 @@ mod tests {
             AgentLoopEvent::TranscriptItemUpdated(_) => "message_update",
             AgentLoopEvent::TranscriptItemFinished(_) => "message_end",
             AgentLoopEvent::ToolExecutionStarted { .. } => "tool_execution_start",
+            AgentLoopEvent::ToolExecutionUpdated { .. } => "tool_execution_update",
             AgentLoopEvent::ToolExecutionFinished { .. } => "tool_execution_end",
             AgentLoopEvent::ToolResultsReady { .. } => "tool_results_ready",
             AgentLoopEvent::TurnEnded { .. } => "turn_end",

@@ -142,6 +142,7 @@ dependencies = [
  "rpc",
  "serde_json",
  "session",
+ "tool-runtime",
 ]
 
 [[package]]
@@ -232,6 +233,7 @@ version = "0.1.0"
 dependencies = [
  "agent-loop",
  "protocol",
+ "sandbox",
  "serde_json",
 ]
 
