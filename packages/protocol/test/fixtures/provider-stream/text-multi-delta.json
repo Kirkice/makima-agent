@@ -18,6 +18,28 @@
     },
     {
       "type": "done",
+      "messageId": "assistant-1",
+      "content": [
+        {
+          "type": "text",
+          "text": "你好"
+        }
+      ],
+      "responseModel": "resolved-model",
+      "usage": {
+        "input": 10,
+        "output": 2,
+        "cacheRead": 1,
+        "cacheWrite": 0,
+        "totalTokens": 13,
+        "cost": {
+          "input": 0.01,
+          "output": 0.004,
+          "cacheRead": 0.001,
+          "cacheWrite": 0,
+          "total": 0.015
+        }
+      },
       "timestamp": 3,
       "stopReason": "stop"
     }

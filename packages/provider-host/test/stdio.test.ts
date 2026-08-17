@@ -92,6 +92,8 @@ describe("ProviderHostStdioServer", () => {
 						api: "openai-completions",
 						provider: "test-provider",
 						model: "test-model",
+						responseId: "assistant-1",
+						responseModel: "test-model",
 						usage: {
 							input: 0,
 							output: 0,
@@ -119,7 +121,26 @@ describe("ProviderHostStdioServer", () => {
 
 		expect(output.responses()).toEqual([
 			{ type: "event", requestId: "request-1", event: { type: "start", messageId: "assistant-1", timestamp: 1 } },
-			{ type: "event", requestId: "request-1", event: { type: "done", timestamp: 2, stopReason: "stop" } },
+			{
+				type: "event",
+				requestId: "request-1",
+				event: {
+					type: "done",
+					messageId: "assistant-1",
+					content: [],
+					responseModel: "test-model",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					timestamp: 2,
+					stopReason: "stop",
+				},
+			},
 			{ type: "complete", requestId: "request-1" },
 		]);
 	});
@@ -151,7 +172,13 @@ describe("ProviderHostStdioServer", () => {
 			{
 				type: "event",
 				requestId: "request-1",
-				event: { type: "error", timestamp: 7, message: "Operation aborted" },
+				event: {
+					type: "error",
+					messageId: "provider-7",
+					content: [],
+					timestamp: 7,
+					message: "Operation aborted",
+				},
 			},
 			{ type: "complete", requestId: "request-1" },
 		]);

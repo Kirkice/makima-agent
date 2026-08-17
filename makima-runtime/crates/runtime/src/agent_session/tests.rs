@@ -13,7 +13,7 @@ use std::{
 use agent_loop::{AgentLoopEngine, ProviderEvent};
 use protocol::{
     AssistantContent, AssistantRole, AssistantStopReason, AssistantTranscriptItem, Command,
-    ModelRef, ProtocolErrorCode, SessionPhase, ThinkingLevel, TranscriptItem,
+    ModelRef, ProtocolErrorCode, SessionPhase, ThinkingLevel, TranscriptItem, Usage, UsageCost,
 };
 
 use session::JsonlSessionStore;
@@ -355,6 +355,7 @@ fn rust_agent_loop_terminal_events_drive_session_persistence_and_settlement() {
         session
             .agent_loop_mut()
             .handle_provider_event(ProviderEvent::TextDelta {
+                content_index: 0,
                 text: "world".to_owned(),
             })
             .expect("provider delta should be accepted"),
@@ -363,6 +364,26 @@ fn rust_agent_loop_terminal_events_drive_session_persistence_and_settlement() {
         session
             .agent_loop_mut()
             .handle_provider_event(ProviderEvent::Completed {
+                message_id: "assistant-1".to_owned(),
+                content: vec![AssistantContent::Text {
+                    text: "world".to_owned(),
+                }],
+                response_model: Some("resolved-model".to_owned()),
+                usage: Usage {
+                    input: 1,
+                    output: 1,
+                    cache_read: 0,
+                    cache_write: 0,
+                    reasoning: None,
+                    total_tokens: 2,
+                    cost: UsageCost {
+                        input: 0.0,
+                        output: 0.0,
+                        cache_read: 0.0,
+                        cache_write: 0.0,
+                        total: 0.0,
+                    },
+                },
                 timestamp: 103,
                 stop_reason: AssistantStopReason::Stop,
             })

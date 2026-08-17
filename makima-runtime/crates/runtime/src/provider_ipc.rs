@@ -563,6 +563,24 @@ mod tests {
         let response = response_frame(ProviderHostResponse::Event {
             request_id: "unknown".to_owned(),
             event: ProviderStreamEvent::Done {
+                message_id: "assistant-1".to_owned(),
+                content: Vec::new(),
+                response_model: None,
+                usage: protocol::Usage {
+                    input: 0,
+                    output: 0,
+                    cache_read: 0,
+                    cache_write: 0,
+                    reasoning: None,
+                    total_tokens: 0,
+                    cost: protocol::UsageCost {
+                        input: 0.0,
+                        output: 0.0,
+                        cache_read: 0.0,
+                        cache_write: 0.0,
+                        total: 0.0,
+                    },
+                },
                 timestamp: 20,
                 stop_reason: AssistantStopReason::Stop,
             },

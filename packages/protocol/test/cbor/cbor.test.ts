@@ -66,6 +66,14 @@ describe("CBOR codec", () => {
 		else expect(decoded).toEqual(value);
 	});
 
+	test.each([
+		["float16", "f93e00", 1.5],
+		["negative float16 subnormal", "f98001", -(2 ** -24)],
+		["float32", "fa3fc00000", 1.5],
+	] as const)("decodes finite Rust-compatible %s values", (_label, wire, expected) => {
+		expect(decodeCbor(fromHex(wire))).toBe(expected);
+	});
+
 	test("omits undefined object properties without omitting falsey values", () => {
 		const value = { omitted: undefined, zero: 0, empty: "", no: false, nil: null };
 		expect(decodeCbor(encodeCbor(value))).toEqual({ zero: 0, empty: "", no: false, nil: null });
@@ -129,8 +137,8 @@ describe("CBOR codec", () => {
 		["undefined", "f7"],
 		["unsupported simple value", "e0"],
 		["break outside an indefinite item", "ff"],
-		["float16", "f93c00"],
-		["float32", "fa3f800000"],
+		["float16 positive infinity", "f97c00"],
+		["float32 NaN", "fa7fc00000"],
 		["positive infinity", "fb7ff0000000000000"],
 		["NaN", "fb7ff8000000000000"],
 		["truncated float64", "fb3ff00000"],

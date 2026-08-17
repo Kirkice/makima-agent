@@ -9,7 +9,9 @@ interface ProviderStreamFixture {
 	expected: {
 		eventNames: string[];
 		assistantText?: string;
+		assistantThinking?: string;
 		assistantStatus?: "error";
+		responseModel?: string;
 		toolCall?: {
 			toolCallId: string;
 			toolName: string;
@@ -32,7 +34,12 @@ async function loadFixtures(): Promise<ProviderStreamFixture[]> {
 describe("shared Provider Stream fixtures", () => {
 	test("contain only protocol-valid normalized events", async () => {
 		const fixtures = await loadFixtures();
-		expect(fixtures.map((fixture) => fixture.name)).toEqual(["provider-error", "text-multi-delta", "tool-call"]);
+		expect(fixtures.map((fixture) => fixture.name)).toEqual([
+			"provider-error",
+			"text-multi-delta",
+			"thinking-text-interleaved",
+			"tool-call",
+		]);
 
 		for (const fixture of fixtures) {
 			expect(fixture.events.map(parseProviderStreamEvent)).toEqual(fixture.events);

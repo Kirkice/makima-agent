@@ -1,0 +1,80 @@
+{
+  "name": "thinking-text-interleaved",
+  "events": [
+    {
+      "type": "start",
+      "messageId": "response-thinking-1",
+      "timestamp": 30
+    },
+    {
+      "type": "thinking_delta",
+      "contentIndex": 0,
+      "delta": "先分析",
+      "redacted": false
+    },
+    {
+      "type": "text_delta",
+      "contentIndex": 1,
+      "delta": "答"
+    },
+    {
+      "type": "thinking_delta",
+      "contentIndex": 0,
+      "delta": "，再确认",
+      "redacted": false
+    },
+    {
+      "type": "text_delta",
+      "contentIndex": 1,
+      "delta": "案"
+    },
+    {
+      "type": "done",
+      "messageId": "response-thinking-1",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "先分析，再确认",
+          "redacted": false
+        },
+        {
+          "type": "text",
+          "text": "最终答案"
+        }
+      ],
+      "responseModel": "provider-resolved-model",
+      "usage": {
+        "input": 20,
+        "output": 8,
+        "cacheRead": 3,
+        "cacheWrite": 2,
+        "reasoning": 5,
+        "totalTokens": 33,
+        "cost": {
+          "input": 0.02,
+          "output": 0.016,
+          "cacheRead": 0.003,
+          "cacheWrite": 0.004,
+          "total": 0.043
+        }
+      },
+      "timestamp": 31,
+      "stopReason": "stop"
+    }
+  ],
+  "expected": {
+    "eventNames": [
+      "message_start",
+      "message_update",
+      "message_update",
+      "message_update",
+      "message_update",
+      "message_end",
+      "turn_end",
+      "agent_end"
+    ],
+    "assistantText": "最终答案",
+    "assistantThinking": "先分析，再确认",
+    "responseModel": "provider-resolved-model"
+  }
+}

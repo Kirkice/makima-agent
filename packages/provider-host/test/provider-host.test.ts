@@ -53,6 +53,8 @@ function assistant(timestamp: number) {
 		api: "openai-completions" as const,
 		provider: "test-provider",
 		model: "test-model",
+		responseId: `response-${timestamp}`,
+		responseModel: "test-model",
 		usage: {
 			input: 1,
 			output: 1,
@@ -89,7 +91,22 @@ describe("ProviderHost", () => {
 		expect(await collect(host, request)).toEqual([
 			{ type: "start", messageId: "response-1", timestamp: 10 },
 			{ type: "text_delta", contentIndex: 0, delta: "你好" },
-			{ type: "done", timestamp: 11, stopReason: "stop" },
+			{
+				type: "done",
+				messageId: "response-11",
+				content: [],
+				responseModel: "test-model",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				timestamp: 11,
+				stopReason: "stop",
+			},
 		]);
 		expect(resolver).toHaveBeenCalledWith(request.model);
 		expect(factory).toHaveBeenCalledWith(
@@ -121,7 +138,15 @@ describe("ProviderHost", () => {
 
 		expect(host.abort(request.requestId)).toBe(true);
 		expect(signal?.aborted).toBe(true);
-		expect(await execution).toEqual([{ type: "error", timestamp: 99, message: "Operation aborted" }]);
+		expect(await execution).toEqual([
+			{
+				type: "error",
+				messageId: "provider-99",
+				content: [],
+				timestamp: 99,
+				message: "Operation aborted",
+			},
+		]);
 		expect(host.abort(request.requestId)).toBe(false);
 	});
 
@@ -139,7 +164,13 @@ describe("ProviderHost", () => {
 		const pending = collect(host, request);
 		await vi.waitFor(() => expect(host.activeRequestCount).toBe(1));
 		expect(await collect(host, request)).toEqual([
-			{ type: "error", timestamp: 7, message: "Provider request is already active: request-1" },
+			{
+				type: "error",
+				messageId: "provider-7",
+				content: [],
+				timestamp: 7,
+				message: "Provider request is already active: request-1",
+			},
 		]);
 		release?.();
 		await pending;
@@ -152,7 +183,13 @@ describe("ProviderHost", () => {
 			now: () => 8,
 		});
 		expect(await collect(failing, { ...request, requestId: "request-2" })).toEqual([
-			{ type: "error", timestamp: 8, message: "网络中断" },
+			{
+				type: "error",
+				messageId: "provider-8",
+				content: [],
+				timestamp: 8,
+				message: "网络中断",
+			},
 		]);
 	});
 
@@ -174,7 +211,13 @@ describe("ProviderHost", () => {
 		});
 
 		expect(await collect(host, { ...request, requestId: "request-3" })).toEqual([
-			{ type: "error", timestamp: 10, message: "Operation aborted" },
+			{
+				type: "error",
+				messageId: "provider-10",
+				content: [],
+				timestamp: 10,
+				message: "Operation aborted",
+			},
 		]);
 	});
 });

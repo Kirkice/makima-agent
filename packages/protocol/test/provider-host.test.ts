@@ -1,8 +1,30 @@
 import { describe, expect, test } from "vitest";
 import { mapAssistantMessageEvent, type ProviderHostAssistantMessageEvent } from "../src/index.ts";
 
+const usage = {
+	input: 10,
+	output: 5,
+	cacheRead: 2,
+	cacheWrite: 1,
+	reasoning: 3,
+	totalTokens: 18,
+	cost: { input: 0.01, output: 0.01, cacheRead: 0.002, cacheWrite: 0.002, total: 0.024 },
+};
+
+const terminalMessage = {
+	responseId: "response-1",
+	content: [
+		{ type: "text" as const, text: "你好" },
+		{ type: "thinking" as const, thinking: "分析", redacted: true },
+		{ type: "toolCall" as const, toolCallId: "call-1", toolName: "echo", input: { value: "hello" } },
+	],
+	responseModel: "resolved-model",
+	usage,
+	timestamp: 2,
+};
+
 describe("Provider Host adapter", () => {
-	test("projects TypeScript Provider events into the shared stream DTO", () => {
+	test("projects TypeScript Provider events and the authoritative terminal snapshot", () => {
 		const events: ProviderHostAssistantMessageEvent[] = [
 			{ type: "start", partial: { responseId: "response-1", timestamp: 1 } },
 			{ type: "text_start", contentIndex: 0 },
@@ -19,7 +41,7 @@ describe("Provider Host adapter", () => {
 				contentIndex: 2,
 				toolCall: { id: "call-1", name: "echo", arguments: { value: "hello" } },
 			},
-			{ type: "done", reason: "toolUse", message: { timestamp: 2 } },
+			{ type: "done", reason: "toolUse", message: terminalMessage },
 		];
 
 		expect(events.map(mapAssistantMessageEvent).filter((event) => event !== undefined)).toEqual([
@@ -32,36 +54,46 @@ describe("Provider Host adapter", () => {
 				contentIndex: 2,
 				toolCall: { toolCallId: "call-1", toolName: "echo", input: { value: "hello" } },
 			},
-			{ type: "done", timestamp: 2, stopReason: "toolUse" },
+			{
+				type: "done",
+				messageId: "response-1",
+				content: terminalMessage.content,
+				responseModel: "resolved-model",
+				usage,
+				timestamp: 2,
+				stopReason: "toolUse",
+			},
 		]);
 	});
 
-	test("maps cancellation, provider errors, and unsupported deferred responses to errors", () => {
-		expect(
-			mapAssistantMessageEvent({
-				type: "error",
-				reason: "aborted",
-				error: { timestamp: 3 },
-			}),
-		).toEqual({ type: "error", timestamp: 3, message: "Operation aborted" });
-
-		expect(
-			mapAssistantMessageEvent({
-				type: "error",
-				reason: "error",
-				error: { timestamp: 4, errorMessage: "网络中断" },
-			}),
-		).toEqual({ type: "error", timestamp: 4, message: "网络中断" });
-
-		expect(
-			mapAssistantMessageEvent({
-				type: "done",
-				reason: "deferred",
-				message: { timestamp: 5 },
-			}),
-		).toEqual({
+	test("maps cancellation, provider errors, and unsupported deferred responses without losing terminal data", () => {
+		const aborted = { content: [{ type: "text" as const, text: "部分" }], timestamp: 3 };
+		expect(mapAssistantMessageEvent({ type: "error", reason: "aborted", error: aborted })).toEqual({
 			type: "error",
-			timestamp: 5,
+			messageId: "provider-3",
+			content: aborted.content,
+			timestamp: 3,
+			message: "Operation aborted",
+		});
+
+		const failed = { ...terminalMessage, timestamp: 4, errorMessage: "网络中断" };
+		expect(mapAssistantMessageEvent({ type: "error", reason: "error", error: failed })).toEqual({
+			type: "error",
+			messageId: "response-1",
+			content: terminalMessage.content,
+			responseModel: "resolved-model",
+			usage,
+			timestamp: 4,
+			message: "网络中断",
+		});
+
+		expect(mapAssistantMessageEvent({ type: "done", reason: "deferred", message: terminalMessage })).toEqual({
+			type: "error",
+			messageId: "response-1",
+			content: terminalMessage.content,
+			responseModel: "resolved-model",
+			usage,
+			timestamp: 2,
 			message: "Provider deferred response is not supported by the Rust Core yet.",
 		});
 	});

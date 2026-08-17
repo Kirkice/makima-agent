@@ -93,20 +93,48 @@ class CborReader {
 				return true;
 			case 22:
 				return null;
+			case 25:
+				return this.validateFloat(this.readFloat16());
+			case 26: {
+				const bytes = this.readBytes(4);
+				return this.validateFloat(
+					new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat32(0, false),
+				);
+			}
 			case 27: {
 				const bytes = this.readBytes(8);
-				const value = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat64(0, false);
-				if (!Number.isFinite(value)) throw new CborError("Decoded CBOR number must be finite");
-				if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
-					throw new CborError("Decoded CBOR integer is outside the safe range");
-				}
-				return value;
+				return this.validateFloat(
+					new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat64(0, false),
+				);
 			}
 			case 31:
 				throw new CborError("CBOR break marker is not supported");
 			default:
 				throw new CborError("Unsupported CBOR simple value or floating-point width");
 		}
+	}
+
+	/**
+	 * Rust serde_cbor 会按可无损表达的最短宽度输出浮点数，因此跨语言协议必须接受
+	 * RFC 8949 定义的 float16/float32/float64，而不能只接受 TypeScript 编码器使用的 float64。
+	 */
+	private readFloat16(): number {
+		const bytes = this.readBytes(2);
+		const bits = bytes[0]! * 0x100 + bytes[1]!;
+		const sign = (bits & 0x8000) === 0 ? 1 : -1;
+		const exponent = (bits >>> 10) & 0x1f;
+		const fraction = bits & 0x03ff;
+		if (exponent === 0) return sign * 2 ** -14 * (fraction / 0x400);
+		if (exponent === 0x1f) return fraction === 0 ? sign * Number.POSITIVE_INFINITY : Number.NaN;
+		return sign * 2 ** (exponent - 15) * (1 + fraction / 0x400);
+	}
+
+	private validateFloat(value: number): number {
+		if (!Number.isFinite(value)) throw new CborError("Decoded CBOR number must be finite");
+		if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
+			throw new CborError("Decoded CBOR integer is outside the safe range");
+		}
+		return value;
 	}
 
 	private readLength(additionalInformation: number, kind: string, limit: number): number {

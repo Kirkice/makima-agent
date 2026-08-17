@@ -13,6 +13,28 @@
     },
     {
       "type": "error",
+      "messageId": "assistant-error-1",
+      "content": [
+        {
+          "type": "text",
+          "text": "部分输出"
+        }
+      ],
+      "responseModel": "resolved-model",
+      "usage": {
+        "input": 8,
+        "output": 4,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 12,
+        "cost": {
+          "input": 0.008,
+          "output": 0.008,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.016
+        }
+      },
       "timestamp": 11,
       "message": "网络连接中断"
     }

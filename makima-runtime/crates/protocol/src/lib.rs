@@ -176,11 +176,11 @@ pub struct ProviderRequest {
     pub tools: Vec<ToolDefinition>,
 }
 
-/// Provider Host 归一化后的增量事件。
+/// Provider Host 归一化后的流事件。
 ///
-/// 该联合刻意不复用 TypeScript Provider SDK 的内部消息类型，确保 JSON fixture、Host IPC
-/// 与 Rust 状态机可使用同一套字段。`tool_call_delta` 仅保留给实时 UI，实际执行只能使用
-/// 已完成且通过 [`ProviderStreamEvent::ToolCallEnd`] 传递的调用。
+/// 该联合刻意不复用 TypeScript Provider SDK 的内部消息类型。增量只负责实时进度；终态
+/// 携带 Provider SDK 的稳定消息快照，使 Rust 与 TypeScript 都以同一个 final result 为准，
+/// 并完整保留 usage、response model 与 Provider 最后修正的内容。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "type",
@@ -212,10 +212,21 @@ pub enum ProviderStreamEvent {
         tool_call: ToolCall,
     },
     Done {
+        message_id: String,
+        content: Vec<AssistantContent>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        response_model: Option<String>,
+        usage: Usage,
         timestamp: u64,
         stop_reason: AssistantStopReason,
     },
     Error {
+        message_id: String,
+        content: Vec<AssistantContent>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        response_model: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
         timestamp: u64,
         message: String,
     },
@@ -1016,12 +1027,12 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        AssistantContent, ClientMessage, Command, CommandResult, ErrorResponse, EventEnvelope,
-        ModelCost, ModelInput, ModelMetadata, ModelRef, PROTOCOL_VERSION, ProtocolError,
-        ProtocolErrorCode, ProviderRequest, ProviderStreamEvent, ServerEvent, ServerHelloError,
-        ServerMessage, ServerSnapshot, SessionMetadata, SuccessResponse, TextOrImageContent,
-        ThinkingLevel, ToolCall, ToolDefinition, TranscriptDeltaKind, TranscriptItem,
-        TranscriptProgress,
+        AssistantContent, AssistantStopReason, ClientMessage, Command, CommandResult,
+        ErrorResponse, EventEnvelope, ModelCost, ModelInput, ModelMetadata, ModelRef,
+        PROTOCOL_VERSION, ProtocolError, ProtocolErrorCode, ProviderRequest, ProviderStreamEvent,
+        ServerEvent, ServerHelloError, ServerMessage, ServerSnapshot, SessionMetadata,
+        SuccessResponse, TextOrImageContent, ThinkingLevel, ToolCall, ToolDefinition,
+        TranscriptDeltaKind, TranscriptItem, TranscriptProgress, Usage, UsageCost,
     };
 
     #[test]
@@ -1461,6 +1472,97 @@ mod tests {
                 "type": "done", "timestamp": 3, "stopReason": "error",
             }))
             .is_err()
+        );
+
+        let usage = Usage {
+            input: 4,
+            output: 3,
+            cache_read: 2,
+            cache_write: 1,
+            reasoning: Some(2),
+            total_tokens: 10,
+            cost: UsageCost {
+                input: 0.4,
+                output: 0.3,
+                cache_read: 0.2,
+                cache_write: 0.1,
+                total: 1.0,
+            },
+        };
+        let terminal = ProviderStreamEvent::Done {
+            message_id: "assistant-1".to_owned(),
+            content: vec![AssistantContent::Thinking {
+                thinking: "reasoning".to_owned(),
+                redacted: Some(false),
+            }],
+            response_model: Some("resolved-model".to_owned()),
+            usage: usage.clone(),
+            timestamp: 4,
+            stop_reason: AssistantStopReason::Stop,
+        };
+        let encoded = serde_json::to_value(&terminal).expect("terminal event should serialize");
+        assert_eq!(
+            encoded,
+            json!({
+                "type": "done",
+                "messageId": "assistant-1",
+                "content": [{ "type": "thinking", "thinking": "reasoning", "redacted": false }],
+                "responseModel": "resolved-model",
+                "usage": {
+                    "input": 4,
+                    "output": 3,
+                    "cacheRead": 2,
+                    "cacheWrite": 1,
+                    "reasoning": 2,
+                    "totalTokens": 10,
+                    "cost": {
+                        "input": 0.4,
+                        "output": 0.3,
+                        "cacheRead": 0.2,
+                        "cacheWrite": 0.1,
+                        "total": 1.0,
+                    },
+                },
+                "timestamp": 4,
+                "stopReason": "stop",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ProviderStreamEvent>(encoded)
+                .expect("terminal event should round-trip"),
+            terminal
+        );
+        assert!(
+            serde_json::from_value::<ProviderStreamEvent>(json!({
+                "type": "done",
+                "messageId": "assistant-1",
+                "content": [],
+                "timestamp": 4,
+                "stopReason": "stop"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ProviderStreamEvent>(json!({
+                "type": "done",
+                "messageId": "assistant-1",
+                "content": [],
+                "usage": usage,
+                "timestamp": 4,
+                "stopReason": "stop",
+                "extra": true
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ProviderStreamEvent>(json!({
+                "type": "error",
+                "messageId": "assistant-1",
+                "content": [],
+                "timestamp": 4,
+                "message": "failed"
+            }))
+            .is_ok()
         );
     }
 

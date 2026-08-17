@@ -230,10 +230,18 @@ where
                 ProviderHostResponse::Complete { request_id } => {
                     self.require_active_request(&request_id)?;
                     if !self.active_request_terminal {
+                        let message_id = session
+                            .agent_loop()
+                            .active_assistant_id()
+                            .map_or_else(|| format!("provider-{timestamp}"), str::to_owned);
                         self.apply_provider_event(
                             session,
                             tool_runtime,
                             ProviderStreamEvent::Error {
+                                message_id,
+                                content: Vec::new(),
+                                response_model: None,
+                                usage: None,
                                 timestamp,
                                 message: "Provider Host 在发送终态事件前结束请求。".to_owned(),
                             },
@@ -286,12 +294,8 @@ where
         timestamp: u64,
         output: &mut Vec<ServerEvent>,
     ) -> Result<(), String> {
-        // AgentLoopEngine 目前没有 thinking transcript 状态。忽略该事件而不是让一个可选的
-        // provider 能力中断整轮请求；后续启用 thinking 状态时应在此处投影为 progress。
-        if matches!(stream_event, ProviderStreamEvent::ThinkingDelta { .. }) {
-            return Ok(());
-        }
-
+        // thinking、text 和 tool call 统一经过 Agent Loop 的 contentIndex 状态机。Runtime 不再
+        // 特判可选内容类型，避免真实 Host 与共享 fixture 走不同路径。
         let provider_event =
             ProviderEvent::try_from(stream_event).map_err(|error| error.message().to_owned())?;
         let loop_events = session
@@ -537,6 +541,7 @@ mod tests {
     use protocol::{
         AssistantContent, AssistantStopReason, AssistantTranscriptItem, Command, ModelRef,
         ProviderHostResponse, ProviderStreamEvent, SessionPhase, ThinkingLevel, TranscriptItem,
+        Usage, UsageCost,
     };
     use session::JsonlSessionStore;
     use tool_runtime::{Tool, ToolExecutionContext, ToolExecutionError, ToolOutput, ToolRuntime};
@@ -619,6 +624,40 @@ mod tests {
             .expect("prompt should start the AgentSession turn");
     }
 
+    fn usage() -> Usage {
+        Usage {
+            input: 10,
+            output: 5,
+            cache_read: 2,
+            cache_write: 1,
+            reasoning: Some(3),
+            total_tokens: 21,
+            cost: UsageCost {
+                input: 0.01,
+                output: 0.02,
+                cache_read: 0.003,
+                cache_write: 0.004,
+                total: 0.037,
+            },
+        }
+    }
+
+    fn done(
+        message_id: &str,
+        content: Vec<AssistantContent>,
+        timestamp: u64,
+        stop_reason: AssistantStopReason,
+    ) -> ProviderStreamEvent {
+        ProviderStreamEvent::Done {
+            message_id: message_id.to_owned(),
+            content,
+            response_model: Some("resolved-model".to_owned()),
+            usage: usage(),
+            timestamp,
+            stop_reason,
+        }
+    }
+
     fn event(event: ProviderStreamEvent) -> ProviderHostResponse {
         event_for("session-1-provider-1", event)
     }
@@ -672,10 +711,14 @@ mod tests {
                 content_index: 0,
                 delta: "world".to_owned(),
             }),
-            event(ProviderStreamEvent::Done {
-                timestamp: 102,
-                stop_reason: AssistantStopReason::Stop,
-            }),
+            event(done(
+                "assistant-1",
+                vec![AssistantContent::Text {
+                    text: "world".to_owned(),
+                }],
+                102,
+                AssistantStopReason::Stop,
+            )),
             ProviderHostResponse::Complete {
                 request_id: "session-1-provider-1".to_owned(),
             },
@@ -749,10 +792,16 @@ mod tests {
                     input: serde_json::json!({ "path": "hello.txt" }),
                 },
             }),
-            event(ProviderStreamEvent::Done {
-                timestamp: 102,
-                stop_reason: AssistantStopReason::ToolUse,
-            }),
+            event(done(
+                "assistant-tool",
+                vec![AssistantContent::ToolCall {
+                    tool_call_id: "call-1".to_owned(),
+                    tool_name: "read".to_owned(),
+                    input: serde_json::json!({ "path": "hello.txt" }),
+                }],
+                102,
+                AssistantStopReason::ToolUse,
+            )),
             ProviderHostResponse::Complete {
                 request_id: "session-1-provider-1".to_owned(),
             },
@@ -944,21 +993,31 @@ mod tests {
     }
 
     #[test]
-    fn ignores_thinking_delta_until_the_agent_loop_supports_thinking_state() {
+    fn projects_thinking_progress_and_persists_only_the_authoritative_terminal() {
         let transport = QueuedProviderStreamPort::with_responses([vec![
+            event(ProviderStreamEvent::Start {
+                message_id: "assistant-1".to_owned(),
+                timestamp: 101,
+            }),
             event(ProviderStreamEvent::ThinkingDelta {
                 content_index: 0,
                 delta: "private reasoning".to_owned(),
                 redacted: Some(false),
             }),
-            event(ProviderStreamEvent::Start {
-                message_id: "assistant-1".to_owned(),
-                timestamp: 101,
-            }),
-            event(ProviderStreamEvent::Done {
-                timestamp: 102,
-                stop_reason: AssistantStopReason::Stop,
-            }),
+            event(done(
+                "assistant-1",
+                vec![
+                    AssistantContent::Thinking {
+                        thinking: "final reasoning".to_owned(),
+                        redacted: Some(false),
+                    },
+                    AssistantContent::Text {
+                        text: "answer".to_owned(),
+                    },
+                ],
+                102,
+                AssistantStopReason::Stop,
+            )),
             ProviderHostResponse::Complete {
                 request_id: "session-1-provider-1".to_owned(),
             },
@@ -971,10 +1030,36 @@ mod tests {
             .expect("request should start");
 
         let mut tool_runtime = ToolRuntime::new();
-        driver
+        let progress = driver
             .poll(&mut session, &mut tool_runtime, 102)
-            .expect("thinking delta should not fail a text-only session");
+            .expect("thinking delta should flow through Agent Loop");
+        assert!(progress.iter().any(|event| matches!(
+            event,
+            protocol::ServerEvent::SessionProgress {
+                progress: protocol::TranscriptProgress::ItemUpdated {
+                    item: protocol::ActiveTranscriptItem::Assistant(
+                        AssistantTranscriptItem::Streaming { content, .. }
+                    )
+                },
+                ..
+            } if matches!(content.as_slice(), [AssistantContent::Thinking { thinking, .. }]
+                if thinking == "private reasoning")
+        )));
         assert_eq!(session.snapshot().phase, SessionPhase::Idle);
+        assert!(matches!(
+            session.snapshot().transcript.last(),
+            Some(TranscriptItem::Assistant(AssistantTranscriptItem::Complete {
+                content,
+                response_model: Some(response_model),
+                usage: Some(terminal_usage),
+                ..
+            })) if response_model == "resolved-model"
+                && terminal_usage == &usage()
+                && matches!(content.as_slice(), [
+                    AssistantContent::Thinking { thinking, .. },
+                    AssistantContent::Text { text }
+                ] if thinking == "final reasoning" && text == "answer")
+        ));
     }
 
     #[test]
@@ -985,6 +1070,10 @@ mod tests {
                 timestamp: 101,
             }),
             event(ProviderStreamEvent::Error {
+                message_id: "assistant-1".to_owned(),
+                content: Vec::new(),
+                response_model: None,
+                usage: None,
                 timestamp: 102,
                 message: "cancelled".to_owned(),
             }),
@@ -1037,10 +1126,16 @@ mod tests {
                     input: serde_json::json!({}),
                 },
             }),
-            event(ProviderStreamEvent::Done {
-                timestamp: 102,
-                stop_reason: AssistantStopReason::ToolUse,
-            }),
+            event(done(
+                "assistant-tool",
+                vec![AssistantContent::ToolCall {
+                    tool_call_id: "controlled-1".to_owned(),
+                    tool_name: "controlled".to_owned(),
+                    input: serde_json::json!({}),
+                }],
+                102,
+                AssistantStopReason::ToolUse,
+            )),
             ProviderHostResponse::Complete {
                 request_id: "session-1-provider-1".to_owned(),
             },

@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use protocol::{
     AbortedStopReason, AssistantContent, AssistantRole, AssistantStopReason,
     AssistantTranscriptItem, ErrorStopReason, ModelRef, ProviderStreamEvent, TextOrImageContent,
-    ToolCall, ToolResult, ToolRole, ToolTranscriptItem, TranscriptItem, UserRole,
+    ToolCall, ToolResult, ToolRole, ToolTranscriptItem, TranscriptItem, Usage, UserRole,
     UserTranscriptItem,
 };
 
@@ -36,14 +36,20 @@ impl AgentLoopError {
 
 /// Provider Host 归一化后输入 Agent Loop 的事件集合。
 ///
-/// Provider 的原始 SSE 字段、认证和网络异常必须在 Host 侧先归一化。工具参数增量仅用于
-/// 维持流式生命周期；实际执行只能使用已经完成解析的 [`ProviderEvent::ToolCallEnded`]。
+/// 增量事件仅驱动实时 progress；`Completed` / `Failed` 携带 Provider SDK 的权威终态消息。
+/// 状态机在终态替换增量快照，与 TypeScript `response.result()` 的语义保持一致。
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProviderEvent {
     /// Provider 已接受请求并开始生成 assistant 项。
     Started { message_id: String, timestamp: u64 },
-    /// 一个文本增量。必须在 [`ProviderEvent::Started`] 后出现。
-    TextDelta { text: String },
+    /// 一个文本增量。`content_index` 决定它在最终 assistant 内容中的位置。
+    TextDelta { content_index: u64, text: String },
+    /// 一个 thinking 增量。redacted 属性属于内容块，后续增量不得与首次值冲突。
+    ThinkingDelta {
+        content_index: u64,
+        thinking: String,
+        redacted: Option<bool>,
+    },
     /// 一个尚未完成的工具参数增量。
     ToolCallDelta { content_index: u64, delta: String },
     /// 一个已完成解析、允许执行的工具调用。
@@ -51,13 +57,24 @@ pub enum ProviderEvent {
         content_index: u64,
         tool_call: ToolCall,
     },
-    /// 正常结束，并提交一个完成态 assistant 项。
+    /// 正常结束，并提交 Provider 给出的完整稳定消息。
     Completed {
+        message_id: String,
+        content: Vec<AssistantContent>,
+        response_model: Option<String>,
+        usage: Usage,
         timestamp: u64,
         stop_reason: AssistantStopReason,
     },
-    /// Provider 返回可恢复或不可恢复的错误；它仍会生成稳定 error assistant 项。
-    Failed { timestamp: u64, message: String },
+    /// Provider 错误同样携带可用的稳定消息；Host 自身错误允许没有 usage。
+    Failed {
+        message_id: String,
+        content: Vec<AssistantContent>,
+        response_model: Option<String>,
+        usage: Option<Usage>,
+        timestamp: u64,
+        message: String,
+    },
 }
 
 /// Tool Runtime 反馈给 Agent Loop 的生命周期事件。
@@ -99,8 +116,8 @@ pub trait ToolRuntimePort {
 
 /// 将跨语言 DTO 转换为内部状态机事件。
 ///
-/// 适配层必须在到达状态机前处理 Provider SDK 的私有字段。thinking 尚未具备 transcript
-/// 状态机，仍会显式拒绝；工具调用已转入独立的 Tool Runtime Port。
+/// 适配层只做字段投影，不重建 Provider 的最终消息。这样 replay、真实 Host 与单元测试
+/// 都经过同一条终态路径，不会因某个 adapter 自行拼装内容而产生行为差异。
 impl TryFrom<ProviderStreamEvent> for ProviderEvent {
     type Error = AgentLoopError;
 
@@ -113,17 +130,52 @@ impl TryFrom<ProviderStreamEvent> for ProviderEvent {
                 message_id,
                 timestamp,
             }),
-            ProviderStreamEvent::TextDelta { delta, .. } => Ok(Self::TextDelta { text: delta }),
+            ProviderStreamEvent::TextDelta {
+                content_index,
+                delta,
+            } => Ok(Self::TextDelta {
+                content_index,
+                text: delta,
+            }),
+            ProviderStreamEvent::ThinkingDelta {
+                content_index,
+                delta,
+                redacted,
+            } => Ok(Self::ThinkingDelta {
+                content_index,
+                thinking: delta,
+                redacted,
+            }),
             ProviderStreamEvent::Done {
+                message_id,
+                content,
+                response_model,
+                usage,
                 timestamp,
                 stop_reason,
             } => Ok(Self::Completed {
+                message_id,
+                content,
+                response_model,
+                usage,
                 timestamp,
                 stop_reason,
             }),
-            ProviderStreamEvent::Error { timestamp, message } => {
-                Ok(Self::Failed { timestamp, message })
-            }
+            ProviderStreamEvent::Error {
+                message_id,
+                content,
+                response_model,
+                usage,
+                timestamp,
+                message,
+            } => Ok(Self::Failed {
+                message_id,
+                content,
+                response_model,
+                usage,
+                timestamp,
+                message,
+            }),
             ProviderStreamEvent::ToolCallDelta {
                 content_index,
                 delta,
@@ -138,9 +190,6 @@ impl TryFrom<ProviderStreamEvent> for ProviderEvent {
                 content_index,
                 tool_call,
             }),
-            ProviderStreamEvent::ThinkingDelta { .. } => Err(AgentLoopError::new(
-                "当前 Agent Loop 尚未启用 thinking 事件。",
-            )),
         }
     }
 }
@@ -192,8 +241,12 @@ pub enum AgentLoopEvent {
 struct ActiveAssistant {
     id: String,
     timestamp: u64,
-    content: Vec<AssistantContent>,
-    /// 仅记录尚未收到 terminal event 的参数片段，避免执行截断调用。
+    /// 增量可交错到达，必须按 Provider content index 建槽，不能依赖最后一个内容块。
+    /// BTreeMap 同时保证每次 progress 快照都按 index 稳定排序。
+    content: BTreeMap<u64, AssistantContent>,
+    response_model: Option<String>,
+    usage: Option<Usage>,
+    /// 仅记录尚未收到 terminal event 的参数片段。终态完整快照到达后不再依赖这些片段。
     tool_call_deltas: BTreeMap<u64, String>,
     /// 防止同一个 Provider content index 被重复终结并执行两次。
     completed_tool_call_indexes: BTreeSet<u64>,
@@ -247,6 +300,16 @@ impl AgentLoopEngine {
     /// 返回当前回合内已经稳定的消息。
     pub fn messages(&self) -> &[TranscriptItem] {
         &self.messages
+    }
+
+    /// 返回当前流式 assistant 的 Provider message ID。
+    ///
+    /// Runtime 仅在 Host 违反“终态先于 complete”约束时使用它构造本地错误终态，保证该错误
+    /// 可以替换已存在的 partial，而不会因生成另一个 ID 被状态机拒绝。
+    pub fn active_assistant_id(&self) -> Option<&str> {
+        self.active_assistant
+            .as_ref()
+            .map(|assistant| assistant.id.as_str())
     }
 
     /// 返回尚未注入下一次 Provider 请求的 steering 消息。
@@ -349,6 +412,7 @@ impl AgentLoopEngine {
                 | ProviderEvent::Completed { timestamp, .. }
                 | ProviderEvent::Failed { timestamp, .. } => timestamp,
                 ProviderEvent::TextDelta { .. }
+                | ProviderEvent::ThinkingDelta { .. }
                 | ProviderEvent::ToolCallDelta { .. }
                 | ProviderEvent::ToolCallEnded { .. } => self
                     .active_assistant
@@ -363,7 +427,15 @@ impl AgentLoopEngine {
                 message_id,
                 timestamp,
             } => self.start_assistant(message_id, timestamp)?,
-            ProviderEvent::TextDelta { text } => self.append_text(text)?,
+            ProviderEvent::TextDelta {
+                content_index,
+                text,
+            } => self.append_text(content_index, text)?,
+            ProviderEvent::ThinkingDelta {
+                content_index,
+                thinking,
+                redacted,
+            } => self.append_thinking(content_index, thinking, redacted)?,
             ProviderEvent::ToolCallDelta {
                 content_index,
                 delta,
@@ -373,6 +445,10 @@ impl AgentLoopEngine {
                 tool_call,
             } => self.finish_tool_call(content_index, tool_call)?,
             ProviderEvent::Completed {
+                message_id,
+                content,
+                response_model,
+                usage,
                 timestamp,
                 stop_reason,
             } => {
@@ -381,16 +457,35 @@ impl AgentLoopEngine {
                         "收到 toolUse 终态时必须提供 Tool Runtime Port。",
                     ));
                 }
-                let calls = self.complete_assistant(timestamp, stop_reason)?;
+                let calls = self.complete_assistant(
+                    message_id,
+                    content,
+                    response_model,
+                    usage,
+                    timestamp,
+                    stop_reason,
+                )?;
                 if let Some(runtime) = tool_runtime {
                     if !calls.is_empty() {
                         self.start_tool_calls(calls, timestamp, runtime)?;
                     }
                 }
             }
-            ProviderEvent::Failed { timestamp, message } => {
-                self.fail_assistant(timestamp, message)?
-            }
+            ProviderEvent::Failed {
+                message_id,
+                content,
+                response_model,
+                usage,
+                timestamp,
+                message,
+            } => self.fail_assistant(
+                message_id,
+                content,
+                response_model,
+                usage,
+                timestamp,
+                message,
+            )?,
         }
 
         Ok(self.drain_events())
@@ -478,10 +573,14 @@ impl AgentLoopEngine {
                 .as_ref()
                 .map_or_else(|| format!("aborted-{timestamp}"), |value| value.id.clone()),
             role: AssistantRole::Assistant,
-            content: assistant.map_or_else(Vec::new, |value| value.content),
+            content: assistant
+                .as_ref()
+                .map_or_else(Vec::new, ActiveAssistant::ordered_content),
             model: self.model.clone(),
-            response_model: None,
-            usage: None,
+            response_model: assistant
+                .as_ref()
+                .and_then(|value| value.response_model.clone()),
+            usage: assistant.as_ref().and_then(|value| value.usage.clone()),
             timestamp,
             stop_reason: AbortedStopReason::Aborted,
             error_message: Some("Operation aborted".to_owned()),
@@ -502,7 +601,9 @@ impl AgentLoopEngine {
         let assistant = ActiveAssistant {
             id,
             timestamp,
-            content: Vec::new(),
+            content: BTreeMap::new(),
+            response_model: None,
+            usage: None,
             tool_call_deltas: BTreeMap::new(),
             completed_tool_call_indexes: BTreeSet::new(),
         };
@@ -513,15 +614,70 @@ impl AgentLoopEngine {
         Ok(())
     }
 
-    fn append_text(&mut self, text: String) -> Result<(), AgentLoopError> {
+    fn append_text(&mut self, content_index: u64, text: String) -> Result<(), AgentLoopError> {
         let model = self.model.clone();
         let assistant = self
             .active_assistant
             .as_mut()
             .ok_or_else(|| AgentLoopError::new("收到文本增量前必须先收到 Provider start。"))?;
-        match assistant.content.last_mut() {
-            Some(AssistantContent::Text { text: accumulated }) => accumulated.push_str(&text),
-            _ => assistant.content.push(AssistantContent::Text { text }),
+        match assistant.content.entry(content_index) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(AssistantContent::Text { text });
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => match entry.get_mut() {
+                AssistantContent::Text { text: accumulated } => accumulated.push_str(&text),
+                AssistantContent::Thinking { .. } | AssistantContent::ToolCall { .. } => {
+                    return Err(AgentLoopError::new(
+                        "同一个 content index 不能同时表示文本和其他内容。",
+                    ));
+                }
+            },
+        }
+        self.events
+            .push(AgentLoopEvent::TranscriptItemUpdated(streaming_item_for(
+                &model, assistant,
+            )));
+        Ok(())
+    }
+
+    fn append_thinking(
+        &mut self,
+        content_index: u64,
+        thinking: String,
+        redacted: Option<bool>,
+    ) -> Result<(), AgentLoopError> {
+        let model = self.model.clone();
+        let assistant = self.active_assistant.as_mut().ok_or_else(|| {
+            AgentLoopError::new("收到 thinking 增量前必须先收到 Provider start。")
+        })?;
+        match assistant.content.entry(content_index) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(AssistantContent::Thinking { thinking, redacted });
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => match entry.get_mut() {
+                AssistantContent::Thinking {
+                    thinking: accumulated,
+                    redacted: current_redacted,
+                } => {
+                    if current_redacted.is_some()
+                        && redacted.is_some()
+                        && *current_redacted != redacted
+                    {
+                        return Err(AgentLoopError::new(
+                            "同一个 thinking content index 的 redacted 属性不能改变。",
+                        ));
+                    }
+                    if current_redacted.is_none() {
+                        *current_redacted = redacted;
+                    }
+                    accumulated.push_str(&thinking);
+                }
+                AssistantContent::Text { .. } | AssistantContent::ToolCall { .. } => {
+                    return Err(AgentLoopError::new(
+                        "同一个 content index 不能同时表示 thinking 和其他内容。",
+                    ));
+                }
+            },
         }
         self.events
             .push(AgentLoopEvent::TranscriptItemUpdated(streaming_item_for(
@@ -568,11 +724,22 @@ impl AgentLoopEngine {
             ));
         }
         assistant.tool_call_deltas.remove(&content_index);
-        assistant.content.push(AssistantContent::ToolCall {
-            tool_call_id: tool_call.tool_call_id,
-            tool_name: tool_call.tool_name,
-            input: tool_call.input,
-        });
+        if assistant
+            .content
+            .insert(
+                content_index,
+                AssistantContent::ToolCall {
+                    tool_call_id: tool_call.tool_call_id,
+                    tool_name: tool_call.tool_name,
+                    input: tool_call.input,
+                },
+            )
+            .is_some()
+        {
+            return Err(AgentLoopError::new(
+                "完整工具调用不能覆盖同一个 content index 的已有内容。",
+            ));
+        }
         self.events
             .push(AgentLoopEvent::TranscriptItemUpdated(streaming_item_for(
                 &model, assistant,
@@ -582,55 +749,25 @@ impl AgentLoopEngine {
 
     fn complete_assistant(
         &mut self,
+        message_id: String,
+        content: Vec<AssistantContent>,
+        response_model: Option<String>,
+        usage: Usage,
         timestamp: u64,
         stop_reason: AssistantStopReason,
     ) -> Result<Vec<ToolCall>, AgentLoopError> {
-        let assistant = self.active_assistant.as_ref().ok_or_else(|| {
-            AgentLoopError::new("收到 Provider 完成事件前必须先收到 Provider start。")
-        })?;
-        if !assistant.tool_call_deltas.is_empty() {
-            return Err(AgentLoopError::new(
-                "Provider 在存在未完成工具调用增量时结束，拒绝执行不完整参数。",
-            ));
-        }
-        let calls = assistant
-            .content
-            .iter()
-            .filter_map(|content| match content {
-                AssistantContent::ToolCall {
-                    tool_call_id,
-                    tool_name,
-                    input,
-                } => Some(ToolCall {
-                    tool_call_id: tool_call_id.clone(),
-                    tool_name: tool_name.clone(),
-                    input: input.clone(),
-                }),
-                AssistantContent::Text { .. } | AssistantContent::Thinking { .. } => None,
-            })
-            .collect::<Vec<_>>();
-        if stop_reason == AssistantStopReason::ToolUse && calls.is_empty() {
-            return Err(AgentLoopError::new(
-                "Provider 以 toolUse 结束，但未提供完整工具调用。",
-            ));
-        }
-        if stop_reason != AssistantStopReason::ToolUse && !calls.is_empty() {
-            return Err(AgentLoopError::new(
-                "非 toolUse 的 Provider 终态不能包含工具调用。",
-            ));
-        }
+        self.ensure_terminal_assistant(&message_id, timestamp)?;
+        let calls = tool_calls(&content);
+        validate_tool_terminal(stop_reason, &calls)?;
 
-        let assistant = self
-            .active_assistant
-            .take()
-            .expect("已校验 Provider 完成事件存在执行中的 assistant");
+        self.active_assistant.take();
         let item = TranscriptItem::Assistant(AssistantTranscriptItem::Complete {
-            id: assistant.id,
+            id: message_id,
             role: AssistantRole::Assistant,
-            content: assistant.content,
+            content,
             model: self.model.clone(),
-            response_model: None,
-            usage: None,
+            response_model,
+            usage: Some(usage),
             timestamp,
             stop_reason,
         });
@@ -665,22 +802,52 @@ impl AgentLoopEngine {
         Ok(())
     }
 
-    fn fail_assistant(&mut self, timestamp: u64, message: String) -> Result<(), AgentLoopError> {
-        let assistant = self.active_assistant.take().ok_or_else(|| {
-            AgentLoopError::new("收到 Provider 错误事件前必须先收到 Provider start。")
-        })?;
+    fn fail_assistant(
+        &mut self,
+        message_id: String,
+        content: Vec<AssistantContent>,
+        response_model: Option<String>,
+        usage: Option<Usage>,
+        timestamp: u64,
+        message: String,
+    ) -> Result<(), AgentLoopError> {
+        self.ensure_terminal_assistant(&message_id, timestamp)?;
+        self.active_assistant.take();
         let item = TranscriptItem::Assistant(AssistantTranscriptItem::Error {
-            id: assistant.id,
+            id: message_id,
             role: AssistantRole::Assistant,
-            content: assistant.content,
+            content,
             model: self.model.clone(),
-            response_model: None,
-            usage: None,
+            response_model,
+            usage,
             timestamp,
             stop_reason: ErrorStopReason::Error,
             error_message: Some(message),
         });
         self.finish_turn(item);
+        Ok(())
+    }
+
+    /// TypeScript 在没有观察到 partial start 时，会在终态前补发 `message_start`。
+    /// Provider Host 的 terminal messageId 使 Rust 可以执行同样操作，而不是丢弃合法终态。
+    fn ensure_terminal_assistant(
+        &mut self,
+        message_id: &str,
+        timestamp: u64,
+    ) -> Result<(), AgentLoopError> {
+        if self.active_assistant.is_none() {
+            self.start_assistant(message_id.to_owned(), timestamp)?;
+        }
+        let active_id = &self
+            .active_assistant
+            .as_ref()
+            .expect("缺失 assistant 已在上方补建")
+            .id;
+        if active_id != message_id {
+            return Err(AgentLoopError::new(
+                "Provider 终态 messageId 与当前 assistant 不一致。",
+            ));
+        }
         Ok(())
     }
 
@@ -722,16 +889,57 @@ impl AgentLoopEngine {
     }
 }
 
+impl ActiveAssistant {
+    fn ordered_content(&self) -> Vec<AssistantContent> {
+        self.content.values().cloned().collect()
+    }
+}
+
 fn streaming_item_for(model: &ModelRef, assistant: &ActiveAssistant) -> AssistantTranscriptItem {
     AssistantTranscriptItem::Streaming {
         id: assistant.id.clone(),
         role: AssistantRole::Assistant,
-        content: assistant.content.clone(),
+        content: assistant.ordered_content(),
         model: model.clone(),
-        response_model: None,
-        usage: None,
+        response_model: assistant.response_model.clone(),
+        usage: assistant.usage.clone(),
         timestamp: assistant.timestamp,
     }
+}
+
+fn tool_calls(content: &[AssistantContent]) -> Vec<ToolCall> {
+    content
+        .iter()
+        .filter_map(|content| match content {
+            AssistantContent::ToolCall {
+                tool_call_id,
+                tool_name,
+                input,
+            } => Some(ToolCall {
+                tool_call_id: tool_call_id.clone(),
+                tool_name: tool_name.clone(),
+                input: input.clone(),
+            }),
+            AssistantContent::Text { .. } | AssistantContent::Thinking { .. } => None,
+        })
+        .collect()
+}
+
+fn validate_tool_terminal(
+    stop_reason: AssistantStopReason,
+    calls: &[ToolCall],
+) -> Result<(), AgentLoopError> {
+    if stop_reason == AssistantStopReason::ToolUse && calls.is_empty() {
+        return Err(AgentLoopError::new(
+            "Provider 以 toolUse 结束，但终态快照未提供完整工具调用。",
+        ));
+    }
+    if stop_reason != AssistantStopReason::ToolUse && !calls.is_empty() {
+        return Err(AgentLoopError::new(
+            "非 toolUse 的 Provider 终态不能包含工具调用。",
+        ));
+    }
+    Ok(())
 }
 
 fn tool_result_item(result: &ToolResult) -> ToolTranscriptItem {
@@ -781,7 +989,8 @@ mod tests {
 
     use protocol::{
         AssistantContent, AssistantStopReason, AssistantTranscriptItem, ModelRef,
-        ProviderStreamEvent, TextOrImageContent, ToolCall, ToolResult, TranscriptItem,
+        ProviderStreamEvent, TextOrImageContent, ToolCall, ToolResult, TranscriptItem, Usage,
+        UsageCost,
     };
     use serde::Deserialize;
     use serde_json::json;
@@ -807,7 +1016,59 @@ mod tests {
     struct FixtureExpectation {
         event_names: Vec<String>,
         assistant_text: Option<String>,
+        assistant_thinking: Option<String>,
         assistant_status: Option<String>,
+        response_model: Option<String>,
+    }
+
+    fn usage() -> Usage {
+        Usage {
+            input: 10,
+            output: 5,
+            cache_read: 2,
+            cache_write: 1,
+            reasoning: Some(3),
+            total_tokens: 21,
+            cost: UsageCost {
+                input: 0.01,
+                output: 0.02,
+                cache_read: 0.003,
+                cache_write: 0.004,
+                total: 0.037,
+            },
+        }
+    }
+
+    fn completed(
+        message_id: &str,
+        content: Vec<AssistantContent>,
+        timestamp: u64,
+        stop_reason: AssistantStopReason,
+    ) -> ProviderEvent {
+        ProviderEvent::Completed {
+            message_id: message_id.to_owned(),
+            content,
+            response_model: Some("resolved-model".to_owned()),
+            usage: usage(),
+            timestamp,
+            stop_reason,
+        }
+    }
+
+    fn failed(
+        message_id: &str,
+        content: Vec<AssistantContent>,
+        timestamp: u64,
+        message: &str,
+    ) -> ProviderEvent {
+        ProviderEvent::Failed {
+            message_id: message_id.to_owned(),
+            content,
+            response_model: Some("resolved-model".to_owned()),
+            usage: Some(usage()),
+            timestamp,
+            message: message.to_owned(),
+        }
     }
 
     fn engine() -> AgentLoopEngine {
@@ -848,7 +1109,7 @@ mod tests {
     }
 
     #[test]
-    fn maps_shared_provider_stream_events_to_the_text_mvp() {
+    fn maps_shared_provider_stream_events_to_indexed_agent_events() {
         let start = ProviderEvent::try_from(ProviderStreamEvent::Start {
             message_id: "assistant-1".to_owned(),
             timestamp: 1,
@@ -868,22 +1129,32 @@ mod tests {
             })
             .expect("text delta should map"),
             ProviderEvent::TextDelta {
+                content_index: 0,
                 text: "hello".to_owned(),
             }
         );
-        assert!(
+        assert_eq!(
             ProviderEvent::try_from(ProviderStreamEvent::ThinkingDelta {
-                content_index: 0,
+                content_index: 1,
                 delta: "reasoning".to_owned(),
-                redacted: None,
+                redacted: Some(false),
             })
-            .is_err()
+            .expect("thinking delta should map"),
+            ProviderEvent::ThinkingDelta {
+                content_index: 1,
+                thinking: "reasoning".to_owned(),
+                redacted: Some(false),
+            }
         );
     }
 
     #[test]
-    fn replays_shared_text_and_error_fixtures() {
-        for fixture_name in ["text-multi-delta", "provider-error"] {
+    fn replays_shared_text_thinking_and_error_fixtures() {
+        for fixture_name in [
+            "text-multi-delta",
+            "thinking-text-interleaved",
+            "provider-error",
+        ] {
             let fixture = load_fixture(fixture_name);
             let mut loop_engine = engine();
             loop_engine
@@ -894,7 +1165,7 @@ mod tests {
             let mut events = Vec::new();
             for provider_event in fixture.events {
                 let provider_event = ProviderEvent::try_from(provider_event)
-                    .expect("text and error fixtures should use the text MVP events");
+                    .expect("shared fixture should use supported normalized events");
                 events.extend(
                     loop_engine
                         .handle_provider_event(provider_event)
@@ -912,8 +1183,15 @@ mod tests {
                 assistant_text(&loop_engine),
                 fixture.expected.assistant_text
             );
+            assert_eq!(
+                assistant_thinking(&loop_engine),
+                fixture.expected.assistant_thinking
+            );
             if let Some(status) = fixture.expected.assistant_status {
                 assert_eq!(assistant_status(&loop_engine), status);
+            }
+            if let Some(response_model) = fixture.expected.response_model {
+                assert_eq!(assistant_response_model(&loop_engine), Some(response_model));
             }
         }
     }
@@ -936,6 +1214,7 @@ mod tests {
         events.extend(
             loop_engine
                 .handle_provider_event(ProviderEvent::TextDelta {
+                    content_index: 0,
                     text: "hel".to_owned(),
                 })
                 .expect("first delta should be accepted"),
@@ -943,16 +1222,21 @@ mod tests {
         events.extend(
             loop_engine
                 .handle_provider_event(ProviderEvent::TextDelta {
+                    content_index: 0,
                     text: "lo".to_owned(),
                 })
                 .expect("second delta should be accepted"),
         );
         events.extend(
             loop_engine
-                .handle_provider_event(ProviderEvent::Completed {
-                    timestamp: 3,
-                    stop_reason: AssistantStopReason::Stop,
-                })
+                .handle_provider_event(completed(
+                    "assistant-1",
+                    vec![AssistantContent::Text {
+                        text: "hello".to_owned(),
+                    }],
+                    3,
+                    AssistantStopReason::Stop,
+                ))
                 .expect("completion should be accepted"),
         );
 
@@ -1101,7 +1385,7 @@ mod tests {
                 .handle_provider_event_with_tools(
                     ProviderEvent::ToolCallEnded {
                         content_index: 0,
-                        tool_call: call,
+                        tool_call: call.clone(),
                     },
                     &mut tool_runtime,
                 )
@@ -1110,10 +1394,16 @@ mod tests {
         events.extend(
             loop_engine
                 .handle_provider_event_with_tools(
-                    ProviderEvent::Completed {
-                        timestamp: 21,
-                        stop_reason: AssistantStopReason::ToolUse,
-                    },
+                    completed(
+                        "assistant-tool-1",
+                        vec![AssistantContent::ToolCall {
+                            tool_call_id: call.tool_call_id,
+                            tool_name: call.tool_name,
+                            input: call.input,
+                        }],
+                        21,
+                        AssistantStopReason::ToolUse,
+                    ),
                     &mut tool_runtime,
                 )
                 .unwrap(),
@@ -1157,6 +1447,7 @@ mod tests {
         loop_engine
             .handle_provider_event_with_tools(
                 ProviderEvent::TextDelta {
+                    content_index: 0,
                     text: "done".to_owned(),
                 },
                 &mut tool_runtime,
@@ -1164,10 +1455,14 @@ mod tests {
             .unwrap();
         let events = loop_engine
             .handle_provider_event_with_tools(
-                ProviderEvent::Completed {
-                    timestamp: 23,
-                    stop_reason: AssistantStopReason::Stop,
-                },
+                completed(
+                    "assistant-final-1",
+                    vec![AssistantContent::Text {
+                        text: "done".to_owned(),
+                    }],
+                    23,
+                    AssistantStopReason::Stop,
+                ),
                 &mut tool_runtime,
             )
             .unwrap();
@@ -1179,7 +1474,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_incomplete_or_invalid_tool_terminal_states_without_committing() {
+    fn rejects_tool_use_terminal_without_authoritative_tool_call() {
         let mut tool_runtime = FakeToolRuntime {
             events: Vec::new(),
             active: false,
@@ -1214,16 +1509,18 @@ mod tests {
 
         let error = loop_engine
             .handle_provider_event_with_tools(
-                ProviderEvent::Completed {
-                    timestamp: 3,
-                    stop_reason: AssistantStopReason::ToolUse,
-                },
+                completed(
+                    "assistant-tool-1",
+                    Vec::new(),
+                    3,
+                    AssistantStopReason::ToolUse,
+                ),
                 &mut tool_runtime,
             )
-            .expect_err("truncated tool arguments must not be committed");
+            .expect_err("toolUse terminal without a complete tool call must be rejected");
         assert_eq!(
             error.message(),
-            "Provider 在存在未完成工具调用增量时结束，拒绝执行不完整参数。"
+            "Provider 以 toolUse 结束，但终态快照未提供完整工具调用。"
         );
         assert!(loop_engine.is_active());
         assert_eq!(loop_engine.messages().len(), 1);
@@ -1244,6 +1541,7 @@ mod tests {
             .unwrap();
         loop_engine
             .handle_provider_event(ProviderEvent::TextDelta {
+                content_index: 0,
                 text: "partial".to_owned(),
             })
             .unwrap();
@@ -1256,17 +1554,14 @@ mod tests {
             vec!["message_end", "turn_end", "agent_end"]
         );
         assert!(!loop_engine.is_active());
-        let TranscriptItem::Assistant(assistant) = &loop_engine.messages()[1] else {
-            panic!("second item must be assistant")
-        };
         assert!(matches!(
-            assistant,
-            protocol::AssistantTranscriptItem::Aborted { .. }
+            &loop_engine.messages()[1],
+            TranscriptItem::Assistant(protocol::AssistantTranscriptItem::Aborted { .. })
         ));
     }
 
     #[test]
-    fn rejects_provider_terminal_events_that_do_not_follow_a_start() {
+    fn terminal_without_start_synthesizes_message_start_like_typescript() {
         let mut loop_engine = engine();
         loop_engine
             .prompt(user_text_item("user-1".to_owned(), "hello".to_owned(), 1))
@@ -1275,6 +1570,7 @@ mod tests {
 
         let delta_error = loop_engine
             .handle_provider_event(ProviderEvent::TextDelta {
+                content_index: 0,
                 text: "unexpected".to_owned(),
             })
             .expect_err("text delta before start must be rejected");
@@ -1283,17 +1579,113 @@ mod tests {
             "收到文本增量前必须先收到 Provider start。"
         );
 
-        let completion_error = loop_engine
-            .handle_provider_event(ProviderEvent::Completed {
-                timestamp: 2,
-                stop_reason: AssistantStopReason::Stop,
-            })
-            .expect_err("completion before start must be rejected");
+        let events = loop_engine
+            .handle_provider_event(completed(
+                "assistant-1",
+                vec![AssistantContent::Text {
+                    text: "terminal only".to_owned(),
+                }],
+                2,
+                AssistantStopReason::Stop,
+            ))
+            .expect("terminal snapshot without partial start should be accepted");
         assert_eq!(
-            completion_error.message(),
-            "收到 Provider 完成事件前必须先收到 Provider start。"
+            events.iter().map(event_name).collect::<Vec<_>>(),
+            vec!["message_start", "message_end", "turn_end", "agent_end"]
         );
-        assert!(loop_engine.is_active());
+        assert!(!loop_engine.is_active());
+        assert_eq!(
+            assistant_text(&loop_engine).as_deref(),
+            Some("terminal only")
+        );
+    }
+
+    #[test]
+    fn rejects_terminal_id_content_kind_and_thinking_redaction_conflicts() {
+        let mut id_engine = engine();
+        id_engine
+            .prompt(user_text_item("user-1".to_owned(), "hello".to_owned(), 1))
+            .unwrap();
+        id_engine.drain_events();
+        id_engine
+            .handle_provider_event(ProviderEvent::Started {
+                message_id: "assistant-1".to_owned(),
+                timestamp: 2,
+            })
+            .unwrap();
+        let error = id_engine
+            .handle_provider_event(completed(
+                "assistant-2",
+                vec![AssistantContent::Text {
+                    text: "terminal".to_owned(),
+                }],
+                3,
+                AssistantStopReason::Stop,
+            ))
+            .expect_err("terminal message id mismatch must be rejected");
+        assert_eq!(
+            error.message(),
+            "Provider 终态 messageId 与当前 assistant 不一致。"
+        );
+
+        let mut content_engine = engine();
+        content_engine
+            .prompt(user_text_item("user-1".to_owned(), "hello".to_owned(), 1))
+            .unwrap();
+        content_engine.drain_events();
+        content_engine
+            .handle_provider_event(ProviderEvent::Started {
+                message_id: "assistant-1".to_owned(),
+                timestamp: 2,
+            })
+            .unwrap();
+        content_engine
+            .handle_provider_event(ProviderEvent::TextDelta {
+                content_index: 0,
+                text: "text".to_owned(),
+            })
+            .unwrap();
+        let error = content_engine
+            .handle_provider_event(ProviderEvent::ThinkingDelta {
+                content_index: 0,
+                thinking: "thinking".to_owned(),
+                redacted: Some(false),
+            })
+            .expect_err("one content index cannot change its content kind");
+        assert_eq!(
+            error.message(),
+            "同一个 content index 不能同时表示 thinking 和其他内容。"
+        );
+
+        let mut redaction_engine = engine();
+        redaction_engine
+            .prompt(user_text_item("user-1".to_owned(), "hello".to_owned(), 1))
+            .unwrap();
+        redaction_engine.drain_events();
+        redaction_engine
+            .handle_provider_event(ProviderEvent::Started {
+                message_id: "assistant-1".to_owned(),
+                timestamp: 2,
+            })
+            .unwrap();
+        redaction_engine
+            .handle_provider_event(ProviderEvent::ThinkingDelta {
+                content_index: 0,
+                thinking: "first".to_owned(),
+                redacted: Some(false),
+            })
+            .unwrap();
+        let error = redaction_engine
+            .handle_provider_event(ProviderEvent::ThinkingDelta {
+                content_index: 0,
+                thinking: "second".to_owned(),
+                redacted: Some(true),
+            })
+            .expect_err("thinking redaction cannot change within one content index");
+        assert_eq!(
+            error.message(),
+            "同一个 thinking content index 的 redacted 属性不能改变。"
+        );
     }
 
     #[test]
@@ -1311,15 +1703,20 @@ mod tests {
             .expect("start should be accepted");
         loop_engine
             .handle_provider_event(ProviderEvent::TextDelta {
+                content_index: 0,
                 text: "partial".to_owned(),
             })
             .expect("text delta should be accepted");
 
         let events = loop_engine
-            .handle_provider_event(ProviderEvent::Failed {
-                timestamp: 3,
-                message: "network failed".to_owned(),
-            })
+            .handle_provider_event(failed(
+                "assistant-1",
+                vec![AssistantContent::Text {
+                    text: "stable partial".to_owned(),
+                }],
+                3,
+                "network failed",
+            ))
             .expect("failure should become a stable error transcript item");
 
         assert_eq!(
@@ -1330,9 +1727,15 @@ mod tests {
         assert!(matches!(
             &loop_engine.messages()[1],
             TranscriptItem::Assistant(protocol::AssistantTranscriptItem::Error {
+                content,
+                response_model: Some(response_model),
+                usage: Some(terminal_usage),
                 error_message: Some(message),
                 ..
-            }) if message == "network failed"
+            }) if content == &vec![AssistantContent::Text { text: "stable partial".to_owned() }]
+                && response_model == "resolved-model"
+                && terminal_usage == &usage()
+                && message == "network failed"
         ));
     }
 
@@ -1352,10 +1755,14 @@ mod tests {
         loop_engine.abort().expect("abort should be accepted");
 
         let events = loop_engine
-            .handle_provider_event(ProviderEvent::Completed {
-                timestamp: 3,
-                stop_reason: AssistantStopReason::Stop,
-            })
+            .handle_provider_event(completed(
+                "assistant-1",
+                vec![AssistantContent::Text {
+                    text: "ignored after abort".to_owned(),
+                }],
+                3,
+                AssistantStopReason::Stop,
+            ))
             .expect("a provider event after abort should settle cancellation");
 
         assert_eq!(
@@ -1402,20 +1809,69 @@ mod tests {
             .unwrap_or_else(|error| panic!("共享 fixture {} 不符合协议: {error}", path.display()))
     }
 
-    fn assistant_text(loop_engine: &AgentLoopEngine) -> Option<String> {
-        let TranscriptItem::Assistant(assistant) = loop_engine.messages().last()? else {
-            return None;
-        };
-        let content = match assistant {
+    fn assistant(loop_engine: &AgentLoopEngine) -> Option<&AssistantTranscriptItem> {
+        match loop_engine.messages().last()? {
+            TranscriptItem::Assistant(assistant) => Some(assistant),
+            TranscriptItem::User(_) | TranscriptItem::Tool(_) => None,
+        }
+    }
+
+    fn assistant_content(loop_engine: &AgentLoopEngine) -> Option<&[AssistantContent]> {
+        Some(match assistant(loop_engine)? {
             AssistantTranscriptItem::Complete { content, .. }
             | AssistantTranscriptItem::Error { content, .. }
             | AssistantTranscriptItem::Aborted { content, .. }
             | AssistantTranscriptItem::Streaming { content, .. } => content,
-        };
-        content.iter().find_map(|item| match item {
-            AssistantContent::Text { text } => Some(text.clone()),
-            AssistantContent::Thinking { .. } | AssistantContent::ToolCall { .. } => None,
         })
+    }
+
+    fn assistant_text(loop_engine: &AgentLoopEngine) -> Option<String> {
+        assistant_content(loop_engine)?
+            .iter()
+            .find_map(|item| match item {
+                AssistantContent::Text { text } => Some(text.clone()),
+                AssistantContent::Thinking { .. } | AssistantContent::ToolCall { .. } => None,
+            })
+    }
+
+    fn assistant_thinking(loop_engine: &AgentLoopEngine) -> Option<String> {
+        assistant_content(loop_engine)?
+            .iter()
+            .find_map(|item| match item {
+                AssistantContent::Thinking { thinking, .. } => Some(thinking.clone()),
+                AssistantContent::Text { .. } | AssistantContent::ToolCall { .. } => None,
+            })
+    }
+
+    fn assistant_response_model(loop_engine: &AgentLoopEngine) -> Option<String> {
+        match assistant(loop_engine)? {
+            AssistantTranscriptItem::Complete {
+                response_model,
+                usage,
+                ..
+            }
+            | AssistantTranscriptItem::Error {
+                response_model,
+                usage,
+                ..
+            }
+            | AssistantTranscriptItem::Aborted {
+                response_model,
+                usage,
+                ..
+            }
+            | AssistantTranscriptItem::Streaming {
+                response_model,
+                usage,
+                ..
+            } => {
+                assert!(
+                    usage.is_some(),
+                    "带 responseModel 的 fixture 必须保留 usage"
+                );
+                response_model.clone()
+            }
+        }
     }
 
     fn assistant_status(loop_engine: &AgentLoopEngine) -> String {

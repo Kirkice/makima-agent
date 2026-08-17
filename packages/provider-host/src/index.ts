@@ -129,7 +129,8 @@ export class ProviderHost {
 	}
 
 	private error(message: string): ProviderStreamEvent {
-		return { type: "error", timestamp: this.now(), message };
+		const timestamp = this.now();
+		return { type: "error", messageId: `provider-${timestamp}`, content: [], timestamp, message };
 	}
 }
 
@@ -304,18 +305,45 @@ function mapAiAssistantMessageEvent(event: AssistantMessageEvent): ProviderStrea
 			return mapAssistantMessageEvent({
 				type: "done",
 				reason: event.reason,
-				message: { timestamp: event.message.timestamp },
+				message: terminalMessage(event.message),
 			});
 		case "error":
 			return mapAssistantMessageEvent({
 				type: "error",
 				reason: event.reason,
-				error: {
-					timestamp: event.error.timestamp,
-					...(event.error.errorMessage === undefined ? {} : { errorMessage: event.error.errorMessage }),
-				},
+				error: terminalMessage(event.error),
 			});
 	}
+}
+
+/**
+ * 只在稳定终态执行一次完整内容转换。流式 partial 仍通过轻量 delta 传输，避免每个 chunk
+ * 都复制整个 transcript；终态快照则保留 Provider 最终修正后的 content 与计费信息。
+ */
+function terminalMessage(message: AssistantMessage) {
+	return {
+		...(message.responseId === undefined ? {} : { responseId: message.responseId }),
+		content: message.content.map((content) =>
+			content.type === "text"
+				? { type: "text" as const, text: content.text }
+				: content.type === "thinking"
+					? {
+							type: "thinking" as const,
+							thinking: content.thinking,
+							...(content.redacted === undefined ? {} : { redacted: content.redacted }),
+						}
+					: {
+							type: "toolCall" as const,
+							toolCallId: content.id,
+							toolName: content.name,
+							input: toJsonValue(content.arguments),
+						},
+		),
+		...(message.responseModel === undefined ? {} : { responseModel: message.responseModel }),
+		usage: message.usage,
+		timestamp: message.timestamp,
+		...(message.errorMessage === undefined ? {} : { errorMessage: message.errorMessage }),
+	};
 }
 
 function toJsonValue(value: unknown, ancestors = new Set<object>()): JsonValue {

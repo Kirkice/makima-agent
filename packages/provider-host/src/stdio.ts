@@ -69,10 +69,17 @@ export class ProviderHostStdioServer {
 				await this.send({ type: "event", requestId: request.requestId, event });
 			}
 		} catch (error) {
+			const timestamp = Date.now();
 			await this.send({
 				type: "event",
 				requestId: request.requestId,
-				event: { type: "error", timestamp: Date.now(), message: messageForError(error) },
+				event: {
+					type: "error",
+					messageId: `provider-${timestamp}`,
+					content: [],
+					timestamp,
+					message: messageForError(error),
+				},
 			});
 		} finally {
 			await this.send({ type: "complete", requestId: request.requestId });

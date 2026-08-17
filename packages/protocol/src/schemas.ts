@@ -99,6 +99,7 @@ export type TextContent = Static<typeof TextContentSchema>;
 export type ThinkingContent = Static<typeof ThinkingContentSchema>;
 export type ImageContent = Static<typeof ImageContentSchema>;
 export type ToolCallContent = Static<typeof ToolCallContentSchema>;
+export type AssistantContent = Static<typeof AssistantContentSchema>;
 
 /**
  * Provider Host 与 Rust Core 间传递的已完成工具调用。
@@ -249,8 +250,10 @@ export type ProviderRequest = Static<typeof ProviderRequestSchema>;
 /**
  * Provider Host 归一化后的流事件。
  *
- * `done` 与 `error` 均携带终态时间；最终 assistant 内容由 Core 根据已收到的增量和
- * `tool_call_end` 构造，以便 Host、回放和状态机共享同一可观测事件序列。
+ * 增量只负责实时 progress；`done` / `error` 携带 Provider SDK 给出的稳定终态快照。
+ * Rust Core 在终态到达时用该快照替换累计 partial，这与 TypeScript Agent Loop 调用
+ * `response.result()` 后替换 partial message 的行为一致，也避免丢失 usage、responseModel
+ * 或 Provider 在最后一个 chunk 才修正的内容。
  */
 export const ProviderStreamEventSchema = Type.Union([
 	StrictObject({ type: Type.Literal("start"), messageId: IdSchema, timestamp: TimestampSchema }),
@@ -273,10 +276,22 @@ export const ProviderStreamEventSchema = Type.Union([
 	}),
 	StrictObject({
 		type: Type.Literal("done"),
+		messageId: IdSchema,
+		content: Type.Array(AssistantContentSchema),
+		responseModel: Type.Optional(Type.String({ minLength: 1 })),
+		usage: UsageSchema,
 		timestamp: TimestampSchema,
 		stopReason: Type.Union([Type.Literal("stop"), Type.Literal("length"), Type.Literal("toolUse")]),
 	}),
-	StrictObject({ type: Type.Literal("error"), timestamp: TimestampSchema, message: Type.String({ minLength: 1 }) }),
+	StrictObject({
+		type: Type.Literal("error"),
+		messageId: IdSchema,
+		content: Type.Array(AssistantContentSchema),
+		responseModel: Type.Optional(Type.String({ minLength: 1 })),
+		usage: Type.Optional(UsageSchema),
+		timestamp: TimestampSchema,
+		message: Type.String({ minLength: 1 }),
+	}),
 ]);
 export type ProviderStreamEvent = Static<typeof ProviderStreamEventSchema>;
 
