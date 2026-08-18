@@ -32,6 +32,8 @@ type ConnectionLifecycle =
 interface ConnectionOptions {
 	transportFactory: ByteTransportFactory;
 	maxFrameLength?: number;
+	/** 上一条已应用事件的边界；新连接仍以 hello snapshot 为唯一恢复依据。 */
+	lastSeenSequence(): number | undefined;
 	onHandshake(snapshot: ServerSnapshot): void;
 	onMessage(message: Exclude<ServerMessage, { type: "hello" | "hello_error" }>): void;
 	onStateChange(change: ConnectionStateChange): void;
@@ -132,7 +134,10 @@ export class Connection {
 		this.#lifecycle = { ...lifecycle, transport };
 		try {
 			await transport.send(
-				encodeClientMessage({ type: "hello", version: PROTOCOL_VERSION }, { maxFrameLength: this.#maxFrameLength }),
+				encodeClientMessage(
+					{ type: "hello", version: PROTOCOL_VERSION, lastSeenSequence: this.#options.lastSeenSequence() },
+					{ maxFrameLength: this.#maxFrameLength },
+				),
 			);
 		} catch (error) {
 			if (this.#isCurrent(id)) this.#failAndClose(toDisconnectedError(error));

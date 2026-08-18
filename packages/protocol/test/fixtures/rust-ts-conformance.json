@@ -1,0 +1,24 @@
+[
+	{
+		"name": "hello-current-version",
+		"wire": "a264747970656568656c6c6f6776657273696f6e02",
+		"value": { "type": "hello", "version": 2 },
+		"valid": true
+	},
+	{
+		"name": "request-abort",
+		"wire": "a36474797065677265717565737462696469726571756573742d316772657175657374a267636f6d6d616e646561626f72746973657373696f6e49646973657373696f6e2d31",
+		"value": {
+			"type": "request",
+			"id": "request-1",
+			"request": { "command": "abort", "sessionId": "session-1" }
+		},
+		"valid": true
+	},
+	{
+		"name": "unknown-field-is-rejected",
+		"wire": "a364747970656568656c6c6f6776657273696f6e02656578747261f5",
+		"value": { "type": "hello", "version": 2, "extra": true },
+		"valid": false
+	}
+]

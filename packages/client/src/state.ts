@@ -11,6 +11,7 @@ export class ClientState {
 	readonly #sessionEventListeners = new Map<string, Set<(event: ServerEvent) => void>>();
 	readonly #onListenerError: ListenerErrorHandler | undefined;
 	#snapshot: ServerSnapshot | undefined;
+	#lastSeenEventSequence: number | undefined;
 
 	constructor(onListenerError?: ListenerErrorHandler) {
 		this.#onListenerError = onListenerError;
@@ -22,6 +23,7 @@ export class ClientState {
 
 	reset(): void {
 		this.#snapshot = undefined;
+		this.#lastSeenEventSequence = undefined;
 		this.#sessionSnapshots.clear();
 		this.#attachedSessionIds.clear();
 	}
@@ -85,7 +87,14 @@ export class ClientState {
 		this.#applySessionSnapshot(result.session);
 	}
 
-	applyEvent(event: ServerEvent): void {
+	/**
+	 * 应用单连接有序事件。重复或旧事件不会重复触发观察者；发现缺序时不猜测状态，
+	 * 而是拒绝该增量，等待重连 hello 的权威 snapshot 完成恢复。
+	 */
+	applyEvent(sequence: number, event: ServerEvent): boolean {
+		if (this.#lastSeenEventSequence !== undefined && sequence <= this.#lastSeenEventSequence) return false;
+		if (this.#lastSeenEventSequence !== undefined && sequence !== this.#lastSeenEventSequence + 1) return false;
+		this.#lastSeenEventSequence = sequence;
 		if (event.type === "server_snapshot") this.applyServerSnapshot(event.snapshot);
 		if (event.type === "session_snapshot") this.#applySessionSnapshot(event.snapshot);
 		if (event.type === "session_removed") {
@@ -95,6 +104,11 @@ export class ClientState {
 		this.#notify(this.#eventListeners, event);
 		const sessionId = getEventSessionId(event);
 		if (sessionId) this.#notify(this.#sessionEventListeners.get(sessionId), event);
+		return true;
+	}
+
+	get lastSeenEventSequence(): number | undefined {
+		return this.#lastSeenEventSequence;
 	}
 
 	applyServerSnapshot(snapshot: ServerSnapshot): void {

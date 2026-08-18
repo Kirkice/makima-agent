@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Command, EventEnvelope, SessionMetadata, SessionSnapshot } from "@earendil-works/pi-protocol";
-import type { ByteConnection, ConnectionState } from "./connection.ts";
+import type { Command, CommandResult, SessionMetadata, SessionSnapshot } from "@earendil-works/pi-protocol";
+import type { ByteConnection, ConnectionState, UnsequencedEventEnvelope } from "./connection.ts";
 import { PiServerError } from "./errors.ts";
 import type { CreateSessionOptions, PiServerService, PiSessionRuntime, PiSessionRuntimeEvent } from "./types.ts";
 
@@ -18,7 +18,8 @@ interface LiveSession {
 interface LiveSessionManagerOptions {
 	service: PiServerService;
 	isClosing: () => boolean;
-	sendMessage: (connection: ConnectionState, message: EventEnvelope) => Promise<boolean>;
+	// 业务层不能自选序号，避免不同事件源在同一连接上产生重复 sequence。
+	sendMessage: (connection: ConnectionState, message: UnsequencedEventEnvelope) => Promise<boolean>;
 	closeConnection: (connection: ByteConnection) => Promise<void>;
 	disconnect: (connection: ConnectionState) => Promise<void>;
 	broadcastServerSnapshot: () => void;
@@ -44,7 +45,7 @@ export class LiveSessionManager {
 		this.options = options;
 	}
 
-	async executeCommand(connection: ConnectionState, command: Command) {
+	async executeCommand(connection: ConnectionState, command: Command): Promise<CommandResult> {
 		switch (command.command) {
 			case "list":
 				return { command: "list" as const, sessions: await this.listMetadata() };
@@ -116,6 +117,10 @@ export class LiveSessionManager {
 				);
 				return { command: "set_thinking" as const, session };
 			}
+			default:
+				// Schema 已保证 command 为可识别联合；此处保留运行时防线，并让 TypeScript
+				// 将新增命令分支视为必须显式处理的协议变更。
+				throw new PiServerError("invalid_request", "Unsupported session command");
 		}
 	}
 
@@ -251,7 +256,7 @@ export class LiveSessionManager {
 			return;
 		}
 		if (event.type === "progress") {
-			const envelope: EventEnvelope = {
+			const envelope: UnsequencedEventEnvelope = {
 				type: "event",
 				event: { type: "session_progress", sessionId: live.id, progress: event.progress },
 			};
@@ -292,7 +297,7 @@ export class LiveSessionManager {
 
 	private async broadcastSnapshot(live: LiveSession): Promise<SessionSnapshot> {
 		const snapshot = await this.normalizedSnapshot(live);
-		const envelope: EventEnvelope = { type: "event", event: { type: "session_snapshot", snapshot } };
+		const envelope: UnsequencedEventEnvelope = { type: "event", event: { type: "session_snapshot", snapshot } };
 		for (const connection of live.connections) void this.options.sendMessage(connection, envelope);
 		return snapshot;
 	}

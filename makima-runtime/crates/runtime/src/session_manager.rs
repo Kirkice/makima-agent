@@ -1278,6 +1278,7 @@ mod tests {
         let hello = encode_frame(
             &encode_cbor(&ClientMessage::Hello {
                 version: protocol::PROTOCOL_VERSION,
+                last_seen_sequence: None,
             })
             .expect("hello encodes"),
             1024,

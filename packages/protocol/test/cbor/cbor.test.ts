@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import {
 	CborError,
@@ -6,6 +8,8 @@ import {
 	DEFAULT_MAX_CBOR_DEPTH,
 	decodeCbor,
 	encodeCbor,
+	ProtocolValidationError,
+	parseClientMessage,
 } from "../../src/index.ts";
 
 function fromHex(hex: string): Uint8Array {
@@ -19,6 +23,20 @@ function fromHex(hex: string): Uint8Array {
 function toHex(bytes: Uint8Array): string {
 	return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
+
+interface RustTsConformanceFixture {
+	readonly name: string;
+	readonly wire: string;
+	readonly value: unknown;
+	readonly valid: boolean;
+}
+
+// Rust 与 TypeScript 共用此 fixture。wire 使用 TypeScript 的 definite-length CBOR 规则，
+// Rust 侧同时将它解码为严格的 ClientMessage；这样任一端修改字段命名、映射顺序或严格性时，
+// 两端验证都会在同一份数据上失败，而不是只靠各自的内部单测发现偏差。
+const rustTsConformanceFixtures = JSON.parse(
+	readFileSync(fileURLToPath(new URL("../fixtures/rust-ts-conformance.json", import.meta.url)), "utf8"),
+) as RustTsConformanceFixture[];
 
 const knownVectors: ReadonlyArray<readonly [unknown, string]> = [
 	[null, "f6"],
@@ -72,6 +90,19 @@ describe("CBOR codec", () => {
 		["float32", "fa3fc00000", 1.5],
 	] as const)("decodes finite Rust-compatible %s values", (_label, wire, expected) => {
 		expect(decodeCbor(fromHex(wire))).toBe(expected);
+	});
+
+	test.each(rustTsConformanceFixtures)("matches the shared Rust/TypeScript fixture: $name", (fixture) => {
+		const wire = fromHex(fixture.wire);
+		if (!fixture.valid) {
+			// CBOR 本身可以表示多余字段，但协议 DTO 必须拒绝它，防止一端悄然接受另一端未知语义。
+			expect(() => parseClientMessage(decodeCbor(wire))).toThrow(ProtocolValidationError);
+			return;
+		}
+
+		expect(decodeCbor(wire)).toEqual(fixture.value);
+		expect(toHex(encodeCbor(fixture.value))).toBe(fixture.wire);
+		expect(parseClientMessage(fixture.value)).toEqual(fixture.value);
 	});
 
 	test("omits undefined object properties without omitting falsey values", () => {

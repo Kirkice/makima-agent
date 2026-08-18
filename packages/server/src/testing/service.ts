@@ -258,6 +258,8 @@ export class TestServerService implements PiServerService {
 				transcript: [],
 				queuedSteer: [],
 				queuedSteerCount: 0,
+				queuedFollowUp: [],
+				queuedFollowUpCount: 0,
 			},
 		});
 	}

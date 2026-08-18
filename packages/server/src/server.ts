@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
 	type ClientHello,
+	type EventEnvelope,
 	type ClientMessage,
 	ClientMessageDecoder,
 	DEFAULT_MAX_FRAME_LENGTH,
@@ -20,6 +21,7 @@ import {
 	type ByteConnectionHandler,
 	type ConnectionState,
 	isTerminalConnection,
+	type UnsequencedEventEnvelope,
 } from "./connection.ts";
 import {
 	INTERNAL_SERVER_ERROR_MESSAGE,
@@ -130,6 +132,7 @@ export class PiServer {
 		state = {
 			id: randomUUID(),
 			connection,
+			nextEventSequence: 1,
 			decoder: new ClientMessageDecoder({ maxFrameLength: this.maxFrameLength }),
 			sessionIds: new Set(),
 			stage: "awaitingHello",
@@ -290,11 +293,18 @@ export class PiServer {
 		if (!this.closing && handshakeComplete) void this.snapshots.broadcast();
 	}
 
-	private async sendMessage(connection: ConnectionState, message: ServerMessage): Promise<boolean> {
+	private async sendMessage(
+		connection: ConnectionState,
+		message: Exclude<ServerMessage, EventEnvelope> | UnsequencedEventEnvelope,
+	): Promise<boolean> {
 		if (connection.disconnected || connection.connection.closed) return false;
+		const sequencedMessage: ServerMessage =
+			message.type === "event"
+				? { type: "event", sequence: connection.nextEventSequence++, event: message.event }
+				: message;
 		let frame: Uint8Array;
 		try {
-			frame = encodeServerMessage(message, { maxFrameLength: this.maxFrameLength });
+			frame = encodeServerMessage(sequencedMessage, { maxFrameLength: this.maxFrameLength });
 		} catch (error) {
 			this.reportError(error);
 			await this.closeConnection(connection.connection);

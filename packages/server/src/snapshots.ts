@@ -1,11 +1,10 @@
 import {
-	type EventEnvelope,
 	type ModelMetadata,
 	PROTOCOL_VERSION,
 	type ServerSnapshot,
 	type SessionMetadata,
 } from "@earendil-works/pi-protocol";
-import type { ConnectionState } from "./connection.ts";
+import type { ConnectionState, UnsequencedEventEnvelope } from "./connection.ts";
 import type { PiServerService } from "./types.ts";
 
 interface ServerSnapshotPublisherOptions {
@@ -14,7 +13,8 @@ interface ServerSnapshotPublisherOptions {
 	connections: Set<ConnectionState>;
 	isClosing: () => boolean;
 	listSessions: () => Promise<SessionMetadata[]>;
-	sendMessage: (connection: ConnectionState, message: EventEnvelope) => Promise<boolean>;
+	// 发布器只描述事件内容；连接边界统一分配不可伪造的单连接 sequence。
+	sendMessage: (connection: ConnectionState, message: UnsequencedEventEnvelope) => Promise<boolean>;
 	reportError: (error: unknown) => void;
 }
 
@@ -56,7 +56,7 @@ export class ServerSnapshotPublisher {
 		const models = await this.options.service.listModels();
 		const current = await this.get(models);
 		const snapshot: ServerSnapshot = { ...current, revision };
-		const envelope: EventEnvelope = { type: "event", event: { type: "server_snapshot", snapshot } };
+		const envelope: UnsequencedEventEnvelope = { type: "event", event: { type: "server_snapshot", snapshot } };
 		for (const connection of readyConnections) await this.options.sendMessage(connection, envelope);
 	}
 }

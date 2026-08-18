@@ -10,11 +10,12 @@ use std::{
 };
 
 use protocol::{
+    cbor::{decode_cbor, encode_cbor, CborError},
+    framing::{encode_frame, FrameDecoder, FrameError, DEFAULT_MAX_FRAME_LENGTH},
     ClientMessage, Command, CommandResult, ErrorResponse, EventEnvelope, EventMessageType,
-    HelloErrorMessageType, HelloMessageType, PROTOCOL_VERSION, ProtocolError, ProtocolErrorCode,
-    ServerEvent, ServerHello, ServerHelloError, ServerMessage, ServerSnapshot, SuccessResponse,
-    cbor::{CborError, decode_cbor, encode_cbor},
-    framing::{DEFAULT_MAX_FRAME_LENGTH, FrameDecoder, FrameError, encode_frame},
+    HelloErrorMessageType, HelloMessageType, ProtocolError, ProtocolErrorCode, ServerEvent,
+    ServerHello, ServerHelloError, ServerMessage, ServerSnapshot, SuccessResponse,
+    PROTOCOL_VERSION,
 };
 
 /// RPC 连接的业务端口。
@@ -38,6 +39,7 @@ pub struct RpcConnection<H> {
     decoder: FrameDecoder,
     connection_id: String,
     stage: ConnectionStage,
+    next_event_sequence: u64,
     max_frame_length: usize,
 }
 
@@ -91,6 +93,8 @@ where
             decoder,
             connection_id: connection_id.into(),
             stage: ConnectionStage::AwaitingHello,
+            // 序号属于 transport connection，不跨断线延续。恢复依赖下一次 hello 的权威 snapshot。
+            next_event_sequence: 1,
             max_frame_length,
         })
     }
@@ -127,8 +131,14 @@ where
             .drain_events()
             .into_iter()
             .map(|event| {
+                let sequence = self.next_event_sequence;
+                self.next_event_sequence = self
+                    .next_event_sequence
+                    .checked_add(1)
+                    .expect("event sequence must not overflow a u64 connection lifetime");
                 self.encode(ServerMessage::Event(EventEnvelope {
                     message_type: EventMessageType::Event,
+                    sequence,
                     event,
                 }))
             })
@@ -142,9 +152,13 @@ where
 
     fn handle_message(&mut self, message: ClientMessage) -> Result<Vec<Vec<u8>>, RpcError> {
         match (self.stage, message) {
-            (ConnectionStage::AwaitingHello, ClientMessage::Hello { version }) => {
-                self.hello(version)
-            }
+            (
+                ConnectionStage::AwaitingHello,
+                ClientMessage::Hello {
+                    version,
+                    last_seen_sequence: _,
+                },
+            ) => self.hello(version),
             (ConnectionStage::AwaitingHello, ClientMessage::Request { .. }) => {
                 self.stage = ConnectionStage::Closed;
                 Err(RpcError::InvalidMessage(
@@ -271,19 +285,19 @@ mod tests {
     use std::{
         io::Cursor,
         sync::{
-            Arc,
             atomic::{AtomicBool, Ordering},
+            Arc,
         },
     };
 
     use protocol::{
-        ClientMessage, CommandResult, EventEnvelope, ProtocolError, ProtocolErrorCode, ServerEvent,
-        ServerMessage, ServerSnapshot,
         cbor::{decode_cbor, encode_cbor},
         framing::{decode_complete_frame, encode_frame},
+        ClientMessage, CommandResult, EventEnvelope, ProtocolError, ProtocolErrorCode, ServerEvent,
+        ServerMessage, ServerSnapshot, PROTOCOL_VERSION,
     };
 
-    use super::{RpcCommandHandler, RpcConnection, RpcError, serve_connection};
+    use super::{serve_connection, RpcCommandHandler, RpcConnection, RpcError};
 
     struct FakeHandler {
         events: Vec<ServerEvent>,
@@ -319,7 +333,7 @@ mod tests {
         fn snapshot(&self) -> ServerSnapshot {
             ServerSnapshot {
                 server_id: "server-1".to_owned(),
-                protocol_version: 1,
+                protocol_version: PROTOCOL_VERSION,
                 revision: 3,
                 sessions: Vec::new(),
                 models: Vec::new(),
@@ -379,14 +393,16 @@ mod tests {
             1024,
         )
         .expect("connection should initialize");
-        let frame = client_frame(ClientMessage::Hello { version: 1 });
+        // 测试必须使用当前协议常量，避免协议版本升级后把成功握手误判为失败。
+        let frame = client_frame(ClientMessage::Hello {
+            version: PROTOCOL_VERSION,
+            last_seen_sequence: None,
+        });
 
-        assert!(
-            connection
-                .receive(&frame[..3])
-                .expect("fragment is valid")
-                .is_empty()
-        );
+        assert!(connection
+            .receive(&frame[..3])
+            .expect("fragment is valid")
+            .is_empty());
         let messages = server_messages(
             connection
                 .receive(&frame[3..])
@@ -411,7 +427,10 @@ mod tests {
         )
         .expect("connection should initialize");
         connection
-            .receive(&client_frame(ClientMessage::Hello { version: 1 }))
+            .receive(&client_frame(ClientMessage::Hello {
+                version: PROTOCOL_VERSION,
+                last_seen_sequence: None,
+            }))
             .expect("hello should succeed");
         let messages = server_messages(
             connection
@@ -439,7 +458,11 @@ mod tests {
         .expect("connection should initialize");
         let messages = server_messages(
             connection
-                .receive(&client_frame(ClientMessage::Hello { version: 2 }))
+                // 选择一个与当前版本不同的值，保证版本协商拒绝逻辑在版本演进后仍被覆盖。
+                .receive(&client_frame(ClientMessage::Hello {
+                    version: PROTOCOL_VERSION.saturating_add(1),
+                    last_seen_sequence: None,
+                }))
                 .expect("version response should encode"),
         );
 

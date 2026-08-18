@@ -1,8 +1,9 @@
 import Type, { type Static } from "typebox";
 
-// `follow_up` 与 SessionSnapshot 的独立 follow-up 队列改变了严格 DTO 的必填形状，
-// 旧客户端无法安全解码，因此必须通过握手拒绝旧版本而非静默兼容。
-export const PROTOCOL_VERSION = 2 as const;
+// v3 在每个服务端事件 envelope 中加入单连接单调递增的 `sequence`，并允许客户端在
+// hello 中报告已观察到的序号。旧客户端既不会发送恢复边界，也无法安全处理事件序列，
+// 因此必须通过握手拒绝旧版本而非静默兼容。
+export const PROTOCOL_VERSION = 3 as const;
 
 const IdSchema = Type.String({ minLength: 1 });
 const TimestampSchema = Type.Integer({ minimum: 0 });
@@ -516,10 +517,14 @@ export type ResultForCommand<TCommand extends Command> = TCommand["command"] ext
 		? Static<typeof DetachResultSchema>
 		: Extract<CommandResult, { command: TCommand["command"] }>;
 
-/** Must be the first frame sent by a client. Version is intentionally an integer, not a coercible string. */
+/**
+ * 每条连接的首帧。`lastSeenSequence` 只描述同一逻辑客户端上次已应用的事件边界：
+ * 服务端始终以权威 snapshot 建立新连接，不承诺跨连接重放增量事件。
+ */
 export const ClientHelloSchema = StrictObject({
 	type: Type.Literal("hello"),
 	version: Type.Integer({ minimum: 0 }),
+	lastSeenSequence: Type.Optional(Type.Integer({ minimum: 0 })),
 });
 export type ClientHello = Static<typeof ClientHelloSchema>;
 
@@ -568,8 +573,13 @@ export const ResponseEnvelopeSchema = Type.Union([
 		error: ProtocolErrorSchema,
 	}),
 ]);
+/**
+ * 事件仅在一个连接内按 `sequence` 单调递增。客户端忽略重复或旧序号；一旦发现缺口，
+ * 必须等待下一次 hello 携带的权威 snapshot 恢复，不能臆造缺失的增量。
+ */
 export const EventEnvelopeSchema = StrictObject({
 	type: Type.Literal("event"),
+	sequence: Type.Integer({ minimum: 1 }),
 	event: ServerEventSchema,
 });
 export const ServerMessageSchema = Type.Union([

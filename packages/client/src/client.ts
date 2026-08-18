@@ -71,6 +71,7 @@ export class PiClient {
 		this.#connection = new Connection({
 			transportFactory: options.transportFactory,
 			maxFrameLength: options.maxFrameLength,
+			lastSeenSequence: () => this.#state.lastSeenEventSequence,
 			onHandshake: (snapshot) => this.#state.applyServerSnapshot(snapshot),
 			onMessage: (message) => this.#handleMessage(message),
 			onStateChange: (change) => this.#handleConnectionStateChange(change),
@@ -293,8 +294,8 @@ export class PiClient {
 
 	#handleMessage(message: ResponseEnvelope | EventEnvelope): void {
 		if (message.type === "event") {
+			if (!this.#state.applyEvent(message.sequence, message.event)) return;
 			if (message.event.type === "session_removed") this.#invalidateSessionLeases(message.event.sessionId);
-			this.#state.applyEvent(message.event);
 			return;
 		}
 		const pending = this.#takePendingRequest(message.id);

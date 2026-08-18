@@ -55,6 +55,7 @@ function assertValidServerPayload(item: ProtocolTranscriptItem): void {
 	expect(() =>
 		encodeServerMessage({
 			type: "event",
+			sequence: 1,
 			event: {
 				type: "session_snapshot",
 				snapshot: {
@@ -71,6 +72,8 @@ function assertValidServerPayload(item: ProtocolTranscriptItem): void {
 					transcript: [item],
 					queuedSteer: [],
 					queuedSteerCount: 0,
+					queuedFollowUp: [],
+					queuedFollowUpCount: 0,
 				},
 			},
 		}),

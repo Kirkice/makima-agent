@@ -18,8 +18,9 @@ use serde_json::Value;
 /// 当前 Rust/TypeScript 共享协议版本。
 ///
 /// `follow_up` command 与快照中的独立 follow-up 队列新增了严格必填字段，旧客户端不能
-/// 正确解码；因此本次使用握手版本 2 显式拒绝不兼容的 peer，而不伪造向后兼容。
-pub const PROTOCOL_VERSION: u32 = 2;
+/// 正确解码；v3 增加了恢复边界和事件序列，因此使用握手版本显式拒绝不兼容的 peer，
+/// 而不伪造向后兼容。
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// 协议中使用的思考等级，必须与 TypeScript `ThinkingLevelSchema` 同步。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -662,12 +663,17 @@ pub struct ProtocolError {
 }
 
 /// TypeScript Host 发出的版本协商消息，必须是每条连接的第一帧。
+///
+/// `last_seen_sequence` 只声明该逻辑客户端已经应用的事件边界。新连接一律由权威
+/// snapshot 建立状态，不在协议层承诺跨连接 replay 增量事件。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClientHello {
     #[serde(rename = "type")]
     pub message_type: HelloMessageType,
     pub version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen_sequence: Option<u64>,
 }
 
 /// 请求 envelope 将调用标识与业务命令分离，支持并发请求和错误关联。
@@ -682,9 +688,13 @@ pub struct RequestEnvelope {
 
 /// 客户端消息的封闭联合，解码未知类型会失败。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase", deny_unknown_fields)]
 pub enum ClientMessage {
-    Hello { version: u32 },
+    Hello {
+        version: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        last_seen_sequence: Option<u64>,
+    },
     Request { id: String, request: Command },
 }
 
@@ -988,12 +998,14 @@ pub enum ServerMessage {
     Event(EventEnvelope),
 }
 
-/// 事件 envelope。事件本体由 `ServerEvent` 继续提供精确判别。
+/// 事件 envelope。`sequence` 只在单个连接内单调递增；重连后的 hello snapshot 是
+/// 权威恢复点，客户端不得把新连接的序号与旧连接的序号拼接比较。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EventEnvelope {
     #[serde(rename = "type")]
     pub message_type: EventMessageType,
+    pub sequence: u64,
     pub event: ServerEvent,
 }
 
@@ -1060,6 +1072,7 @@ pub enum EventMessageType {
 
 #[cfg(test)]
 mod tests {
+    use serde::Deserialize;
     use serde_json::json;
 
     use super::{
@@ -1071,6 +1084,24 @@ mod tests {
         TranscriptDeltaKind, TranscriptItem, TranscriptProgress, Usage, UsageCost,
         PROTOCOL_VERSION,
     };
+    use crate::cbor::decode_cbor;
+
+    #[derive(Debug, Deserialize)]
+    struct RustTsConformanceFixture {
+        name: String,
+        wire: String,
+        valid: bool,
+    }
+
+    fn decode_hex(hex: &str) -> Vec<u8> {
+        assert!(hex.len() % 2 == 0, "fixture wire must contain whole bytes");
+        (0..hex.len())
+            .step_by(2)
+            .map(|index| {
+                u8::from_str_radix(&hex[index..index + 2], 16).expect("fixture must be valid hex")
+            })
+            .collect()
+    }
 
     #[test]
     fn command_uses_typescript_field_names_and_round_trips() {
@@ -1268,6 +1299,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(EventEnvelope {
                 message_type: super::EventMessageType::Event,
+                sequence: 1,
                 event: ServerEvent::SessionRemoved {
                     session_id: "session-1".to_owned()
                 },
@@ -1341,6 +1373,7 @@ mod tests {
 
         let message = ServerMessage::Event(EventEnvelope {
             message_type: super::EventMessageType::Event,
+            sequence: 1,
             event: ServerEvent::SessionProgress {
                 session_id: "session-1".to_owned(),
                 progress,
@@ -1351,6 +1384,7 @@ mod tests {
             encoded,
             json!({
                 "type": "event",
+                "sequence": 1,
                 "event": {
                     "type": "session_progress", "sessionId": "session-1",
                     "progress": {
@@ -1575,8 +1609,34 @@ mod tests {
     }
 
     #[test]
+    fn matches_shared_typescript_cbor_conformance_fixtures() {
+        let fixtures: Vec<RustTsConformanceFixture> = serde_json::from_str(include_str!(
+            "../../../../packages/protocol/test/fixtures/rust-ts-conformance.json"
+        ))
+        .expect("shared TypeScript fixture must be valid JSON");
+
+        for fixture in fixtures {
+            let decoded = decode_cbor::<ClientMessage>(&decode_hex(&fixture.wire));
+            if fixture.valid {
+                assert!(
+                    decoded.is_ok(),
+                    "{} should decode as a valid client message",
+                    fixture.name
+                );
+            } else {
+                // TypeScript schema 与 Rust `deny_unknown_fields` 都必须拒绝同一份额外字段负载。
+                assert!(
+                    decoded.is_err(),
+                    "{} should be rejected by the strict client DTO",
+                    fixture.name
+                );
+            }
+        }
+    }
+
+    #[test]
     fn protocol_version_is_explicit() {
-        assert_eq!(PROTOCOL_VERSION, 2);
+        assert_eq!(PROTOCOL_VERSION, 3);
         let model = ModelRef {
             provider: "test".to_owned(),
             id: "model".to_owned(),
