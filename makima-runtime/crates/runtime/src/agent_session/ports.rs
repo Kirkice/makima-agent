@@ -5,7 +5,9 @@
 //! `AgentSession` 的领域状态机。
 
 use agent_loop::{AgentLoopEngine, AgentLoopEvent as RustAgentLoopEvent};
-use protocol::UserTranscriptItem;
+use protocol::{TranscriptItem, UserTranscriptItem};
+
+use super::context::CompactionRecord;
 
 /// Agent Loop 执行失败的稳定错误表示。
 ///
@@ -42,8 +44,35 @@ pub trait AgentLoop {
     /// 将用户输入插入当前运行中的回合。
     fn steer(&mut self, message: UserTranscriptItem) -> Result<(), AgentLoopError>;
 
+    /// 在当前回合自然停止后投递用户输入。
+    fn follow_up(&mut self, message: UserTranscriptItem) -> Result<(), AgentLoopError>;
+
     /// 请求停止当前回合。停止完成仍由后续 `settled` 事件确认。
     fn abort(&mut self) -> Result<(), AgentLoopError>;
+
+    /// 从已结束的失败 assistant 移除 Provider 工作上下文，准备 retry。
+    ///
+    /// 该能力不属于普通 fake 必须实现的命令面，默认显式报错；生产 Agent Loop 覆盖它，
+    /// 从而保证 retry 不会悄悄在不支持的 Loop 上伪成功。
+    fn discard_last_error_assistant_for_retry(&mut self) -> Result<(), AgentLoopError> {
+        Err(AgentLoopError::new("当前 Agent Loop 不支持自动重试。"))
+    }
+
+    /// 恢复先前因失败结束的同一回合，供 Runtime 在退避后重新请求 Provider。
+    fn restart_after_retry(&mut self) -> Result<(), AgentLoopError> {
+        Err(AgentLoopError::new("当前 Agent Loop 不支持自动重试。"))
+    }
+
+    /// 原子替换下一次 Provider 请求使用的工作上下文。
+    ///
+    /// 只允许在回合空闲时调用，防止在流式 assistant 或工具批次中间丢失未提交事件。
+    /// `AgentSession` 会先将 compaction entry 成功写入持久化端口，再调用此方法；因此
+    /// adapter 失败时 Store 历史仍完整，运行时可以从该历史重建并恢复。
+    fn replace_context(&mut self, _messages: Vec<TranscriptItem>) -> Result<(), AgentLoopError> {
+        Err(AgentLoopError::new(
+            "当前 Agent Loop 不支持工作上下文替换。",
+        ))
+    }
 }
 
 /// Rust Agent Loop 到 AgentSession 端口的薄适配器。
@@ -61,8 +90,28 @@ impl AgentLoop for AgentLoopEngine {
         AgentLoopEngine::steer(self, message).map_err(|error| AgentLoopError::new(error.message()))
     }
 
+    fn follow_up(&mut self, message: UserTranscriptItem) -> Result<(), AgentLoopError> {
+        AgentLoopEngine::follow_up(self, message)
+            .map_err(|error| AgentLoopError::new(error.message()))
+    }
+
     fn abort(&mut self) -> Result<(), AgentLoopError> {
         AgentLoopEngine::abort(self).map_err(|error| AgentLoopError::new(error.message()))
+    }
+
+    fn discard_last_error_assistant_for_retry(&mut self) -> Result<(), AgentLoopError> {
+        AgentLoopEngine::discard_last_error_assistant_for_retry(self)
+            .map_err(|error| AgentLoopError::new(error.message()))
+    }
+
+    fn restart_after_retry(&mut self) -> Result<(), AgentLoopError> {
+        AgentLoopEngine::restart_after_retry(self)
+            .map_err(|error| AgentLoopError::new(error.message()))
+    }
+
+    fn replace_context(&mut self, messages: Vec<TranscriptItem>) -> Result<(), AgentLoopError> {
+        AgentLoopEngine::replace_context(self, messages)
+            .map_err(|error| AgentLoopError::new(error.message()))
     }
 }
 
@@ -83,7 +132,15 @@ pub fn session_events_from_rust_agent_loop(
             RustAgentLoopEvent::AgentEnded { .. } => {
                 Some(crate::agent_session::AgentLoopEvent::Settled)
             }
-            RustAgentLoopEvent::AgentStarted
+            RustAgentLoopEvent::SteerConsumed => {
+                Some(crate::agent_session::AgentLoopEvent::SteerConsumed)
+            }
+            RustAgentLoopEvent::FollowUpConsumed => {
+                Some(crate::agent_session::AgentLoopEvent::FollowUpConsumed)
+            }
+            // continuation 由 Provider Runtime 消费；它不是 Session 持久化或 UI 队列事件。
+            RustAgentLoopEvent::ProviderContinuationRequested
+            | RustAgentLoopEvent::AgentStarted
             | RustAgentLoopEvent::TurnStarted
             | RustAgentLoopEvent::TranscriptItemStarted(_)
             | RustAgentLoopEvent::TranscriptItemUpdated(_)
@@ -128,6 +185,8 @@ pub enum PersistenceEvent {
     ModelChanged(protocol::ModelRef),
     /// 思考等级变更。
     ThinkingLevelChanged(protocol::ThinkingLevel),
+    /// 一次已生成且可恢复的上下文压缩边界。
+    Compaction(CompactionRecord),
 }
 
 /// AgentSession 所需的最小持久化端口。

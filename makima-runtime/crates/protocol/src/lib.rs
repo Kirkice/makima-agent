@@ -17,8 +17,9 @@ use serde_json::Value;
 
 /// 当前 Rust/TypeScript 共享协议版本。
 ///
-/// 破坏性变更必须递增此值；兼容扩展优先新增可选字段，不能复用既有字段含义。
-pub const PROTOCOL_VERSION: u32 = 1;
+/// `follow_up` command 与快照中的独立 follow-up 队列新增了严格必填字段，旧客户端不能
+/// 正确解码；因此本次使用握手版本 2 显式拒绝不兼容的 peer，而不伪造向后兼容。
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// 协议中使用的思考等级，必须与 TypeScript `ThinkingLevelSchema` 同步。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,6 +155,24 @@ pub struct ToolResult {
     pub timestamp: u64,
 }
 
+/// 单个工具在同一 assistant 工具批次中的并发约束。
+///
+/// 默认的 [`ToolExecutionMode::Parallel`] 允许互不依赖的调用同时执行；只要批次中存在
+/// `Sequential` 工具，整个批次都必须按 Provider 给出的源顺序串行执行。这与 TypeScript
+/// Agent Loop 的保守降级规则一致，可避免同一批有副作用调用产生竞争。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolExecutionMode {
+    Parallel,
+    Sequential,
+}
+
+impl Default for ToolExecutionMode {
+    fn default() -> Self {
+        Self::Parallel
+    }
+}
+
 /// Provider 可见工具的声明。输入 schema 必须是可 JSON 序列化的数据。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -161,6 +180,13 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
+    /// 工具批次的执行约束；省略时与 TypeScript 一样默认为并行。
+    #[serde(default, skip_serializing_if = "is_parallel_tool_execution")]
+    pub execution_mode: ToolExecutionMode,
+}
+
+fn is_parallel_tool_execution(mode: &ToolExecutionMode) -> bool {
+    *mode == ToolExecutionMode::Parallel
 }
 
 /// 发往 TypeScript Provider Host 的不可变请求快照。
@@ -514,6 +540,10 @@ pub struct SessionSnapshot {
     pub transcript: Vec<TranscriptItem>,
     pub queued_steer: Vec<UserTranscriptItem>,
     pub queued_steer_count: u64,
+    /// 当前回合自然结束后才会投递的输入。它与 steering 分开，确保客户端可以按实际
+    /// 调度时机展示队列，而不是把 follow-up 误认为可立即插入下一次 Provider 请求。
+    pub queued_follow_up: Vec<UserTranscriptItem>,
+    pub queued_follow_up_count: u64,
 }
 
 /// Agent 可以接收的命令集合。
@@ -553,6 +583,11 @@ pub enum Command {
         session_id: String,
         text: String,
     },
+    /// 在当前回合（含所有工具与 steering）自然完成后继续执行的用户输入。
+    FollowUp {
+        session_id: String,
+        text: String,
+    },
     Abort {
         session_id: String,
     },
@@ -583,6 +618,7 @@ pub enum CommandResult {
     Detach { session_id: String },
     Prompt { session: SessionSnapshot },
     Steer { session: SessionSnapshot },
+    FollowUp { session: SessionSnapshot },
     Abort { session: SessionSnapshot },
     SetModel { session: SessionSnapshot },
     SetThinking { session: SessionSnapshot },
@@ -1029,10 +1065,11 @@ mod tests {
     use super::{
         AssistantContent, AssistantStopReason, ClientMessage, Command, CommandResult,
         ErrorResponse, EventEnvelope, ModelCost, ModelInput, ModelMetadata, ModelRef,
-        PROTOCOL_VERSION, ProtocolError, ProtocolErrorCode, ProviderRequest, ProviderStreamEvent,
-        ServerEvent, ServerHelloError, ServerMessage, ServerSnapshot, SessionMetadata,
-        SuccessResponse, TextOrImageContent, ThinkingLevel, ToolCall, ToolDefinition,
+        ProtocolError, ProtocolErrorCode, ProviderRequest, ProviderStreamEvent, ServerEvent,
+        ServerHelloError, ServerMessage, ServerSnapshot, SessionMetadata, SuccessResponse,
+        TextOrImageContent, ThinkingLevel, ToolCall, ToolDefinition, ToolExecutionMode,
         TranscriptDeltaKind, TranscriptItem, TranscriptProgress, Usage, UsageCost,
+        PROTOCOL_VERSION,
     };
 
     #[test]
@@ -1199,7 +1236,7 @@ mod tests {
             serde_json::to_value(snapshot).expect("snapshot should serialize"),
             json!({
                 "serverId": "server-1",
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "revision": 2,
                 "sessions": [{ "id": "session-1", "createdAt": 1 }],
                 "models": [{
@@ -1256,44 +1293,34 @@ mod tests {
                 "error": { "code": "not_found", "message": "missing" },
             })
         );
-        assert!(
-            serde_json::from_value::<SuccessResponse>(json!({
-                "type": "response", "id": "request-3", "ok": false,
-                "result": { "command": "list", "sessions": [] },
-            }))
-            .is_err()
-        );
-        assert!(
-            serde_json::from_value::<ErrorResponse>(json!({
-                "type": "response", "id": "request-3", "ok": true,
-                "error": { "code": "not_found", "message": "missing" },
-            }))
-            .is_err()
-        );
+        assert!(serde_json::from_value::<SuccessResponse>(json!({
+            "type": "response", "id": "request-3", "ok": false,
+            "result": { "command": "list", "sessions": [] },
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<ErrorResponse>(json!({
+            "type": "response", "id": "request-3", "ok": true,
+            "error": { "code": "not_found", "message": "missing" },
+        }))
+        .is_err());
     }
 
     #[test]
     fn server_message_rejects_mismatched_envelope_discriminators() {
-        assert!(
-            serde_json::from_value::<ServerMessage>(json!({
-                "type": "response", "id": "request-1", "ok": true,
-                "error": { "code": "not_found", "message": "missing" },
-            }))
-            .is_err()
-        );
-        assert!(
-            serde_json::from_value::<ServerMessage>(json!({
-                "type": "hello_error", "error": { "code": "version", "message": "unsupported" },
-                "extra": true,
-            }))
-            .is_err()
-        );
-        assert!(
-            serde_json::from_value::<ServerMessage>(json!({
-                "type": "unknown",
-            }))
-            .is_err()
-        );
+        assert!(serde_json::from_value::<ServerMessage>(json!({
+            "type": "response", "id": "request-1", "ok": true,
+            "error": { "code": "not_found", "message": "missing" },
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<ServerMessage>(json!({
+            "type": "hello_error", "error": { "code": "version", "message": "unsupported" },
+            "extra": true,
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<ServerMessage>(json!({
+            "type": "unknown",
+        }))
+        .is_err());
     }
 
     #[test]
@@ -1368,27 +1395,21 @@ mod tests {
         });
         assert!(serde_json::from_value::<TranscriptItem>(complete_assistant).is_ok());
 
-        assert!(
-            serde_json::from_value::<TranscriptItem>(json!({
-                "id": "message-1", "role": "user", "content": [], "timestamp": 1, "unknown": true,
-            }))
-            .is_err()
-        );
-        assert!(
-            serde_json::from_value::<TranscriptItem>(json!({
-                "id": "message-1", "role": "assistant", "content": [],
-                "model": { "provider": "test", "id": "model" }, "timestamp": 1,
-                "status": "streaming", "stopReason": "stop",
-            }))
-            .is_err()
-        );
-        assert!(
-            serde_json::from_value::<TranscriptItem>(json!({
-                "id": "tool-1", "role": "tool", "toolCallId": "call-1", "toolName": "read",
-                "input": {}, "content": [], "timestamp": 1, "status": "complete", "isError": true,
-            }))
-            .is_err()
-        );
+        assert!(serde_json::from_value::<TranscriptItem>(json!({
+            "id": "message-1", "role": "user", "content": [], "timestamp": 1, "unknown": true,
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<TranscriptItem>(json!({
+            "id": "message-1", "role": "assistant", "content": [],
+            "model": { "provider": "test", "id": "model" }, "timestamp": 1,
+            "status": "streaming", "stopReason": "stop",
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<TranscriptItem>(json!({
+            "id": "tool-1", "role": "tool", "toolCallId": "call-1", "toolName": "read",
+            "input": {}, "content": [], "timestamp": 1, "status": "complete", "isError": true,
+        }))
+        .is_err());
     }
 
     #[test]
@@ -1398,19 +1419,15 @@ mod tests {
             "model": { "provider": "test", "id": "model" }, "timestamp": 1,
             "status": "streaming",
         });
-        assert!(
-            serde_json::from_value::<TranscriptProgress>(json!({
-                "type": "item_finished", "item": streaming_assistant,
-            }))
-            .is_err()
-        );
-        assert!(
-            serde_json::from_value::<TranscriptProgress>(json!({
-                "type": "item_updated",
-                "item": { "id": "message-1", "role": "user", "content": [], "timestamp": 1 },
-            }))
-            .is_err()
-        );
+        assert!(serde_json::from_value::<TranscriptProgress>(json!({
+            "type": "item_finished", "item": streaming_assistant,
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<TranscriptProgress>(json!({
+            "type": "item_updated",
+            "item": { "id": "message-1", "role": "user", "content": [], "timestamp": 1 },
+        }))
+        .is_err());
     }
 
     #[test]
@@ -1427,6 +1444,7 @@ mod tests {
                 name: "echo".to_owned(),
                 description: "Echo text".to_owned(),
                 input_schema: json!({ "type": "object" }),
+                execution_mode: ToolExecutionMode::Parallel,
             }],
         };
         assert_eq!(
@@ -1439,17 +1457,15 @@ mod tests {
                 "tools": [{ "name": "echo", "description": "Echo text", "inputSchema": { "type": "object" } }],
             })
         );
-        assert!(
-            serde_json::from_value::<ProviderRequest>(json!({
-                "requestId": "provider-request-1",
-                "model": { "provider": "test", "id": "model" },
-                "systemPrompt": "Be concise.",
-                "messages": [],
-                "tools": [],
-                "credential": "secret",
-            }))
-            .is_err()
-        );
+        assert!(serde_json::from_value::<ProviderRequest>(json!({
+            "requestId": "provider-request-1",
+            "model": { "provider": "test", "id": "model" },
+            "systemPrompt": "Be concise.",
+            "messages": [],
+            "tools": [],
+            "credential": "secret",
+        }))
+        .is_err());
 
         let event = ProviderStreamEvent::ToolCallEnd {
             content_index: 1,
@@ -1467,12 +1483,10 @@ mod tests {
                 "toolCall": { "toolCallId": "call-1", "toolName": "echo", "input": { "value": "hello" } },
             })
         );
-        assert!(
-            serde_json::from_value::<ProviderStreamEvent>(json!({
-                "type": "done", "timestamp": 3, "stopReason": "error",
-            }))
-            .is_err()
-        );
+        assert!(serde_json::from_value::<ProviderStreamEvent>(json!({
+            "type": "done", "timestamp": 3, "stopReason": "error",
+        }))
+        .is_err());
 
         let usage = Usage {
             input: 4,
@@ -1532,43 +1546,37 @@ mod tests {
                 .expect("terminal event should round-trip"),
             terminal
         );
-        assert!(
-            serde_json::from_value::<ProviderStreamEvent>(json!({
-                "type": "done",
-                "messageId": "assistant-1",
-                "content": [],
-                "timestamp": 4,
-                "stopReason": "stop"
-            }))
-            .is_err()
-        );
-        assert!(
-            serde_json::from_value::<ProviderStreamEvent>(json!({
-                "type": "done",
-                "messageId": "assistant-1",
-                "content": [],
-                "usage": usage,
-                "timestamp": 4,
-                "stopReason": "stop",
-                "extra": true
-            }))
-            .is_err()
-        );
-        assert!(
-            serde_json::from_value::<ProviderStreamEvent>(json!({
-                "type": "error",
-                "messageId": "assistant-1",
-                "content": [],
-                "timestamp": 4,
-                "message": "failed"
-            }))
-            .is_ok()
-        );
+        assert!(serde_json::from_value::<ProviderStreamEvent>(json!({
+            "type": "done",
+            "messageId": "assistant-1",
+            "content": [],
+            "timestamp": 4,
+            "stopReason": "stop"
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<ProviderStreamEvent>(json!({
+            "type": "done",
+            "messageId": "assistant-1",
+            "content": [],
+            "usage": usage,
+            "timestamp": 4,
+            "stopReason": "stop",
+            "extra": true
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<ProviderStreamEvent>(json!({
+            "type": "error",
+            "messageId": "assistant-1",
+            "content": [],
+            "timestamp": 4,
+            "message": "failed"
+        }))
+        .is_ok());
     }
 
     #[test]
     fn protocol_version_is_explicit() {
-        assert_eq!(PROTOCOL_VERSION, 1);
+        assert_eq!(PROTOCOL_VERSION, 2);
         let model = ModelRef {
             provider: "test".to_owned(),
             id: "model".to_owned(),

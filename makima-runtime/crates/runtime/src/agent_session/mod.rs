@@ -5,16 +5,48 @@
 //! 命令校验、回合状态、稳定 transcript、steer 队列和快照；具体执行由 `AgentLoop`，
 //! JSONL 写入由 `SessionPersistence` 提供。
 
+mod context;
 mod jsonl_persistence;
 mod ports;
 mod state;
 
+pub use context::{CompactionRecord, SessionContextReplacement};
 pub use jsonl_persistence::JsonlSessionPersistence;
 pub use ports::{
     AgentLoop, AgentLoopError, PersistenceEvent, SessionPersistence, SessionPersistenceError,
     session_events_from_rust_agent_loop,
 };
 pub use state::{AgentSessionState, QueuedSteer, user_text_item};
+
+/// 与 TypeScript `settings.retry` 对齐的自动重试策略。
+///
+/// `max_retries` 只统计首次 Provider 请求之后的额外尝试次数；退避为
+/// `base_delay_ms * 2^(attempt - 1)`。时间等待由 Provider Runtime 注入，领域层只
+/// 计算确定性的截止时间，避免在状态机中执行 sleep 或引入线程阻塞。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryPolicy {
+    pub enabled: bool,
+    pub max_retries: u32,
+    pub base_delay_ms: u64,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_retries: 3,
+            base_delay_ms: 2_000,
+        }
+    }
+}
+
+/// 已接受的 retry 退避计划。运行时应在 `retry_at` 之后调用
+/// [`AgentSession::resume_retry_at`]，并且不得在此之前重叠发送 Provider 请求。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetrySchedule {
+    pub attempt: u32,
+    pub retry_at: u64,
+}
 
 use protocol::{
     Command, ModelRef, ProtocolError, ProtocolErrorCode, SessionSnapshot, ThinkingLevel,
@@ -33,6 +65,8 @@ pub enum AgentSessionEvent {
     QueueUpdated {
         /// 尚待 Agent Loop 消费的 steer 项数。
         queued_steer_count: u64,
+        /// 尚待当前回合自然停止后消费的 follow-up 项数。
+        queued_follow_up_count: u64,
     },
     /// Agent Loop 已确认本回合结束。
     Settled,
@@ -49,6 +83,8 @@ pub enum AgentLoopEvent {
     TranscriptItemFinished(TranscriptItem),
     /// Agent Loop 已消费一个 steering 输入。
     SteerConsumed,
+    /// Agent Loop 已消费一个 follow-up 输入。
+    FollowUpConsumed,
     /// 当前回合及其后续工具循环都已结束。
     Settled,
 }
@@ -68,6 +104,8 @@ pub struct AgentSessionConfig {
     pub thinking_level: ThinkingLevel,
     /// 创建时间，单位为 Unix 毫秒。
     pub created_at: u64,
+    /// 当前 Session 的自动重试策略；默认值对齐 TypeScript SettingsManager。
+    pub retry_policy: RetryPolicy,
 }
 
 /// 负责协调一个 Agent 回合的 Rust Session。
@@ -81,6 +119,9 @@ pub struct AgentSession<L, P> {
     persistence: P,
     events: Vec<AgentSessionEvent>,
     next_user_message_sequence: u64,
+    retry_policy: RetryPolicy,
+    retry_attempt: u32,
+    retry_schedule: Option<RetrySchedule>,
 }
 
 impl<L, P> AgentSession<L, P>
@@ -103,6 +144,9 @@ where
             persistence,
             events: Vec::new(),
             next_user_message_sequence: 0,
+            retry_policy: config.retry_policy,
+            retry_attempt: 0,
+            retry_schedule: None,
         }
     }
 
@@ -139,6 +183,16 @@ where
         std::mem::take(&mut self.events)
     }
 
+    /// 返回当前 retry 尝试编号；没有处于重试链时为零。
+    pub fn retry_attempt(&self) -> u32 {
+        self.retry_attempt
+    }
+
+    /// 返回已计划但尚未启动的 retry；由运行时轮询其截止时间。
+    pub fn retry_schedule(&self) -> Option<RetrySchedule> {
+        self.retry_schedule
+    }
+
     /// 在指定时刻执行面向协议的 Session 命令。
     ///
     /// `timestamp` 显式作为参数，以便 replay 与测试可以完全确定性地复现快照版本。
@@ -157,6 +211,7 @@ where
             }
             Command::Prompt { text, .. } => self.prompt(text, timestamp)?,
             Command::Steer { text, .. } => self.steer(text, timestamp)?,
+            Command::FollowUp { text, .. } => self.follow_up(text, timestamp)?,
             Command::Abort { .. } => self.abort(timestamp)?,
             Command::Attach { .. }
             | Command::Detach { .. }
@@ -180,17 +235,38 @@ where
         match event {
             AgentLoopEvent::TranscriptItemFinished(item) => {
                 self.persist(PersistenceEvent::TranscriptItemFinished(item.clone()))?;
+                // 与 TypeScript 在成功 `message_end` 时结束 retry 链一致：只有完整的
+                // assistant 回答证明瞬态失败已经恢复。错误 assistant 会保留历史，但不会
+                // 清零计数，以便同一回合继续遵守 max_retries 上限。
+                if matches!(
+                    item,
+                    TranscriptItem::Assistant(protocol::AssistantTranscriptItem::Complete { .. })
+                ) {
+                    self.retry_attempt = 0;
+                }
                 self.state.finish_transcript_item(item, timestamp);
                 self.emit_snapshot();
             }
             AgentLoopEvent::SteerConsumed => {
                 self.state.consume_steer(timestamp);
+                let snapshot = self.state.snapshot();
                 self.events.push(AgentSessionEvent::QueueUpdated {
-                    queued_steer_count: self.state.snapshot().queued_steer_count,
+                    queued_steer_count: snapshot.queued_steer_count,
+                    queued_follow_up_count: snapshot.queued_follow_up_count,
+                });
+                self.emit_snapshot();
+            }
+            AgentLoopEvent::FollowUpConsumed => {
+                self.state.consume_follow_up(timestamp);
+                let snapshot = self.state.snapshot();
+                self.events.push(AgentSessionEvent::QueueUpdated {
+                    queued_steer_count: snapshot.queued_steer_count,
+                    queued_follow_up_count: snapshot.queued_follow_up_count,
                 });
                 self.emit_snapshot();
             }
             AgentLoopEvent::Settled => {
+                self.retry_schedule = None;
                 self.state.settle(timestamp);
                 self.events.push(AgentSessionEvent::Settled);
                 self.emit_snapshot();
@@ -198,6 +274,88 @@ where
         }
 
         Ok(self.snapshot())
+    }
+
+    /// 根据刚刚落盘的失败 assistant 计划下一次 retry。
+    ///
+    /// 错误先通过 AgentSession 持久化，再由该方法从 Agent Loop 的工作上下文移除；这样
+    /// 历史完整、下一次 Provider request 又不会把失败 assistant 发送回模型。
+    pub fn schedule_retry_at(
+        &mut self,
+        error_message: &str,
+        timestamp: u64,
+    ) -> Result<Option<RetrySchedule>, ProtocolError> {
+        if !self.state.is_active()
+            || !is_retryable_error(error_message)
+            || self.retry_attempt >= self.retry_policy.max_retries
+            || !self.retry_policy.enabled
+        {
+            return Ok(None);
+        }
+
+        self.retry_attempt += 1;
+        let delay_ms = self
+            .retry_policy
+            .base_delay_ms
+            .saturating_mul(2_u64.saturating_pow(self.retry_attempt.saturating_sub(1)));
+        let schedule = RetrySchedule {
+            attempt: self.retry_attempt,
+            retry_at: timestamp.saturating_add(delay_ms),
+        };
+        self.agent_loop
+            .discard_last_error_assistant_for_retry()
+            .map_err(agent_loop_error)?;
+        self.state.start_retry(timestamp);
+        self.retry_schedule = Some(schedule);
+        self.emit_snapshot();
+        Ok(Some(schedule))
+    }
+
+    /// 在到期后恢复 Agent Loop，供 Provider Runtime 发起新的 Provider request。
+    pub fn resume_retry_at(&mut self, timestamp: u64) -> Result<bool, ProtocolError> {
+        let Some(schedule) = self.retry_schedule else {
+            return Ok(false);
+        };
+        if timestamp < schedule.retry_at || !self.state.is_retrying() {
+            return Ok(false);
+        }
+
+        self.agent_loop
+            .restart_after_retry()
+            .map_err(agent_loop_error)?;
+        self.retry_schedule = None;
+        self.state.resume_retry(timestamp);
+        self.emit_snapshot();
+        Ok(true)
+    }
+
+    /// 持久化已生成的 compaction 边界，并替换下一轮请求的工作上下文。
+    ///
+    /// 该 API 是 TypeScript `compact()` 中“appendCompaction -> buildSessionContext ->
+    /// agent.state.messages”这一同步提交段的领域等价物。摘要计算和分支读取由调用方的
+    /// adapter 完成；本方法只在空闲边界提交已验证结果，避免 AgentSession 依赖模型 SDK。
+    ///
+    /// 提交顺序不可调换：先落盘 compaction 事实，再替换 Loop 上下文。若落盘失败，Loop
+    /// 保持原状；若替换失败，历史仍可从已落盘 entry 重建，绝不删除原 transcript。
+    pub fn apply_compaction(
+        &mut self,
+        record: CompactionRecord,
+        replacement: SessionContextReplacement,
+    ) -> Result<(), ProtocolError> {
+        if self.state.is_active() {
+            return Err(busy(
+                "Agent 正在运行，必须等待回合 settled 后才能替换工作上下文。",
+            ));
+        }
+        if replacement.messages.is_empty() {
+            return Err(invalid_request("压缩后的工作上下文不能为空。"));
+        }
+
+        self.persist(PersistenceEvent::Compaction(record))?;
+        self.agent_loop
+            .replace_context(replacement.messages)
+            .map_err(agent_loop_error)?;
+        Ok(())
     }
 
     fn set_model(&mut self, model: ModelRef, timestamp: u64) -> Result<(), ProtocolError> {
@@ -240,8 +398,31 @@ where
             .steer(message.clone())
             .map_err(agent_loop_error)?;
         self.state.enqueue_steer(message, timestamp);
+        let snapshot = self.state.snapshot();
         self.events.push(AgentSessionEvent::QueueUpdated {
-            queued_steer_count: self.state.snapshot().queued_steer_count,
+            queued_steer_count: snapshot.queued_steer_count,
+            queued_follow_up_count: snapshot.queued_follow_up_count,
+        });
+        self.emit_snapshot();
+        Ok(())
+    }
+
+    fn follow_up(&mut self, text: String, timestamp: u64) -> Result<(), ProtocolError> {
+        if !self.state.is_active() {
+            return Err(invalid_request(
+                "Agent 当前空闲，不能 follow-up；请使用 prompt 启动新回合。",
+            ));
+        }
+
+        let message = self.new_user_message(text, timestamp);
+        self.agent_loop
+            .follow_up(message.clone())
+            .map_err(agent_loop_error)?;
+        self.state.enqueue_follow_up(message, timestamp);
+        let snapshot = self.state.snapshot();
+        self.events.push(AgentSessionEvent::QueueUpdated {
+            queued_steer_count: snapshot.queued_steer_count,
+            queued_follow_up_count: snapshot.queued_follow_up_count,
         });
         self.emit_snapshot();
         Ok(())
@@ -249,6 +430,17 @@ where
 
     fn abort(&mut self, timestamp: u64) -> Result<(), ProtocolError> {
         if !self.state.is_active() {
+            return Ok(());
+        }
+
+        // retry 的 sleep 不在领域层执行，取消只需清除计划并让状态稳定回 idle；不会再有
+        // Provider 流或工具批次等待结算。这与 TS AbortController 中断 backoff 的语义对应。
+        if self.state.is_retrying() {
+            self.retry_schedule = None;
+            self.retry_attempt = 0;
+            self.state.settle(timestamp);
+            self.events.push(AgentSessionEvent::Settled);
+            self.emit_snapshot();
             return Ok(());
         }
 
@@ -279,6 +471,7 @@ where
             | Command::Detach { session_id }
             | Command::Prompt { session_id, .. }
             | Command::Steer { session_id, .. }
+            | Command::FollowUp { session_id, .. }
             | Command::Abort { session_id }
             | Command::SetModel { session_id, .. }
             | Command::SetThinking { session_id, .. } => Some(session_id),
@@ -305,6 +498,70 @@ where
         self.events
             .push(AgentSessionEvent::Snapshot(self.snapshot()));
     }
+}
+
+/// 与 TypeScript `isRetryableAssistantError()` 保持同一类瞬态 Provider / transport 信号。
+///
+/// 上下文溢出含有 "context"、"prompt too long" 等确定性容量信号，不能在这里重试；它应
+/// 交给后续 compaction 策略处理。账户配额和 billing 也属于用户动作才能恢复的终态。
+fn is_retryable_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    let non_retryable = [
+        "insufficient_quota",
+        "quota exceeded",
+        "out of budget",
+        "billing",
+        "monthly usage limit reached",
+        "available balance",
+        "context window",
+        "maximum context",
+        "prompt too long",
+        "input is too long",
+        "context length",
+    ];
+    if non_retryable
+        .iter()
+        .any(|pattern| normalized.contains(pattern))
+    {
+        return false;
+    }
+
+    [
+        "overloaded",
+        "rate limit",
+        "rate-limit",
+        "too many requests",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+        "524",
+        "service unavailable",
+        "server error",
+        "internal error",
+        "provider returned error",
+        "network error",
+        "connection error",
+        "connection refused",
+        "connection lost",
+        "fetch failed",
+        "getaddrinfo",
+        "enotfound",
+        "eai_again",
+        "timeout",
+        "timed out",
+        "socket hang up",
+        "websocket closed",
+        "ended without",
+        "stream ended before",
+        "retry delay",
+        "please retry",
+        "try your request again",
+        "resourceexhausted",
+    ]
+    .iter()
+    .any(|pattern| normalized.contains(pattern))
 }
 
 fn agent_loop_error(error: AgentLoopError) -> ProtocolError {

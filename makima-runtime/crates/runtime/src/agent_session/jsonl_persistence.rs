@@ -123,6 +123,24 @@ impl SessionPersistence for JsonlSessionPersistence {
                 "thinking_level_change",
                 Map::from_iter([(String::from("thinkingLevel"), json!(level))]),
             ),
+            PersistenceEvent::Compaction(record) => self.append_entry(
+                "compaction",
+                Map::from_iter([
+                    (String::from("summary"), Value::String(record.summary)),
+                    (
+                        String::from("firstKeptEntryId"),
+                        Value::String(record.first_kept_entry_id),
+                    ),
+                    (
+                        String::from("tokensBefore"),
+                        Value::from(record.tokens_before),
+                    ),
+                    (
+                        String::from("fromExtension"),
+                        Value::Bool(record.from_extension),
+                    ),
+                ]),
+            ),
         }
     }
 }

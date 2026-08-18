@@ -1,0 +1,99 @@
+{
+  "name": "parallel-tool-calls",
+  "events": [
+    {
+      "type": "start",
+      "messageId": "assistant-parallel-tools",
+      "timestamp": 20
+    },
+    {
+      "type": "tool_call_delta",
+      "contentIndex": 0,
+      "delta": "{\"value\":\"first\"}"
+    },
+    {
+      "type": "tool_call_end",
+      "contentIndex": 0,
+      "toolCall": {
+        "toolCallId": "call-1",
+        "toolName": "echo",
+        "input": {
+          "value": "first"
+        }
+      }
+    },
+    {
+      "type": "tool_call_delta",
+      "contentIndex": 1,
+      "delta": "{\"value\":\"second\"}"
+    },
+    {
+      "type": "tool_call_end",
+      "contentIndex": 1,
+      "toolCall": {
+        "toolCallId": "call-2",
+        "toolName": "echo",
+        "input": {
+          "value": "second"
+        }
+      }
+    },
+    {
+      "type": "done",
+      "messageId": "assistant-parallel-tools",
+      "content": [
+        {
+          "type": "toolCall",
+          "toolCallId": "call-1",
+          "toolName": "echo",
+          "input": {
+            "value": "first"
+          }
+        },
+        {
+          "type": "toolCall",
+          "toolCallId": "call-2",
+          "toolName": "echo",
+          "input": {
+            "value": "second"
+          }
+        }
+      ],
+      "usage": {
+        "input": 18,
+        "output": 8,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 26,
+        "cost": {
+          "input": 0.018,
+          "output": 0.016,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.034
+        }
+      },
+      "timestamp": 21,
+      "stopReason": "toolUse"
+    }
+  ],
+  "expected": {
+    "eventNames": [
+      "message_start",
+      "message_update",
+      "message_update",
+      "message_update",
+      "message_update",
+      "message_end",
+      "tool_execution_start",
+      "tool_execution_start",
+      "tool_execution_end",
+      "message_start",
+      "message_end",
+      "tool_execution_end",
+      "message_start",
+      "message_end",
+      "tool_results_ready"
+    ]
+  }
+}

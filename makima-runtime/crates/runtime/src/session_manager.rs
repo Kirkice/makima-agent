@@ -243,6 +243,7 @@ impl SessionFactory for AgentSessionFactory {
                 model,
                 thinking_level,
                 created_at: metadata.created_at,
+                retry_policy: crate::agent_session::RetryPolicy::default(),
             },
             JsonlSessionPersistence::new_leased(store),
         )
@@ -332,6 +333,7 @@ fn agent_session_config(params: &SessionCreateParams) -> AgentSessionConfig {
         model: params.model.clone(),
         thinking_level: params.thinking_level,
         created_at: params.created_at,
+        retry_policy: crate::agent_session::RetryPolicy::default(),
     }
 }
 
@@ -502,6 +504,7 @@ where
             }
             command @ (Command::Prompt { .. }
             | Command::Steer { .. }
+            | Command::FollowUp { .. }
             | Command::Abort { .. }
             | Command::SetModel { .. }
             | Command::SetThinking { .. }) => self.execute_session_command(connection_id, command),
@@ -598,6 +601,7 @@ where
         Ok(match command {
             Command::Prompt { .. } => CommandResult::Prompt { session },
             Command::Steer { .. } => CommandResult::Steer { session },
+            Command::FollowUp { .. } => CommandResult::FollowUp { session },
             Command::Abort { .. } => CommandResult::Abort { session },
             Command::SetModel { .. } => CommandResult::SetModel { session },
             Command::SetThinking { .. } => CommandResult::SetThinking { session },
@@ -860,6 +864,7 @@ fn command_session_id(command: &Command) -> Option<&str> {
         | Command::Detach { session_id }
         | Command::Prompt { session_id, .. }
         | Command::Steer { session_id, .. }
+        | Command::FollowUp { session_id, .. }
         | Command::Abort { session_id }
         | Command::SetModel { session_id, .. }
         | Command::SetThinking { session_id, .. } => Some(session_id),
@@ -923,6 +928,19 @@ mod tests {
                 }
                 Command::Prompt { .. } => {
                     self.snapshot.phase = SessionPhase::Turn;
+                    self.snapshot.revision += 1;
+                }
+                Command::FollowUp { text, .. } => {
+                    self.snapshot
+                        .queued_follow_up
+                        .push(protocol::UserTranscriptItem {
+                            id: format!("follow-up-{}", self.snapshot.revision + 1),
+                            role: protocol::UserRole::User,
+                            content: vec![protocol::TextOrImageContent::Text { text }],
+                            timestamp: self.snapshot.updated_at + 1,
+                        });
+                    self.snapshot.queued_follow_up_count =
+                        self.snapshot.queued_follow_up.len() as u64;
                     self.snapshot.revision += 1;
                 }
                 Command::Abort { .. } => {
@@ -989,6 +1007,8 @@ mod tests {
             transcript: Vec::new(),
             queued_steer: Vec::new(),
             queued_steer_count: 0,
+            queued_follow_up: Vec::new(),
+            queued_follow_up_count: 0,
         }
     }
 
@@ -1071,6 +1091,17 @@ mod tests {
             steer,
             protocol::CommandResult::Steer { session } if session.queued_steer_count == 1
         ));
+        let follow_up = handler
+            .execute(Command::FollowUp {
+                session_id: session_id.clone(),
+                text: "answer that after this turn".to_owned(),
+            })
+            .expect("follow-up should enter AgentSession");
+        assert!(matches!(
+            follow_up,
+            protocol::CommandResult::FollowUp { session }
+                if session.queued_follow_up_count == 1
+        ));
         let abort = handler
             .execute(Command::Abort {
                 session_id: session_id,
@@ -1148,6 +1179,47 @@ mod tests {
         assert!(matches!(
             owner.drain_events().as_slice(),
             [protocol::ServerEvent::SessionSnapshot { .. }]
+        ));
+    }
+
+    #[test]
+    fn follow_up_requires_attachment_and_returns_the_updated_session() {
+        let manager = manager();
+        let mut owner = ConnectionSessionHandler::new("owner", manager.clone(), || 100);
+        let session_id = match owner
+            .execute(Command::Create {
+                cwd: None,
+                name: None,
+                model: None,
+                thinking_level: None,
+            })
+            .expect("create succeeds")
+        {
+            protocol::CommandResult::Create { session } => session.id,
+            _ => panic!("expected create"),
+        };
+        owner.drain_events();
+        let mut stranger = ConnectionSessionHandler::new("stranger", manager, || 101);
+
+        let error = stranger
+            .execute(Command::FollowUp {
+                session_id: session_id.clone(),
+                text: "unauthorized".to_owned(),
+            })
+            .expect_err("unattached connection must not enqueue follow-up");
+        assert_eq!(error.code, ProtocolErrorCode::InvalidRequest);
+
+        let result = owner
+            .execute(Command::FollowUp {
+                session_id,
+                text: "queued".to_owned(),
+            })
+            .expect("attached connection should enqueue follow-up");
+        assert!(matches!(
+            result,
+            protocol::CommandResult::FollowUp { session }
+                if session.queued_follow_up_count == 1
+                    && matches!(session.queued_follow_up[0].content.as_slice(), [protocol::TextOrImageContent::Text { text }] if text == "queued")
         ));
     }
 

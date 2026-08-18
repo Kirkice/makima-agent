@@ -35,6 +35,7 @@ describe("shared Provider Stream fixtures", () => {
 	test("contain only protocol-valid normalized events", async () => {
 		const fixtures = await loadFixtures();
 		expect(fixtures.map((fixture) => fixture.name)).toEqual([
+			"parallel-tool-calls",
 			"provider-error",
 			"text-multi-delta",
 			"thinking-text-interleaved",

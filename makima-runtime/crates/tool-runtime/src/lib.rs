@@ -9,9 +9,9 @@ mod read;
 use std::{
     collections::{BTreeSet, VecDeque},
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender, TryRecvError},
+        Arc,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -176,17 +176,22 @@ struct ActiveExecution {
     worker: JoinHandle<()>,
 }
 
-/// Session-owned 串行 Tool Runtime。
+/// Session-owned Tool Runtime。
 ///
-/// 每个调用在独立 worker 中执行，Session 线程只做非阻塞轮询。Rust 无法安全强杀任意线程，
-/// 因此 timeout/abort 会立即产生唯一逻辑终态并隔离该 worker 的迟到输出；worker 自然返回后由
-/// `reap_workers` 回收。可终止的进程工具仍应在自己的取消实现中 kill/wait 子进程。
+/// 每个调用在独立 worker 中执行，Session 线程只做非阻塞轮询。并行批次会同时启动所有
+/// 调用；任何 `sequential` 工具都会让整批保守降级为串行。Rust 无法安全强杀任意线程，
+/// 因此 timeout/abort 会立即产生唯一逻辑终态并隔离迟到输出；worker 自然返回后由
+/// `reap_workers` 回收。所有 finished 事件按 Provider source order 输出，即使 worker 的
+/// 实际完成顺序相反。
 pub struct ToolRuntime {
     tools: Vec<Arc<dyn Tool>>,
     cancellation: CancellationToken,
     timeout: Option<Duration>,
     pending: VecDeque<ToolCall>,
-    active: Option<ActiveExecution>,
+    active: Vec<ActiveExecution>,
+    completed: std::collections::BTreeMap<String, ToolResult>,
+    result_order: VecDeque<String>,
+    serial_batch: bool,
     retired_workers: Vec<JoinHandle<()>>,
     batch_timestamp: u64,
 }
@@ -198,7 +203,10 @@ impl ToolRuntime {
             cancellation: CancellationToken::default(),
             timeout: Some(Duration::from_secs(120)),
             pending: VecDeque::new(),
-            active: None,
+            active: Vec::new(),
+            completed: std::collections::BTreeMap::new(),
+            result_order: VecDeque::new(),
+            serial_batch: false,
             retired_workers: Vec::new(),
             batch_timestamp: 0,
         }
@@ -245,7 +253,9 @@ impl ToolRuntime {
         self.cancellation = CancellationToken::default();
     }
 
-    pub fn start_serial(
+    /// 根据工具声明启动一个批次。批次内任一 sequential 工具都会强制串行，以匹配
+    /// TypeScript Agent Loop 的全批次降级语义。
+    pub fn start(
         &mut self,
         calls: impl IntoIterator<Item = ToolCall>,
         timestamp: u64,
@@ -256,29 +266,73 @@ impl ToolRuntime {
         self.reap_workers();
         self.cancellation = CancellationToken::default();
         self.pending = calls.into_iter().collect();
+        self.result_order = self
+            .pending
+            .iter()
+            .map(|call| call.tool_call_id.clone())
+            .collect();
+        self.completed.clear();
+        self.serial_batch = self.pending.iter().any(|call| {
+            self.tools.iter().any(|tool| {
+                tool.definition().name == call.tool_name
+                    && tool.definition().execution_mode == protocol::ToolExecutionMode::Sequential
+            })
+        });
+        self.batch_timestamp = timestamp;
+        let mut events = Vec::new();
+        if self.serial_batch {
+            self.start_next(&mut events);
+        } else {
+            while !self.pending.is_empty() {
+                self.start_next(&mut events);
+            }
+        }
+        Ok(events)
+    }
+
+    /// 保留显式串行入口，供不包含执行模式的旧嵌入方使用。
+    pub fn start_serial(
+        &mut self,
+        calls: impl IntoIterator<Item = ToolCall>,
+        timestamp: u64,
+    ) -> Result<Vec<ToolRuntimeEvent>, ToolRuntimeError> {
+        self.start_with_mode(calls, timestamp, true)
+    }
+
+    fn start_with_mode(
+        &mut self,
+        calls: impl IntoIterator<Item = ToolCall>,
+        timestamp: u64,
+        serial_batch: bool,
+    ) -> Result<Vec<ToolRuntimeEvent>, ToolRuntimeError> {
+        if self.has_active_batch() {
+            return Err(ToolRuntimeError::BatchAlreadyActive);
+        }
+        self.reap_workers();
+        self.cancellation = CancellationToken::default();
+        self.pending = calls.into_iter().collect();
+        self.result_order = self
+            .pending
+            .iter()
+            .map(|call| call.tool_call_id.clone())
+            .collect();
+        self.completed.clear();
+        self.serial_batch = serial_batch;
         self.batch_timestamp = timestamp;
         let mut events = Vec::new();
         self.start_next(&mut events);
         Ok(events)
     }
 
-    pub fn poll(&mut self, timestamp: u64) -> Vec<ToolRuntimeEvent> {
+    pub fn poll(&mut self, _timestamp: u64) -> Vec<ToolRuntimeEvent> {
         self.reap_workers();
         let mut events = Vec::new();
-        loop {
-            if self.active.is_none() {
-                self.start_next(&mut events);
-                if self.active.is_none() {
-                    break;
-                }
-            }
-
+        let mut index = 0;
+        while index < self.active.len() {
             let forced_error = if self.cancellation.is_cancelled() {
                 Some("Tool execution aborted")
-            } else if self
-                .active
-                .as_ref()
-                .and_then(|execution| execution.deadline)
+            } else if self.active[index]
+                .deadline
                 .is_some_and(|deadline| Instant::now() >= deadline)
             {
                 Some("Tool execution timed out")
@@ -286,49 +340,43 @@ impl ToolRuntime {
                 None
             };
             if let Some(message) = forced_error {
-                self.finish_active_with_error(timestamp, message, &mut events);
-                if self.cancellation.is_cancelled() {
-                    // TypeScript 串行执行在 AbortSignal 生效后会停止本批次，不再为尚未启动的
-                    // 调用产生 start/result。清空队列同时避免取消后误执行具有副作用的工具。
-                    self.pending.clear();
-                    break;
-                }
+                self.finish_active_at(index, Err(ToolExecutionError::new(message)));
                 continue;
             }
-
-            let worker_event = self
-                .active
-                .as_ref()
-                .expect("active execution was checked")
-                .receiver
-                .try_recv();
-            match worker_event {
+            match self.active[index].receiver.try_recv() {
                 Ok(WorkerEvent::Updated {
                     tool_call_id,
                     output,
-                }) => events.push(ToolRuntimeEvent::Updated {
-                    tool_call_id,
-                    content: output.content,
-                    details: output.details,
-                }),
-                Ok(WorkerEvent::Finished(output)) => {
-                    self.finish_active(output, &mut events);
+                }) => {
+                    events.push(ToolRuntimeEvent::Updated {
+                        tool_call_id,
+                        content: output.content,
+                        details: output.details,
+                    });
+                    index += 1;
                 }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    self.finish_active_with_error(
-                        timestamp,
+                Ok(WorkerEvent::Finished(output)) => self.finish_active_at(index, output),
+                Err(TryRecvError::Empty) => index += 1,
+                Err(TryRecvError::Disconnected) => self.finish_active_at(
+                    index,
+                    Err(ToolExecutionError::new(
                         "Tool worker stopped without a result",
-                        &mut events,
-                    );
-                }
+                    )),
+                ),
             }
         }
+        if self.cancellation.is_cancelled() {
+            // Abort 不启动尚未执行的调用，避免副作用继续发生。
+            self.pending.clear();
+        } else if self.serial_batch && self.active.is_empty() {
+            self.start_next(&mut events);
+        }
+        self.emit_stable_results(&mut events);
         events
     }
 
     pub fn has_active_batch(&self) -> bool {
-        self.active.is_some() || !self.pending.is_empty()
+        !self.active.is_empty() || !self.pending.is_empty()
     }
 
     fn start_next(&mut self, events: &mut Vec<ToolRuntimeEvent>) {
@@ -373,7 +421,7 @@ impl ToolRuntime {
             };
             let _ = sender.send(WorkerEvent::Finished(output));
         });
-        self.active = Some(ActiveExecution {
+        self.active.push(ActiveExecution {
             call,
             timestamp: self.batch_timestamp,
             deadline,
@@ -382,12 +430,8 @@ impl ToolRuntime {
         });
     }
 
-    fn finish_active(
-        &mut self,
-        output: Result<ToolOutput, ToolExecutionError>,
-        events: &mut Vec<ToolRuntimeEvent>,
-    ) {
-        let execution = self.active.take().expect("active execution must exist");
+    fn finish_active_at(&mut self, index: usize, output: Result<ToolOutput, ToolExecutionError>) {
+        let execution = self.active.swap_remove(index);
         let result = match output {
             Ok(output) => ToolResult {
                 tool_call_id: execution.call.tool_call_id.clone(),
@@ -401,20 +445,17 @@ impl ToolRuntime {
             Err(error) => error_result(&execution.call, execution.timestamp, error.message()),
         };
         self.retired_workers.push(execution.worker);
-        events.push(ToolRuntimeEvent::Finished { result });
+        self.completed.insert(result.tool_call_id.clone(), result);
     }
 
-    fn finish_active_with_error(
-        &mut self,
-        timestamp: u64,
-        message: &str,
-        events: &mut Vec<ToolRuntimeEvent>,
-    ) {
-        let execution = self.active.take().expect("active execution must exist");
-        self.retired_workers.push(execution.worker);
-        events.push(ToolRuntimeEvent::Finished {
-            result: error_result(&execution.call, timestamp, message),
-        });
+    fn emit_stable_results(&mut self, events: &mut Vec<ToolRuntimeEvent>) {
+        while let Some(tool_call_id) = self.result_order.front().cloned() {
+            let Some(result) = self.completed.remove(&tool_call_id) else {
+                break;
+            };
+            self.result_order.pop_front();
+            events.push(ToolRuntimeEvent::Finished { result });
+        }
     }
 
     fn reap_workers(&mut self) {
@@ -431,12 +472,12 @@ impl ToolRuntime {
 }
 
 impl ToolRuntimePort for ToolRuntime {
-    fn start_serial(
+    fn start(
         &mut self,
         calls: Vec<ToolCall>,
         timestamp: u64,
     ) -> Result<Vec<ToolRuntimePortEvent>, String> {
-        ToolRuntime::start_serial(self, calls, timestamp)
+        ToolRuntime::start(self, calls, timestamp)
             .map(|events| events.into_iter().map(port_event).collect())
             .map_err(|error| format!("Tool Runtime 无法启动批次：{error:?}"))
     }
@@ -552,14 +593,14 @@ fn error_result(call: &ToolCall, timestamp: u64, message: impl Into<String>) -> 
 mod tests {
     use std::{
         sync::{
-            Arc,
             atomic::{AtomicBool, Ordering},
+            Arc,
         },
         thread,
         time::{Duration, Instant},
     };
 
-    use protocol::{TextOrImageContent, ToolCall, ToolDefinition};
+    use protocol::{TextOrImageContent, ToolCall, ToolDefinition, ToolExecutionMode};
     use serde_json::json;
 
     use super::{
@@ -580,6 +621,7 @@ mod tests {
                     "required": ["value"],
                     "additionalProperties": false
                 }),
+                execution_mode: protocol::ToolExecutionMode::Parallel,
             }
         }
 
@@ -597,6 +639,74 @@ mod tests {
         release: Arc<AtomicBool>,
     }
 
+    /// 第二个调用先完成、首个调用由测试显式放行的工具。
+    ///
+    /// 它将并发时的物理完成顺序固定为 call-2 → call-1，从而验证 Runtime 不会把 worker
+    /// 调度顺序泄漏到 Provider continuation transcript。
+    struct ReverseCompletionTool {
+        release_first: Arc<AtomicBool>,
+        second_started: Arc<AtomicBool>,
+    }
+
+    impl Tool for ReverseCompletionTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "reverse".to_owned(),
+                description: "按测试指定的逆序完成工具".to_owned(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": { "order": { "type": "number" } },
+                    "required": ["order"],
+                    "additionalProperties": false
+                }),
+                execution_mode: ToolExecutionMode::Parallel,
+            }
+        }
+
+        fn execute(
+            &self,
+            call: &ToolCall,
+            _context: &ToolExecutionContext,
+        ) -> Result<ToolOutput, ToolExecutionError> {
+            let order = call.input["order"]
+                .as_u64()
+                .ok_or_else(|| ToolExecutionError::new("missing order"))?;
+            if order == 1 {
+                while !self.release_first.load(Ordering::Acquire) {
+                    thread::yield_now();
+                }
+            } else {
+                self.second_started.store(true, Ordering::Release);
+            }
+            Ok(ToolOutput::text(format!("finished-{order}")))
+        }
+    }
+
+    struct SequentialEchoTool;
+
+    impl Tool for SequentialEchoTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "sequential-echo".to_owned(),
+                description: "强制整批串行的测试工具".to_owned(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+                execution_mode: ToolExecutionMode::Sequential,
+            }
+        }
+
+        fn execute(
+            &self,
+            _call: &ToolCall,
+            _context: &ToolExecutionContext,
+        ) -> Result<ToolOutput, ToolExecutionError> {
+            Ok(ToolOutput::text("sequential"))
+        }
+    }
+
     impl Tool for ControlledTool {
         fn definition(&self) -> ToolDefinition {
             ToolDefinition {
@@ -607,6 +717,7 @@ mod tests {
                     "properties": {},
                     "additionalProperties": false
                 }),
+                execution_mode: protocol::ToolExecutionMode::Parallel,
             }
         }
 
@@ -734,6 +845,141 @@ mod tests {
             vec![TextOrImageContent::Text {
                 text: "echo: {\"value\":\"next run\"}".into()
             }]
+        );
+    }
+
+    #[test]
+    fn parallel_batch_starts_all_calls_and_emits_reverse_completions_in_source_order() {
+        let release_first = Arc::new(AtomicBool::new(false));
+        let second_started = Arc::new(AtomicBool::new(false));
+        let mut runtime = ToolRuntime::new().with_timeout(None);
+        runtime
+            .register(ReverseCompletionTool {
+                release_first: Arc::clone(&release_first),
+                second_started: Arc::clone(&second_started),
+            })
+            .unwrap();
+
+        let mut events = runtime
+            .start(
+                [
+                    ToolCall {
+                        tool_call_id: "call-1".into(),
+                        tool_name: "reverse".into(),
+                        input: json!({ "order": 1 }),
+                    },
+                    ToolCall {
+                        tool_call_id: "call-2".into(),
+                        tool_name: "reverse".into(),
+                        input: json!({ "order": 2 }),
+                    },
+                ],
+                10,
+            )
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    ToolRuntimeEvent::Started { tool_call } =>
+                        Some(tool_call.tool_call_id.as_str()),
+                    ToolRuntimeEvent::Updated { .. } | ToolRuntimeEvent::Finished { .. } => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["call-1", "call-2"]
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !second_started.load(Ordering::Acquire) {
+            events.extend(runtime.poll(11));
+            assert!(
+                Instant::now() < deadline,
+                "second parallel worker should start"
+            );
+            thread::yield_now();
+        }
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while runtime.completed.get("call-2").is_none() {
+            events.extend(runtime.poll(12));
+            assert!(
+                Instant::now() < deadline,
+                "second worker should finish first"
+            );
+            thread::yield_now();
+        }
+        assert!(events.iter().all(|event| !matches!(
+            event,
+            ToolRuntimeEvent::Finished { result } if result.tool_call_id == "call-2"
+        )));
+
+        release_first.store(true, Ordering::Release);
+        while runtime.has_active_batch() {
+            events.extend(runtime.poll(13));
+            thread::yield_now();
+        }
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    ToolRuntimeEvent::Finished { result } => Some(result.tool_call_id.as_str()),
+                    ToolRuntimeEvent::Started { .. } | ToolRuntimeEvent::Updated { .. } => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["call-1", "call-2"]
+        );
+    }
+
+    #[test]
+    fn sequential_tool_forces_the_whole_batch_to_start_one_call_at_a_time() {
+        let release = Arc::new(AtomicBool::new(false));
+        let mut runtime = ToolRuntime::new().with_timeout(None);
+        runtime
+            .register(ControlledTool {
+                release: Arc::clone(&release),
+            })
+            .unwrap();
+        runtime.register(SequentialEchoTool).unwrap();
+
+        let events = runtime
+            .start(
+                [
+                    ToolCall {
+                        tool_call_id: "slow-first".into(),
+                        tool_name: "controlled".into(),
+                        input: json!({}),
+                    },
+                    ToolCall {
+                        tool_call_id: "sequential-second".into(),
+                        tool_name: "sequential-echo".into(),
+                        input: json!({}),
+                    },
+                ],
+                20,
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ToolRuntimeEvent::Started { tool_call }] if tool_call.tool_call_id == "slow-first"
+        ));
+
+        release.store(true, Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut observed = events;
+        while runtime.has_active_batch() {
+            observed.extend(runtime.poll(21));
+            assert!(Instant::now() < deadline, "serial batch should finish");
+            thread::yield_now();
+        }
+        assert_eq!(
+            observed
+                .iter()
+                .filter_map(|event| match event {
+                    ToolRuntimeEvent::Started { tool_call } =>
+                        Some(tool_call.tool_call_id.as_str()),
+                    ToolRuntimeEvent::Updated { .. } | ToolRuntimeEvent::Finished { .. } => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["slow-first", "sequential-second"]
         );
     }
 

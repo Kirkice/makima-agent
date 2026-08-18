@@ -4,7 +4,7 @@ use std::{fs, path::PathBuf};
 
 use protocol::{TextOrImageContent, ToolCall, ToolDefinition};
 use sandbox::{FileAccess, PolicySandbox, Sandbox, SandboxDecision, SandboxPolicy};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::{Tool, ToolExecutionContext, ToolExecutionError, ToolOutput};
 
@@ -78,6 +78,7 @@ impl Tool for ReadTool {
                 "required": ["path"],
                 "additionalProperties": false
             }),
+            execution_mode: protocol::ToolExecutionMode::Parallel,
         }
     }
 
@@ -412,16 +413,12 @@ mod tests {
         let tool = ReadTool::new(&root).unwrap();
         let limited = execute_text(&tool, json!({"path":"large.txt","offset":41,"limit":20}));
         assert!(text_content(&limited).starts_with("line 41\nline 42"));
-        assert!(
-            text_content(&limited)
-                .ends_with("[2440 more lines in file. Use offset=61 to continue.]")
-        );
+        assert!(text_content(&limited)
+            .ends_with("[2440 more lines in file. Use offset=61 to continue.]"));
 
         let truncated = execute_text(&tool, json!({"path":"large.txt"}));
-        assert!(
-            text_content(&truncated)
-                .ends_with("[Showing lines 1-2000 of 2500. Use offset=2001 to continue.]")
-        );
+        assert!(text_content(&truncated)
+            .ends_with("[Showing lines 1-2000 of 2500. Use offset=2001 to continue.]"));
         let details = &truncated.details.as_ref().unwrap()["truncation"];
         assert_eq!(details["truncatedBy"], "lines");
         assert_eq!(details["outputLines"], 2000);

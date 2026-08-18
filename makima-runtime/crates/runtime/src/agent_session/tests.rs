@@ -19,14 +19,15 @@ use protocol::{
 use session::JsonlSessionStore;
 
 use super::{
-    AgentLoop, AgentLoopError, AgentLoopEvent, AgentSession, AgentSessionConfig,
-    JsonlSessionPersistence, PersistenceEvent, SessionPersistence, SessionPersistenceError,
-    session_events_from_rust_agent_loop,
+    AgentLoop, AgentLoopError, AgentLoopEvent, AgentSession, AgentSessionConfig, CompactionRecord,
+    JsonlSessionPersistence, PersistenceEvent, RetryPolicy, SessionContextReplacement,
+    SessionPersistence, SessionPersistenceError, session_events_from_rust_agent_loop,
 };
 
 #[derive(Default)]
 struct FakeAgentLoop {
     calls: VecDeque<String>,
+    retry_context_discarded: bool,
 }
 
 impl AgentLoop for FakeAgentLoop {
@@ -41,8 +42,38 @@ impl AgentLoop for FakeAgentLoop {
         Ok(())
     }
 
+    fn follow_up(&mut self, message: protocol::UserTranscriptItem) -> Result<(), AgentLoopError> {
+        self.calls
+            .push_back(format!("follow-up:{}", text_of(&message)));
+        Ok(())
+    }
+
     fn abort(&mut self) -> Result<(), AgentLoopError> {
         self.calls.push_back("abort".to_owned());
+        Ok(())
+    }
+
+    fn discard_last_error_assistant_for_retry(&mut self) -> Result<(), AgentLoopError> {
+        self.retry_context_discarded = true;
+        self.calls.push_back("discard-retry-error".to_owned());
+        Ok(())
+    }
+
+    fn restart_after_retry(&mut self) -> Result<(), AgentLoopError> {
+        if !self.retry_context_discarded {
+            return Err(AgentLoopError::new("retry 前必须先移除失败 assistant。"));
+        }
+        self.retry_context_discarded = false;
+        self.calls.push_back("restart-retry".to_owned());
+        Ok(())
+    }
+
+    fn replace_context(
+        &mut self,
+        messages: Vec<protocol::TranscriptItem>,
+    ) -> Result<(), AgentLoopError> {
+        self.calls
+            .push_back(format!("replace-context:{}", messages.len()));
         Ok(())
     }
 }
@@ -90,10 +121,155 @@ fn test_session() -> AgentSession<FakeAgentLoop, FakePersistence> {
             },
             thinking_level: ThinkingLevel::Medium,
             created_at: 100,
+            retry_policy: RetryPolicy::default(),
         },
         FakeAgentLoop::default(),
         FakePersistence::default(),
     )
+}
+
+fn test_session_with_retry_policy(
+    retry_policy: RetryPolicy,
+) -> AgentSession<FakeAgentLoop, FakePersistence> {
+    let mut session = test_session();
+    session.retry_policy = retry_policy;
+    session
+}
+
+#[test]
+fn retry_schedules_exponential_backoff_and_rejects_direct_prompt_until_resumed() {
+    let mut session = test_session_with_retry_policy(RetryPolicy {
+        enabled: true,
+        max_retries: 2,
+        base_delay_ms: 50,
+    });
+    session
+        .execute_at(
+            Command::Prompt {
+                session_id: "session-1".to_owned(),
+                text: "run".to_owned(),
+            },
+            100,
+        )
+        .expect("prompt should start a turn");
+
+    let first = session
+        .schedule_retry_at("Provider overloaded", 110)
+        .expect("retry policy should be evaluated")
+        .expect("transient provider error should schedule retry");
+    assert_eq!(first.attempt, 1);
+    assert_eq!(first.retry_at, 160);
+    assert_eq!(session.snapshot().phase, SessionPhase::Retry);
+    assert_eq!(
+        session.agent_loop().calls.back(),
+        Some(&"discard-retry-error".to_owned())
+    );
+    assert_eq!(
+        session
+            .execute_at(
+                Command::Prompt {
+                    session_id: "session-1".to_owned(),
+                    text: "must wait".to_owned(),
+                },
+                111,
+            )
+            .expect_err("retry backoff remains an active turn")
+            .code,
+        ProtocolErrorCode::Busy
+    );
+    assert!(
+        !session
+            .resume_retry_at(159)
+            .expect("early retry check should work")
+    );
+    assert!(
+        session
+            .resume_retry_at(160)
+            .expect("deadline should restart retry")
+    );
+    assert_eq!(session.snapshot().phase, SessionPhase::Turn);
+    assert_eq!(
+        session.agent_loop().calls.back(),
+        Some(&"restart-retry".to_owned())
+    );
+
+    let second = session
+        .schedule_retry_at("429 rate limit", 200)
+        .expect("second retry policy should be evaluated")
+        .expect("second transient error should schedule retry");
+    assert_eq!(second.attempt, 2);
+    assert_eq!(second.retry_at, 300);
+    assert!(
+        session
+            .schedule_retry_at("429 rate limit", 301)
+            .expect("exhaustion check should work")
+            .is_none()
+    );
+}
+
+#[test]
+fn retry_rejects_disabled_quota_and_context_errors_and_abort_cancels_backoff() {
+    let disabled = RetryPolicy {
+        enabled: false,
+        max_retries: 3,
+        base_delay_ms: 10,
+    };
+    for error in [
+        "Provider overloaded",
+        "insufficient_quota",
+        "maximum context length exceeded",
+    ] {
+        let policy = if error == "Provider overloaded" {
+            disabled
+        } else {
+            RetryPolicy::default()
+        };
+        let mut session = test_session_with_retry_policy(policy);
+        session
+            .execute_at(
+                Command::Prompt {
+                    session_id: "session-1".to_owned(),
+                    text: "run".to_owned(),
+                },
+                100,
+            )
+            .expect("prompt should start a turn");
+        assert!(
+            session
+                .schedule_retry_at(error, 101)
+                .expect("retry policy should be evaluated")
+                .is_none()
+        );
+    }
+
+    let mut session = test_session_with_retry_policy(RetryPolicy {
+        enabled: true,
+        max_retries: 1,
+        base_delay_ms: 10,
+    });
+    session
+        .execute_at(
+            Command::Prompt {
+                session_id: "session-1".to_owned(),
+                text: "run".to_owned(),
+            },
+            100,
+        )
+        .expect("prompt should start a turn");
+    session
+        .schedule_retry_at("network timeout", 101)
+        .expect("retry should schedule");
+    session
+        .execute_at(
+            Command::Abort {
+                session_id: "session-1".to_owned(),
+            },
+            102,
+        )
+        .expect("abort should cancel retry backoff");
+    assert_eq!(session.snapshot().phase, SessionPhase::Idle);
+    assert_eq!(session.retry_attempt(), 0);
+    assert_eq!(session.retry_schedule(), None);
 }
 
 #[test]
@@ -142,6 +318,87 @@ fn prompt_rejects_a_second_direct_prompt_and_steer_updates_the_queue() {
         .handle_agent_loop_event_at(AgentLoopEvent::SteerConsumed, 104)
         .expect("consumed steer should update the local projection");
     assert_eq!(session.snapshot().queued_steer_count, 0);
+}
+
+#[test]
+fn follow_up_requires_an_active_turn_and_tracks_fifo_consumption() {
+    let mut session = test_session();
+
+    let idle_error = session
+        .execute_at(
+            Command::FollowUp {
+                session_id: "session-1".to_owned(),
+                text: "idle follow-up".to_owned(),
+            },
+            101,
+        )
+        .expect_err("idle session must reject follow-up");
+    assert_eq!(idle_error.code, ProtocolErrorCode::InvalidRequest);
+
+    session
+        .execute_at(
+            Command::Prompt {
+                session_id: "session-1".to_owned(),
+                text: "first".to_owned(),
+            },
+            102,
+        )
+        .expect("prompt should start a turn");
+    let first_snapshot = session
+        .execute_at(
+            Command::FollowUp {
+                session_id: "session-1".to_owned(),
+                text: "follow-up one".to_owned(),
+            },
+            103,
+        )
+        .expect("first follow-up should be accepted");
+    let second_snapshot = session
+        .execute_at(
+            Command::FollowUp {
+                session_id: "session-1".to_owned(),
+                text: "follow-up two".to_owned(),
+            },
+            104,
+        )
+        .expect("second follow-up should be accepted");
+
+    assert_eq!(first_snapshot.queued_follow_up_count, 1);
+    assert_eq!(second_snapshot.queued_follow_up_count, 2);
+    assert_eq!(
+        second_snapshot
+            .queued_follow_up
+            .iter()
+            .map(text_of)
+            .collect::<Vec<_>>(),
+        vec!["follow-up one", "follow-up two"]
+    );
+    assert_eq!(
+        session.agent_loop().calls,
+        VecDeque::from([
+            "prompt:first".to_owned(),
+            "follow-up:follow-up one".to_owned(),
+            "follow-up:follow-up two".to_owned(),
+        ])
+    );
+
+    session
+        .handle_agent_loop_event_at(AgentLoopEvent::FollowUpConsumed, 105)
+        .expect("first consumed follow-up should update the local projection");
+    assert_eq!(
+        session
+            .snapshot()
+            .queued_follow_up
+            .iter()
+            .map(text_of)
+            .collect::<Vec<_>>(),
+        vec!["follow-up two"]
+    );
+
+    session
+        .handle_agent_loop_event_at(AgentLoopEvent::FollowUpConsumed, 106)
+        .expect("second consumed follow-up should update the local projection");
+    assert_eq!(session.snapshot().queued_follow_up_count, 0);
 }
 
 #[test]
@@ -249,6 +506,96 @@ fn configuration_changes_persist_before_the_snapshot_is_published() {
 }
 
 #[test]
+fn compaction_persists_the_boundary_before_replacing_idle_working_context() {
+    let mut session = test_session();
+    let record = CompactionRecord {
+        summary: "earlier work".to_owned(),
+        first_kept_entry_id: "message-2".to_owned(),
+        tokens_before: 1_024,
+        from_extension: false,
+    };
+    let replacement = SessionContextReplacement::new(vec![TranscriptItem::Assistant(
+        AssistantTranscriptItem::Complete {
+            id: "summary-context".to_owned(),
+            role: AssistantRole::Assistant,
+            content: vec![AssistantContent::Text {
+                text: "Summary: earlier work".to_owned(),
+            }],
+            model: ModelRef {
+                provider: "test".to_owned(),
+                id: "model-a".to_owned(),
+            },
+            response_model: None,
+            usage: None,
+            timestamp: 100,
+            stop_reason: AssistantStopReason::Stop,
+        },
+    )]);
+
+    session
+        .apply_compaction(record.clone(), replacement)
+        .expect("idle session should accept a complete compaction result");
+
+    assert_eq!(
+        session.persistence().events,
+        vec![PersistenceEvent::Compaction(record)]
+    );
+    assert_eq!(
+        session.agent_loop().calls.back(),
+        Some(&"replace-context:1".to_owned())
+    );
+}
+
+#[test]
+fn compaction_rejects_running_or_empty_replacement_without_side_effects() {
+    let mut session = test_session();
+    let record = CompactionRecord {
+        summary: "summary".to_owned(),
+        first_kept_entry_id: "message-1".to_owned(),
+        tokens_before: 1,
+        from_extension: true,
+    };
+
+    let empty_error = session
+        .apply_compaction(record.clone(), SessionContextReplacement::new(Vec::new()))
+        .expect_err("an empty provider context is invalid");
+    assert_eq!(empty_error.code, ProtocolErrorCode::InvalidRequest);
+    assert!(session.persistence().events.is_empty());
+    assert!(session.agent_loop().calls.is_empty());
+
+    session
+        .execute_at(
+            Command::Prompt {
+                session_id: "session-1".to_owned(),
+                text: "run".to_owned(),
+            },
+            101,
+        )
+        .expect("prompt should start a turn");
+    let running_error = session
+        .apply_compaction(
+            record,
+            SessionContextReplacement::new(vec![TranscriptItem::User(
+                protocol::UserTranscriptItem {
+                    id: "user-1".to_owned(),
+                    role: protocol::UserRole::User,
+                    content: vec![protocol::TextOrImageContent::Text {
+                        text: "retained".to_owned(),
+                    }],
+                    timestamp: 101,
+                },
+            )]),
+        )
+        .expect_err("a running turn must retain its current context");
+    assert_eq!(running_error.code, ProtocolErrorCode::Busy);
+    assert!(session.persistence().events.is_empty());
+    assert_eq!(
+        session.agent_loop().calls,
+        VecDeque::from(["prompt:run".to_owned()])
+    );
+}
+
+#[test]
 fn jsonl_persistence_writes_reopenable_v4_entries_for_session_events() {
     let path = temporary_store_path("persistence");
     let _ = fs::remove_file(&path);
@@ -281,9 +628,17 @@ fn jsonl_persistence_writes_reopenable_v4_entries_for_session_events() {
     persistence
         .persist(PersistenceEvent::TranscriptItemFinished(assistant.clone()))
         .expect("finished transcript item should be persisted");
+    persistence
+        .persist(PersistenceEvent::Compaction(CompactionRecord {
+            summary: "earlier context".to_owned(),
+            first_kept_entry_id: "assistant-1".to_owned(),
+            tokens_before: 2_048,
+            from_extension: true,
+        }))
+        .expect("compaction boundary should be persisted");
 
     let store = persistence.into_store();
-    assert_eq!(store.mutations().len(), 3);
+    assert_eq!(store.mutations().len(), 4);
     assert_eq!(store.mutations()[0].payload["type"], "model_change");
     assert_eq!(store.mutations()[0].payload["provider"], model.provider);
     assert_eq!(store.mutations()[0].payload["modelId"], model.id);
@@ -294,10 +649,18 @@ fn jsonl_persistence_writes_reopenable_v4_entries_for_session_events() {
     );
     assert_eq!(store.mutations()[2].payload["type"], "message");
     assert_eq!(store.mutations()[2].payload["message"]["id"], "assistant-1");
+    assert_eq!(store.mutations()[3].payload["type"], "compaction");
+    assert_eq!(store.mutations()[3].payload["summary"], "earlier context");
+    assert_eq!(
+        store.mutations()[3].payload["firstKeptEntryId"],
+        "assistant-1"
+    );
+    assert_eq!(store.mutations()[3].payload["tokensBefore"], 2_048);
+    assert_eq!(store.mutations()[3].payload["fromExtension"], true);
     drop(store);
 
     let recovered = JsonlSessionStore::open(&path).expect("written v4 entries should reopen");
-    assert_eq!(recovered.mutations().len(), 3);
+    assert_eq!(recovered.mutations().len(), 4);
     assert_eq!(
         recovered
             .state()
@@ -324,6 +687,7 @@ fn rust_agent_loop_terminal_events_drive_session_persistence_and_settlement() {
         },
         thinking_level: ThinkingLevel::Medium,
         created_at: 100,
+        retry_policy: RetryPolicy::default(),
     };
     let mut session = AgentSession::new(
         config.clone(),

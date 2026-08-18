@@ -145,6 +145,7 @@ export const defaultProviderContextConverter: ProviderContextConverter = {
 						name: tool.name,
 						description: tool.description,
 						parameters: toolParameters(tool.inputSchema),
+						...(tool.executionMode === undefined ? {} : { executionMode: tool.executionMode }),
 					}) satisfies Tool,
 			),
 		};

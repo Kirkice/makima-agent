@@ -19,6 +19,7 @@ const request = {
 			name: "echo",
 			description: "回显文本",
 			inputSchema: { type: "object", properties: { text: { type: "string" } } },
+			executionMode: "sequential" as const,
 		},
 	],
 };
@@ -114,6 +115,7 @@ describe("ProviderHost", () => {
 			expect.objectContaining({
 				systemPrompt: request.systemPrompt,
 				messages: [expect.objectContaining({ role: "user" })],
+				tools: [expect.objectContaining({ name: "echo", executionMode: "sequential" })],
 			}),
 			expect.objectContaining({ signal: expect.any(AbortSignal) }),
 		);

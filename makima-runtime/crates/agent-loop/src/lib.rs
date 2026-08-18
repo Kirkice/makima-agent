@@ -98,10 +98,10 @@ pub enum ToolRuntimePortEvent {
 
 /// 非阻塞 Tool Runtime 的窄端口。
 ///
-/// `start_serial` 只提交任务，不能等待工具完成；调用方在自己的事件循环中调用 `poll`。
-/// 这使 Provider、RPC 与 Session 线程不会被文件、进程或扩展工具阻塞。
+/// `start` 只提交任务，不能等待工具完成；调用方在自己的事件循环中调用 `poll`。Runtime 根据
+/// 已注册工具的执行约束选择并行或串行；只要一个调用要求串行，整批都会保守地按源顺序执行。
 pub trait ToolRuntimePort {
-    fn start_serial(
+    fn start(
         &mut self,
         calls: Vec<ToolCall>,
         timestamp: u64,
@@ -228,6 +228,15 @@ pub enum AgentLoopEvent {
     ToolResultsReady {
         results: Vec<ToolResult>,
     },
+    /// steering 或 follow-up 已按 FIFO 写入 transcript，下一次 Provider 请求现在可以开始。
+    ///
+    /// 这个事件不携带 messages，避免运行时复制或自行拼装上下文；调用方必须从
+    /// [`AgentLoopEngine::messages`] 取得已提交的权威 transcript 快照。
+    ProviderContinuationRequested,
+    /// AgentSession 可据此移除本地 UI 队列中最早的一条 steering 消息。
+    SteerConsumed,
+    /// AgentSession 可据此移除本地 UI 队列中最早的一条 follow-up 消息。
+    FollowUpConsumed,
     TurnEnded {
         message: TranscriptItem,
     },
@@ -262,10 +271,18 @@ pub struct AgentLoopEngine {
     active: bool,
     abort_requested: bool,
     active_assistant: Option<ActiveAssistant>,
-    active_tool_calls: VecDeque<ToolCall>,
-    active_tool_call: Option<ToolCall>,
-    tool_results: Vec<ToolResult>,
+    /// 尚未收到 start 的调用，始终按 Provider 的 source order 保存。
+    pending_tool_starts: VecDeque<ToolCall>,
+    /// 已启动但尚未产生终态的调用；并行批次可以同时包含多个条目。
+    active_tool_calls: BTreeMap<String, ToolCall>,
+    /// 所有最终工具结果必须按这个 source order 写入 transcript。
+    tool_call_order: Vec<String>,
+    /// 已完成但尚未能稳定提交的结果，按调用 ID 索引而非完成时序存放。
+    tool_results: BTreeMap<String, ToolResult>,
+    /// 已按 source order 提交到 transcript，等待批次结束后一起通知 Provider 的结果。
+    finalized_tool_results: Vec<ToolResult>,
     queued_steer: Vec<UserTranscriptItem>,
+    queued_follow_up: Vec<UserTranscriptItem>,
     messages: Vec<TranscriptItem>,
     events: Vec<AgentLoopEvent>,
 }
@@ -278,10 +295,13 @@ impl AgentLoopEngine {
             active: false,
             abort_requested: false,
             active_assistant: None,
-            active_tool_calls: VecDeque::new(),
-            active_tool_call: None,
-            tool_results: Vec::new(),
+            pending_tool_starts: VecDeque::new(),
+            active_tool_calls: BTreeMap::new(),
+            tool_call_order: Vec::new(),
+            tool_results: BTreeMap::new(),
+            finalized_tool_results: Vec::new(),
             queued_steer: Vec::new(),
+            queued_follow_up: Vec::new(),
             messages: Vec::new(),
             events: Vec::new(),
         }
@@ -312,9 +332,82 @@ impl AgentLoopEngine {
             .map(|assistant| assistant.id.as_str())
     }
 
+    /// 在已经结束的失败回合上恢复 Provider 循环。
+    ///
+    /// retry 不创建新的用户 turn，也不重复提交 prompt；它只让同一份错误前上下文再次
+    /// 接受 Provider 流。因此不发出 `AgentStarted`/`TurnStarted`，避免 UI 和持久化把
+    /// 同一次用户请求错误显示为两个独立回合。
+    pub fn restart_after_retry(&mut self) -> Result<(), AgentLoopError> {
+        if self.active {
+            return Err(AgentLoopError::new(
+                "运行中的 Agent Loop 不能重复启动 retry。",
+            ));
+        }
+        if self.abort_requested {
+            return Err(AgentLoopError::new("已取消的 Agent Loop 不能启动 retry。"));
+        }
+        self.active = true;
+        Ok(())
+    }
+
+    /// 移除刚刚结束的失败 assistant，以便重试沿用失败前的上下文。
+    ///
+    /// Session 仍会持久化该错误，供用户追溯失败历史；这里仅修正下一次 Provider request
+    /// 的工作上下文，严格对应 TypeScript 在 retry 前从 `agent.state.messages` 弹出 error。
+    pub fn discard_last_error_assistant_for_retry(&mut self) -> Result<(), AgentLoopError> {
+        match self.messages.last() {
+            Some(TranscriptItem::Assistant(AssistantTranscriptItem::Error { .. })) => {
+                self.messages.pop();
+                Ok(())
+            }
+            _ => Err(AgentLoopError::new(
+                "自动重试前未找到可从 Provider 上下文移除的失败 assistant。",
+            )),
+        }
+    }
+
+    /// 用 Session Store 重建的稳定上下文替换下一次 Provider 请求的工作消息。
+    ///
+    /// compaction 与树导航都保留完整持久化历史，只改变 Provider 可见的临时消息窗口。
+    /// 只能在空闲边界替换：流式 assistant、未完成工具或排队输入仍属于当前回合，若中途
+    /// 覆盖会破坏 terminal event 与后续 continuation 的顺序。
+    pub fn replace_context(&mut self, messages: Vec<TranscriptItem>) -> Result<(), AgentLoopError> {
+        if self.active {
+            return Err(AgentLoopError::new(
+                "运行中的 Agent Loop 不能替换工作上下文。",
+            ));
+        }
+        if messages.is_empty() {
+            return Err(AgentLoopError::new("工作上下文不能为空。"));
+        }
+        if self.active_assistant.is_some()
+            || !self.pending_tool_starts.is_empty()
+            || !self.active_tool_calls.is_empty()
+            || !self.tool_results.is_empty()
+            || !self.finalized_tool_results.is_empty()
+            || !self.queued_steer.is_empty()
+            || !self.queued_follow_up.is_empty()
+        {
+            return Err(AgentLoopError::new(
+                "存在未完成的回合状态，不能替换工作上下文。",
+            ));
+        }
+
+        self.messages = messages;
+        Ok(())
+    }
+
     /// 返回尚未注入下一次 Provider 请求的 steering 消息。
     pub fn queued_steer(&self) -> &[UserTranscriptItem] {
         &self.queued_steer
+    }
+
+    /// 返回等待当前 Agent 完整停止后再投递的 follow-up 消息。
+    ///
+    /// follow-up 与 steering 分开保存：前者绝不能抢占工具链或当前回合后的 steering，
+    /// 这是 TypeScript `runLoop()` 外层循环的关键顺序约束。
+    pub fn queued_follow_up(&self) -> &[UserTranscriptItem] {
+        &self.queued_follow_up
     }
 
     /// 启动新回合并产生用户消息的稳定事件。
@@ -336,8 +429,7 @@ impl AgentLoopEngine {
     /// 接收当前回合中的 steering 输入。
     ///
     /// TypeScript 实现在 assistant 当前回合结束、下一次 Provider 请求之前注入 steering。
-    /// 本基础切片保留队列和消费顺序；Provider/多回合调度就绪后再调用
-    /// [`AgentLoopEngine::drain_steer`] 取得下一请求的输入。
+    /// 因此此处仅入队，绝不改写正在流式生成的 assistant。
     pub fn steer(&mut self, message: UserTranscriptItem) -> Result<(), AgentLoopError> {
         if !self.active {
             return Err(AgentLoopError::new("Agent Loop 空闲时不能接收 steer。"));
@@ -346,9 +438,16 @@ impl AgentLoopEngine {
         Ok(())
     }
 
-    /// 取走 steering 队列，保持 FIFO 顺序。
-    pub fn drain_steer(&mut self) -> Vec<UserTranscriptItem> {
-        std::mem::take(&mut self.queued_steer)
+    /// 接收一个 follow-up 输入。
+    ///
+    /// follow-up 仅在当前回合没有待执行工具、也没有 steering 时才会被消费；它不打断
+    /// Provider stream，且不会改变当前工具批次的执行次序。
+    pub fn follow_up(&mut self, message: UserTranscriptItem) -> Result<(), AgentLoopError> {
+        if !self.active {
+            return Err(AgentLoopError::new("Agent Loop 空闲时不能接收 follow-up。"));
+        }
+        self.queued_follow_up.push(message);
+        Ok(())
     }
 
     /// 请求取消。取消本身不结束回合；只有 Provider 的下一事件或显式
@@ -368,7 +467,7 @@ impl AgentLoopEngine {
 
     /// 工具批次是否尚未全部产生稳定终态。
     pub fn is_waiting_for_tools(&self) -> bool {
-        self.active_tool_call.is_some() || !self.active_tool_calls.is_empty()
+        !self.pending_tool_starts.is_empty() || !self.active_tool_calls.is_empty()
     }
 
     /// 处理一个不包含工具执行的归一化 Provider 事件。
@@ -499,16 +598,19 @@ impl AgentLoopEngine {
         for event in events {
             match event {
                 ToolRuntimePortEvent::Started { tool_call } => {
-                    if self.active_tool_call.is_some() {
-                        return Err(AgentLoopError::new("前一个工具调用尚未结束。"));
-                    }
-                    let expected = self.active_tool_calls.pop_front().ok_or_else(|| {
+                    let expected = self.pending_tool_starts.pop_front().ok_or_else(|| {
                         AgentLoopError::new("Tool Runtime 启动了未提交的工具调用。")
                     })?;
                     if expected != tool_call {
                         return Err(AgentLoopError::new("Tool Runtime 改变了工具调用顺序。"));
                     }
-                    self.active_tool_call = Some(tool_call.clone());
+                    if self
+                        .active_tool_calls
+                        .insert(tool_call.tool_call_id.clone(), tool_call.clone())
+                        .is_some()
+                    {
+                        return Err(AgentLoopError::new("同一工具调用不能重复启动。"));
+                    }
                     self.events
                         .push(AgentLoopEvent::ToolExecutionStarted { tool_call });
                 }
@@ -517,13 +619,9 @@ impl AgentLoopEngine {
                     content,
                     details,
                 } => {
-                    let tool_call = self
-                        .active_tool_call
-                        .as_ref()
-                        .ok_or_else(|| AgentLoopError::new("工具开始前不能发送运行中更新。"))?;
-                    if tool_call.tool_call_id != tool_call_id {
-                        return Err(AgentLoopError::new("工具更新不属于当前调用。"));
-                    }
+                    let tool_call = self.active_tool_calls.get(&tool_call_id).ok_or_else(|| {
+                        AgentLoopError::new("工具开始前或结算后不能发送运行中更新。")
+                    })?;
                     self.events.push(AgentLoopEvent::ToolExecutionUpdated {
                         tool_call: tool_call.clone(),
                         content,
@@ -532,28 +630,49 @@ impl AgentLoopEngine {
                 }
                 ToolRuntimePortEvent::Finished { result } => {
                     let tool_call = self
-                        .active_tool_call
-                        .take()
+                        .active_tool_calls
+                        .remove(&result.tool_call_id)
                         .ok_or_else(|| AgentLoopError::new("工具开始前不能产生终态。"))?;
-                    if tool_call.tool_call_id != result.tool_call_id
-                        || tool_call.tool_name != result.tool_name
-                    {
+                    if tool_call.tool_name != result.tool_name {
                         return Err(AgentLoopError::new("工具终态不属于当前调用。"));
                     }
-                    self.events.push(AgentLoopEvent::ToolExecutionFinished {
-                        result: result.clone(),
-                    });
-                    self.commit_message(TranscriptItem::Tool(tool_result_item(&result)));
-                    self.tool_results.push(result);
-                    if self.active_tool_calls.is_empty() {
-                        self.events.push(AgentLoopEvent::ToolResultsReady {
-                            results: std::mem::take(&mut self.tool_results),
-                        });
+                    if self
+                        .tool_results
+                        .insert(result.tool_call_id.clone(), result)
+                        .is_some()
+                    {
+                        return Err(AgentLoopError::new("同一工具调用不能重复结算。"));
                     }
                 }
             }
         }
+        self.commit_stable_tool_results()?;
         Ok(self.drain_events())
+    }
+
+    /// 只提交已经形成连续前缀的工具结果。
+    ///
+    /// 并行 worker 可以按任意顺序结束，但 Provider continuation 的 transcript 必须与原始
+    /// tool-call 顺序一致。因而后完成的前序调用会暂时阻塞后序结果的可见提交；progress 更新
+    /// 仍在完成前实时转发，不受此规则影响。
+    fn commit_stable_tool_results(&mut self) -> Result<(), AgentLoopError> {
+        while let Some(tool_call_id) = self.tool_call_order.first().cloned() {
+            let Some(result) = self.tool_results.remove(&tool_call_id) else {
+                break;
+            };
+            self.tool_call_order.remove(0);
+            self.events.push(AgentLoopEvent::ToolExecutionFinished {
+                result: result.clone(),
+            });
+            self.commit_message(TranscriptItem::Tool(tool_result_item(&result)));
+            self.finalized_tool_results.push(result);
+        }
+        if self.tool_call_order.is_empty() && !self.is_waiting_for_tools() {
+            self.events.push(AgentLoopEvent::ToolResultsReady {
+                results: std::mem::take(&mut self.finalized_tool_results),
+            });
+        }
+        Ok(())
     }
 
     /// 当 Provider adapter 已确认取消生效、但没有可用的终态流事件时调用。
@@ -564,9 +683,11 @@ impl AgentLoopEngine {
 
         // 取消后的工具 worker 可能仍会自然返回，但其结果不再属于当前回合。清空 Agent Loop
         // 的批次状态，确保迟到终态不能污染 transcript，也不会阻塞同一 Session 的下一 prompt。
+        self.pending_tool_starts.clear();
         self.active_tool_calls.clear();
-        self.active_tool_call = None;
+        self.tool_call_order.clear();
         self.tool_results.clear();
+        self.finalized_tool_results.clear();
         let assistant = self.active_assistant.take();
         let item = TranscriptItem::Assistant(AssistantTranscriptItem::Aborted {
             id: assistant
@@ -776,7 +897,7 @@ impl AgentLoopEngine {
         self.messages.push(item);
 
         if calls.is_empty() && stop_reason != AssistantStopReason::ToolUse {
-            self.finish_active_turn();
+            self.schedule_post_assistant_input();
         }
         Ok(calls)
     }
@@ -790,10 +911,12 @@ impl AgentLoopEngine {
         if self.is_waiting_for_tools() {
             return Err(AgentLoopError::new("当前工具批次尚未结束。"));
         }
-        self.active_tool_calls = calls.iter().cloned().collect();
+        self.pending_tool_starts = calls.iter().cloned().collect();
+        self.tool_call_order = calls.iter().map(|call| call.tool_call_id.clone()).collect();
         self.tool_results.clear();
+        self.finalized_tool_results.clear();
         let events = tool_runtime
-            .start_serial(calls, timestamp)
+            .start(calls, timestamp)
             .map_err(AgentLoopError::new)?;
         // 内部处理函数会 drain 完整事件队列。这里必须把结果放回队列，保证同一次 Provider
         // done 已生成的 assistant message_end 先于工具生命周期事件交给上层，且不会被静默吞掉。
@@ -826,6 +949,43 @@ impl AgentLoopEngine {
         });
         self.finish_turn(item);
         Ok(())
+    }
+
+    /// 在 assistant 正常停止后选择下一次输入。
+    ///
+    /// 顺序严格对应 TypeScript Agent Loop：先清空 steering（内层循环），再消费
+    /// follow-up（外层循环）。每次只消费一项 follow-up，天然实现 one-at-a-time；调用方
+    /// 若需要 all 模式，可在入队时合并消息，而不污染核心状态机。
+    fn schedule_post_assistant_input(&mut self) {
+        if !self.queued_steer.is_empty() {
+            self.commit_queued_input(true);
+        } else if !self.queued_follow_up.is_empty() {
+            self.commit_queued_input(false);
+        } else {
+            self.finish_active_turn();
+        }
+    }
+
+    /// 把已选择的排队用户项提交为稳定 transcript，并通知运行时发起 continuation。
+    ///
+    /// steering 在同一轮中必须整批插入，保证多个连续输入在下一次模型调用中保持 FIFO；
+    /// follow-up 则一次一个，等待对应 assistant 回复结束后再检查下一条。
+    fn commit_queued_input(&mut self, steering: bool) {
+        let messages = if steering {
+            std::mem::take(&mut self.queued_steer)
+        } else {
+            vec![self.queued_follow_up.remove(0)]
+        };
+        for message in messages {
+            self.commit_message(TranscriptItem::User(message));
+            self.events.push(if steering {
+                AgentLoopEvent::SteerConsumed
+            } else {
+                AgentLoopEvent::FollowUpConsumed
+            });
+        }
+        self.events
+            .push(AgentLoopEvent::ProviderContinuationRequested);
     }
 
     /// TypeScript 在没有观察到 partial start 时，会在终态前补发 `message_start`。
@@ -1086,7 +1246,7 @@ mod tests {
     }
 
     impl ToolRuntimePort for FakeToolRuntime {
-        fn start_serial(
+        fn start(
             &mut self,
             _calls: Vec<ToolCall>,
             _timestamp: u64,
@@ -1319,6 +1479,118 @@ mod tests {
             fixture.expected.event_names
         );
         assert!(loop_engine.is_active());
+    }
+
+    #[test]
+    fn replays_shared_parallel_tool_fixture_in_source_order_after_reverse_completion() {
+        let fixture = load_fixture("parallel-tool-calls");
+        let calls = fixture
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                ProviderStreamEvent::ToolCallEnd { tool_call, .. } => Some(tool_call.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.tool_call_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["call-1", "call-2"],
+            "共享 fixture 必须固定 Provider 的工具调用 source order"
+        );
+        let result_for = |call: &ToolCall| ToolResult {
+            tool_call_id: call.tool_call_id.clone(),
+            tool_name: call.tool_name.clone(),
+            input: call.input.clone(),
+            content: vec![TextOrImageContent::Text {
+                text: format!("echo: {}", call.tool_call_id),
+            }],
+            details: None,
+            is_error: false,
+            timestamp: 21,
+        };
+        let mut tool_runtime = FakeToolRuntime {
+            events: vec![
+                ToolRuntimePortEvent::Started {
+                    tool_call: calls[0].clone(),
+                },
+                ToolRuntimePortEvent::Started {
+                    tool_call: calls[1].clone(),
+                },
+                // 模拟两个并行 worker 的实际完成顺序与 Provider source order 相反。
+                ToolRuntimePortEvent::Finished {
+                    result: result_for(&calls[1]),
+                },
+                ToolRuntimePortEvent::Finished {
+                    result: result_for(&calls[0]),
+                },
+            ],
+            active: false,
+        };
+        let mut loop_engine = engine();
+        loop_engine
+            .prompt(user_text_item(
+                "user-1".to_owned(),
+                "use echo".to_owned(),
+                1,
+            ))
+            .unwrap();
+        loop_engine.drain_events();
+        let mut events = Vec::new();
+        for provider_event in fixture.events {
+            events.extend(
+                loop_engine
+                    .handle_provider_event_with_tools(
+                        ProviderEvent::try_from(provider_event)
+                            .expect("共享 fixture 必须使用支持的 Provider 事件"),
+                        &mut tool_runtime,
+                    )
+                    .expect("共享并行工具 fixture 应被接受"),
+            );
+        }
+
+        assert_eq!(
+            events.iter().map(event_name).collect::<Vec<_>>(),
+            fixture.expected.event_names
+        );
+        assert_eq!(
+            loop_engine.messages()[2..]
+                .iter()
+                .filter_map(|item| match item {
+                    TranscriptItem::Tool(protocol::ToolTranscriptItem::Complete {
+                        tool_call_id,
+                        ..
+                    }) => {
+                        Some(tool_call_id.as_str())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["call-1", "call-2"]
+        );
+        let ready = events
+            .iter()
+            .find_map(|event| match event {
+                AgentLoopEvent::ToolResultsReady { results } => Some(results),
+                _ => None,
+            })
+            .expect("batch should produce one continuation trigger");
+        assert_eq!(
+            ready
+                .iter()
+                .map(|result| result.tool_call_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["call-1", "call-2"]
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentLoopEvent::ToolResultsReady { .. }))
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -1740,6 +2012,42 @@ mod tests {
     }
 
     #[test]
+    fn retry_discards_only_the_failed_working_message_then_restarts_same_turn() {
+        let mut loop_engine = engine();
+        loop_engine
+            .prompt(user_text_item("user-1".to_owned(), "hello".to_owned(), 1))
+            .expect("prompt should start");
+        loop_engine.drain_events();
+        loop_engine
+            .handle_provider_event(ProviderEvent::Started {
+                message_id: "assistant-1".to_owned(),
+                timestamp: 2,
+            })
+            .expect("provider start should be accepted");
+        loop_engine
+            .handle_provider_event(failed("assistant-1", vec![], 3, "network timeout"))
+            .expect("failure should finish the first attempt");
+
+        loop_engine
+            .discard_last_error_assistant_for_retry()
+            .expect("retry should remove the failed assistant from provider context");
+        assert_eq!(loop_engine.messages().len(), 1);
+        assert!(matches!(loop_engine.messages()[0], TranscriptItem::User(_)));
+        loop_engine
+            .restart_after_retry()
+            .expect("retry should reactivate the existing turn without another user prompt");
+        assert!(loop_engine.is_active());
+        assert!(loop_engine.active_assistant_id().is_none());
+        assert!(
+            loop_engine
+                .restart_after_retry()
+                .expect_err("an active retry turn cannot restart twice")
+                .message()
+                .contains("运行中的")
+        );
+    }
+
+    #[test]
     fn next_provider_event_settles_an_abort_without_processing_that_event() {
         let mut loop_engine = engine();
         loop_engine
@@ -1790,13 +2098,160 @@ mod tests {
 
         assert_eq!(
             loop_engine
-                .drain_steer()
+                .queued_steer()
                 .iter()
                 .map(|message| message.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["user-2", "user-3"]
         );
         assert!(loop_engine.is_active());
+    }
+
+    #[test]
+    fn steering_precedes_follow_up_and_follow_ups_are_consumed_one_at_a_time() {
+        let mut loop_engine = engine();
+        loop_engine
+            .prompt(user_text_item("user-1".to_owned(), "prompt".to_owned(), 1))
+            .unwrap();
+        loop_engine.drain_events();
+        loop_engine
+            .steer(user_text_item("user-2".to_owned(), "steer".to_owned(), 2))
+            .unwrap();
+        loop_engine
+            .follow_up(user_text_item(
+                "user-3".to_owned(),
+                "follow-up-1".to_owned(),
+                3,
+            ))
+            .unwrap();
+        loop_engine
+            .follow_up(user_text_item(
+                "user-4".to_owned(),
+                "follow-up-2".to_owned(),
+                4,
+            ))
+            .unwrap();
+
+        let first = loop_engine
+            .handle_provider_event(completed(
+                "assistant-1",
+                vec![AssistantContent::Text {
+                    text: "first response".to_owned(),
+                }],
+                5,
+                AssistantStopReason::Stop,
+            ))
+            .unwrap();
+        assert_eq!(
+            first.iter().map(event_name).collect::<Vec<_>>(),
+            vec![
+                "message_start",
+                "message_end",
+                "message_start",
+                "message_end",
+                "steer_consumed",
+                "provider_continuation_requested",
+            ]
+        );
+        assert_eq!(
+            loop_engine
+                .messages()
+                .iter()
+                .filter_map(|item| match item {
+                    TranscriptItem::User(message) => Some(message.id.as_str()),
+                    TranscriptItem::Assistant(_) | TranscriptItem::Tool(_) => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["user-1", "user-2"]
+        );
+
+        let second = loop_engine
+            .handle_provider_event(completed(
+                "assistant-2",
+                vec![AssistantContent::Text {
+                    text: "second response".to_owned(),
+                }],
+                6,
+                AssistantStopReason::Stop,
+            ))
+            .unwrap();
+        assert_eq!(
+            second.iter().map(event_name).collect::<Vec<_>>(),
+            vec![
+                "message_start",
+                "message_end",
+                "message_start",
+                "message_end",
+                "follow_up_consumed",
+                "provider_continuation_requested",
+            ]
+        );
+        assert_eq!(loop_engine.queued_follow_up().len(), 1);
+
+        let third = loop_engine
+            .handle_provider_event(completed(
+                "assistant-3",
+                vec![AssistantContent::Text {
+                    text: "third response".to_owned(),
+                }],
+                7,
+                AssistantStopReason::Stop,
+            ))
+            .unwrap();
+        assert_eq!(
+            third.iter().map(event_name).collect::<Vec<_>>(),
+            vec![
+                "message_start",
+                "message_end",
+                "message_start",
+                "message_end",
+                "follow_up_consumed",
+                "provider_continuation_requested",
+            ]
+        );
+        assert!(loop_engine.queued_follow_up().is_empty());
+
+        let final_events = loop_engine
+            .handle_provider_event(completed(
+                "assistant-4",
+                vec![AssistantContent::Text {
+                    text: "final response".to_owned(),
+                }],
+                8,
+                AssistantStopReason::Stop,
+            ))
+            .unwrap();
+        assert_eq!(
+            final_events.iter().map(event_name).collect::<Vec<_>>(),
+            vec!["message_start", "message_end", "turn_end", "agent_end"]
+        );
+        assert!(!loop_engine.is_active());
+    }
+
+    #[test]
+    fn replaces_only_idle_complete_working_context() {
+        let mut loop_engine = engine();
+        let replacement = vec![TranscriptItem::User(user_text_item(
+            "summary-user".to_owned(),
+            "compressed context".to_owned(),
+            10,
+        ))];
+
+        loop_engine
+            .replace_context(replacement.clone())
+            .expect("idle loop should accept rebuilt context");
+        assert_eq!(loop_engine.messages(), replacement.as_slice());
+
+        loop_engine
+            .prompt(user_text_item("user-1".to_owned(), "run".to_owned(), 11))
+            .expect("prompt should activate the loop");
+        assert!(
+            loop_engine
+                .replace_context(replacement)
+                .expect_err("active loop must not lose its current state")
+                .message()
+                .contains("运行中")
+        );
     }
 
     fn load_fixture(name: &str) -> ProviderStreamFixture {
@@ -1898,6 +2353,9 @@ mod tests {
             AgentLoopEvent::ToolExecutionUpdated { .. } => "tool_execution_update",
             AgentLoopEvent::ToolExecutionFinished { .. } => "tool_execution_end",
             AgentLoopEvent::ToolResultsReady { .. } => "tool_results_ready",
+            AgentLoopEvent::ProviderContinuationRequested => "provider_continuation_requested",
+            AgentLoopEvent::SteerConsumed => "steer_consumed",
+            AgentLoopEvent::FollowUpConsumed => "follow_up_consumed",
             AgentLoopEvent::TurnEnded { .. } => "turn_end",
             AgentLoopEvent::AgentEnded { .. } => "agent_end",
         }

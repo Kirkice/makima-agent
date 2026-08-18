@@ -54,10 +54,10 @@ function itemMessage(item: unknown, type: "item_updated" | "item_finished" = "it
 }
 
 describe("protocol validation", () => {
-	test("uses protocol version 1", () => {
-		expect(PROTOCOL_VERSION).toBe(1);
-		expect(isSupportedProtocolVersion(1)).toBe(true);
-		expect(isSupportedProtocolVersion(2)).toBe(false);
+	test("uses protocol version 2", () => {
+		expect(PROTOCOL_VERSION).toBe(2);
+		expect(isSupportedProtocolVersion(2)).toBe(true);
+		expect(isSupportedProtocolVersion(1)).toBe(false);
 		expect(isSupportedProtocolVersion(2.5)).toBe(false);
 	});
 
@@ -94,6 +94,46 @@ describe("protocol validation", () => {
 					text: "inspect",
 					images: [{ type: "image", data: "abc", mimeType: "image/png" }],
 				},
+			}),
+		).toThrow(ProtocolValidationError);
+	});
+
+	test("validates the follow-up command and its strict session snapshot result", () => {
+		const session = {
+			id: "session-1",
+			cwd: "/workspace",
+			createdAt: 1,
+			updatedAt: 2,
+			phase: "turn",
+			model: { provider: "test", id: "model" },
+			thinkingLevel: "medium",
+			attached: true,
+			locked: false,
+			revision: 3,
+			transcript: [],
+			queuedSteer: [],
+			queuedSteerCount: 0,
+			queuedFollowUp: [{ id: "user-2", role: "user", content: [{ type: "text", text: "continue" }], timestamp: 2 }],
+			queuedFollowUpCount: 1,
+		} as const;
+		const request = {
+			type: "request",
+			id: "follow-up-1",
+			request: { command: "follow_up", sessionId: "session-1", text: "continue" },
+		} as const;
+		const response = {
+			type: "response",
+			id: "follow-up-1",
+			ok: true,
+			result: { command: "follow_up", session },
+		} as const;
+
+		expect(parseClientMessage(request)).toEqual(request);
+		expect(parseServerMessage(response)).toEqual(response);
+		expect(() =>
+			parseServerMessage({
+				...response,
+				result: { command: "follow_up", session: { ...session, queuedFollowUp: undefined } },
 			}),
 		).toThrow(ProtocolValidationError);
 	});
@@ -334,9 +374,17 @@ describe("protocol validation", () => {
 					timestamp: 1,
 				},
 			],
-			tools: [{ name: "echo", description: "Echo text", inputSchema: { type: "object" } }],
+			tools: [
+				{ name: "echo", description: "Echo text", inputSchema: { type: "object" }, executionMode: "sequential" },
+			],
 		};
 		expect(parseProviderRequest(request)).toEqual(request);
+		expect(() =>
+			parseProviderRequest({
+				...request,
+				tools: [{ ...request.tools[0], executionMode: "concurrent" }],
+			}),
+		).toThrow(ProtocolValidationError);
 		expect(parseProviderStreamEvent({ type: "start", messageId: "assistant-1", timestamp: 2 })).toEqual({
 			type: "start",
 			messageId: "assistant-1",

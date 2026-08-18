@@ -6,6 +6,8 @@
 
 /// AgentSession 领域层及其外部能力端口。
 pub mod agent_session;
+/// Provider 请求前的上下文投影与转换端口。
+pub mod context_transform;
 /// 真实 stdio 与 Unix socket RPC listener。
 pub mod listener;
 /// Rust Core 与 TypeScript Provider Host 的 framed CBOR 进程通道。
@@ -75,6 +77,8 @@ impl SessionRuntime {
                 transcript: Vec::new(),
                 queued_steer: Vec::new(),
                 queued_steer_count: 0,
+                queued_follow_up: Vec::new(),
+                queued_follow_up_count: 0,
             },
         }
     }

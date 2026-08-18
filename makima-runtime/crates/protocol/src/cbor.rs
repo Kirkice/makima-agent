@@ -7,8 +7,8 @@
 use std::fmt;
 use std::io::Cursor;
 
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 /// CBOR 编码或解码失败时的稳定错误类型。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +60,7 @@ pub fn decode_cbor<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, CborError> {
 mod tests {
     use serde_json::json;
 
-    use super::{CborError, decode_cbor, encode_cbor};
+    use super::{decode_cbor, encode_cbor, CborError};
     use crate::{ClientMessage, Command};
 
     #[test]

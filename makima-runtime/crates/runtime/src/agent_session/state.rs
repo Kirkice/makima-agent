@@ -18,6 +18,16 @@ pub struct QueuedSteer {
     pub message: UserTranscriptItem,
 }
 
+/// 一条尚未被 Agent Loop 消费的 follow-up 消息。
+///
+/// follow-up 只会在当前 assistant、工具和 steering 全部自然完成后消费，因此不能复用
+/// steering 队列；保留独立投影能让 RPC 客户端准确呈现其延后执行的语义。
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueuedFollowUp {
+    /// 待在下一轮外层循环中投递的用户消息。
+    pub message: UserTranscriptItem,
+}
+
 /// AgentSession 的可变领域状态。
 #[derive(Debug, Clone)]
 pub struct AgentSessionState {
@@ -34,6 +44,7 @@ pub struct AgentSessionState {
     revision: u64,
     transcript: Vec<TranscriptItem>,
     queued_steer: Vec<QueuedSteer>,
+    queued_follow_up: Vec<QueuedFollowUp>,
 }
 
 impl AgentSessionState {
@@ -60,6 +71,7 @@ impl AgentSessionState {
             revision: 0,
             transcript: Vec::new(),
             queued_steer: Vec::new(),
+            queued_follow_up: Vec::new(),
         }
     }
 
@@ -88,9 +100,17 @@ impl AgentSessionState {
         &self.transcript
     }
 
-    /// 会话是否正处于 Agent Loop 回合中。
+    /// 会话是否仍在处理当前用户回合。
+    ///
+    /// `Retry` 虽然暂时没有活动的 Provider 流，但退避结束后会恢复同一份上下文，
+    /// 因而对 prompt/steer/follow-up 的并发校验必须和 `Turn` 一样视为活动状态。
     pub fn is_active(&self) -> bool {
-        self.phase == SessionPhase::Turn
+        matches!(self.phase, SessionPhase::Turn | SessionPhase::Retry)
+    }
+
+    /// 会话是否正在等待一次自动重试的退避时间。
+    pub fn is_retrying(&self) -> bool {
+        self.phase == SessionPhase::Retry
     }
 
     /// 变更模型并推进版本。调用方应先完成外部持久化。
@@ -111,6 +131,22 @@ impl AgentSessionState {
         self.touch(timestamp);
     }
 
+    /// 进入自动重试退避阶段。
+    ///
+    /// 错误 assistant 已经是稳定历史的一部分，不能从 Session transcript 删除；真正供
+    /// Provider 重试的上下文则由 Agent Loop 单独移除该错误项。二者分离与 TypeScript
+    /// “保留 session history、从 agent state 移除错误消息”的行为一致。
+    pub fn start_retry(&mut self, timestamp: u64) {
+        self.phase = SessionPhase::Retry;
+        self.touch(timestamp);
+    }
+
+    /// 退避结束，重新进入实际执行 Provider 请求的回合阶段。
+    pub fn resume_retry(&mut self, timestamp: u64) {
+        self.phase = SessionPhase::Turn;
+        self.touch(timestamp);
+    }
+
     /// 将已提交到 Agent Loop 的 steer 加入本地展示队列。
     pub fn enqueue_steer(&mut self, message: UserTranscriptItem, timestamp: u64) {
         self.queued_steer.push(QueuedSteer { message });
@@ -124,6 +160,22 @@ impl AgentSessionState {
     pub fn consume_steer(&mut self, timestamp: u64) {
         if !self.queued_steer.is_empty() {
             self.queued_steer.remove(0);
+            self.touch(timestamp);
+        }
+    }
+
+    /// 将已提交到 Agent Loop 的 follow-up 加入本地展示队列。
+    pub fn enqueue_follow_up(&mut self, message: UserTranscriptItem, timestamp: u64) {
+        self.queued_follow_up.push(QueuedFollowUp { message });
+        self.touch(timestamp);
+    }
+
+    /// 当 Agent Loop 已消费一条 follow-up 时移除最早的本地项。
+    ///
+    /// 与 steering 一样保持幂等，以抵御重放或取消边界的重复通知。
+    pub fn consume_follow_up(&mut self, timestamp: u64) {
+        if !self.queued_follow_up.is_empty() {
+            self.queued_follow_up.remove(0);
             self.touch(timestamp);
         }
     }
@@ -165,6 +217,12 @@ impl AgentSessionState {
                 .map(|queued| queued.message.clone())
                 .collect(),
             queued_steer_count: self.queued_steer.len() as u64,
+            queued_follow_up: self
+                .queued_follow_up
+                .iter()
+                .map(|queued| queued.message.clone())
+                .collect(),
+            queued_follow_up_count: self.queued_follow_up.len() as u64,
         }
     }
 

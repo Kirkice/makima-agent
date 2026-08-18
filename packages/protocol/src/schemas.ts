@@ -1,6 +1,8 @@
 import Type, { type Static } from "typebox";
 
-export const PROTOCOL_VERSION = 1 as const;
+// `follow_up` 与 SessionSnapshot 的独立 follow-up 队列改变了严格 DTO 的必填形状，
+// 旧客户端无法安全解码，因此必须通过握手拒绝旧版本而非静默兼容。
+export const PROTOCOL_VERSION = 2 as const;
 
 const IdSchema = Type.String({ minLength: 1 });
 const TimestampSchema = Type.Integer({ minimum: 0 });
@@ -242,6 +244,8 @@ export const ProviderRequestSchema = StrictObject({
 			name: IdSchema,
 			description: Type.String(),
 			inputSchema: JsonValueSchema,
+			// 与 Rust Tool Runtime 的批次调度约束对齐。省略时默认为 parallel，兼容既有请求。
+			executionMode: Type.Optional(Type.Union([Type.Literal("parallel"), Type.Literal("sequential")])),
 		}),
 	),
 });
@@ -372,6 +376,10 @@ export const SessionSnapshotSchema = StrictObject({
 	transcript: Type.Array(TranscriptItemSchema),
 	queuedSteer: Type.Array(UserTranscriptItemSchema),
 	queuedSteerCount: Type.Integer({ minimum: 0 }),
+	// follow-up 与 steering 使用不同调度语义，必须分别投影，避免 UI 将“本回合末尾
+	// 消费”的 follow-up 错当作下一次 Provider 请求前立即注入的 steering。
+	queuedFollowUp: Type.Array(UserTranscriptItemSchema),
+	queuedFollowUpCount: Type.Integer({ minimum: 0 }),
 });
 export type SessionMetadata = Static<typeof SessionMetadataSchema>;
 export type SessionSnapshot = Static<typeof SessionSnapshotSchema>;
@@ -419,6 +427,8 @@ export const AttachCommandSchema = StrictObject({ command: Type.Literal("attach"
 export const DetachCommandSchema = StrictObject({ command: Type.Literal("detach"), sessionId: IdSchema });
 export const PromptCommandSchema = StrictObject({ command: Type.Literal("prompt"), ...PromptPayloadProperties });
 export const SteerCommandSchema = StrictObject({ command: Type.Literal("steer"), ...PromptPayloadProperties });
+/** 在当前 Agent 回合自然结束后投递的用户输入，不会中断现有 Provider 或工具流。 */
+export const FollowUpCommandSchema = StrictObject({ command: Type.Literal("follow_up"), ...PromptPayloadProperties });
 export const AbortCommandSchema = StrictObject({ command: Type.Literal("abort"), sessionId: IdSchema });
 export const SetModelCommandSchema = StrictObject({
 	command: Type.Literal("set_model"),
@@ -437,6 +447,7 @@ export const CommandSchema = Type.Union([
 	DetachCommandSchema,
 	PromptCommandSchema,
 	SteerCommandSchema,
+	FollowUpCommandSchema,
 	AbortCommandSchema,
 	SetModelCommandSchema,
 	SetThinkingCommandSchema,
@@ -458,6 +469,10 @@ export const PromptResultSchema = StrictObject({
 });
 export const SteerResultSchema = StrictObject({
 	command: Type.Literal("steer"),
+	session: SessionSnapshotSchema,
+});
+export const FollowUpResultSchema = StrictObject({
+	command: Type.Literal("follow_up"),
 	session: SessionSnapshotSchema,
 });
 export const AbortResultSchema = StrictObject({
@@ -488,6 +503,7 @@ export const CommandResultSchema = Type.Union([
 	DetachResultSchema,
 	PromptResultSchema,
 	SteerResultSchema,
+	FollowUpResultSchema,
 	AbortResultSchema,
 	SetModelResultSchema,
 	SetThinkingResultSchema,
