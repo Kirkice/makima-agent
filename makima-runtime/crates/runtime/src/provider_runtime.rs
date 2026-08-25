@@ -275,8 +275,48 @@ where
             self.maybe_start_continuation(session, tool_runtime, timestamp, &mut events)?;
         }
 
-        let Some(responses) = self.transport.try_receive()? else {
-            return Ok(events);
+        let responses = match self.transport.try_receive() {
+            Ok(Some(responses)) => responses,
+            Ok(None) => return Ok(events),
+            Err(error) => {
+                let message = format!("Provider Host request crashed before settlement: {error}");
+                let Some(message_id) = self
+                    .active_request_id
+                    .as_deref()
+                    .and_then(|_| session.agent_loop().active_assistant_id())
+                    .map(str::to_owned)
+                    .or_else(|| Some(format!("provider-{timestamp}")))
+                else {
+                    return Err(message);
+                };
+
+                // child 崩溃时不会再有可靠的 `complete`。先释放本地 request 门闩，再注入
+                // 一个确定性的 Provider error，让 Agent Loop 生成唯一失败终态；绝不重放
+                // 原请求。若用户已经 abort，则沿用 abort 的结算语义，避免把取消报告成崩溃。
+                self.active_request_id = None;
+                self.active_request_terminal = true;
+                self.continuation_pending = false;
+                if session.agent_loop().is_abort_requested() {
+                    let loop_events = session.agent_loop_mut().settle_abort(timestamp);
+                    self.apply_loop_events(session, loop_events, timestamp, &mut events)?;
+                } else {
+                    self.apply_provider_event(
+                        session,
+                        tool_runtime,
+                        ProviderStreamEvent::Error {
+                            message_id,
+                            content: Vec::new(),
+                            response_model: None,
+                            usage: None,
+                            timestamp,
+                            message,
+                        },
+                        timestamp,
+                        &mut events,
+                    )?;
+                }
+                return Ok(events);
+            }
         };
         for response in responses {
             match response {
@@ -670,16 +710,16 @@ mod tests {
     };
 
     use protocol::{
-        AssistantContent, AssistantStopReason, AssistantTranscriptItem, Command, ModelRef,
-        ProviderHostResponse, ProviderStreamEvent, SessionPhase, ThinkingLevel, TranscriptItem,
-        Usage, UsageCost,
+        AssistantContent, AssistantStopReason, AssistantTranscriptItem, Command,
+        FinishedTranscriptItem, ModelRef, ProviderHostResponse, ProviderStreamEvent, SessionPhase,
+        ThinkingLevel, TranscriptItem, Usage, UsageCost,
     };
     use session::JsonlSessionStore;
     use tool_runtime::{Tool, ToolExecutionContext, ToolExecutionError, ToolOutput, ToolRuntime};
 
     use super::{
         AgentLoopEngine, AgentSession, JsonlSessionPersistence, ProviderStreamDriver,
-        QueuedProviderStreamPort,
+        ProviderStreamPort, QueuedProviderStreamPort,
     };
     use crate::{
         agent_session::{AgentSessionConfig, RetryPolicy},
@@ -908,6 +948,123 @@ mod tests {
             context.report_update(ToolOutput::text("late update"));
             Ok(ToolOutput::text("late result"))
         }
+    }
+
+    struct CrashingProviderStreamPort {
+        requests: Vec<protocol::ProviderRequest>,
+        aborts: Vec<String>,
+        error: String,
+    }
+
+    impl CrashingProviderStreamPort {
+        fn new(error: impl Into<String>) -> Self {
+            Self {
+                requests: Vec::new(),
+                aborts: Vec::new(),
+                error: error.into(),
+            }
+        }
+    }
+
+    impl ProviderStreamPort for CrashingProviderStreamPort {
+        fn request(&mut self, request: protocol::ProviderRequest) -> Result<(), String> {
+            self.requests.push(request);
+            Ok(())
+        }
+
+        fn abort(&mut self, request_id: &str) -> Result<(), String> {
+            self.aborts.push(request_id.to_owned());
+            Ok(())
+        }
+
+        fn try_receive(&mut self) -> Result<Option<Vec<ProviderHostResponse>>, String> {
+            Err(self.error.clone())
+        }
+    }
+
+    #[test]
+    fn provider_host_crash_settles_active_request_without_replay_or_continuation() {
+        let mut driver = ProviderStreamDriver::new(
+            CrashingProviderStreamPort::new("child exited with status 1"),
+            "system prompt",
+        );
+        let mut session = test_session();
+        let mut tool_runtime = ToolRuntime::new();
+        prompt(&mut session, 100);
+        driver
+            .start(&mut session, &tool_runtime, 100)
+            .expect("request should start");
+
+        let events = driver
+            .poll(&mut session, &mut tool_runtime, 101)
+            .expect("Host crash should be converted into a settled provider error");
+
+        assert!(driver.active_request_id.is_none());
+        assert!(driver.active_request_terminal);
+        assert!(!driver.continuation_pending);
+        assert_eq!(driver.transport.requests.len(), 1);
+        assert_eq!(session.snapshot().phase, SessionPhase::Idle);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            protocol::ServerEvent::SessionProgress {
+                progress: protocol::TranscriptProgress::ItemFinished {
+                    item: FinishedTranscriptItem::AssistantError(_),
+                },
+                ..
+            }
+        )));
+        assert!(matches!(
+            session.snapshot().transcript.last(),
+            Some(TranscriptItem::Assistant(AssistantTranscriptItem::Error {
+                error_message: Some(message),
+                ..
+            })) if message.contains("Provider Host request crashed before settlement")
+        ));
+
+        // 再次轮询只能观察到空闲状态，不能把已经失败的活动请求重放成第二个请求。
+        driver
+            .poll(&mut session, &mut tool_runtime, 102)
+            .expect("settled crash should remain stable");
+        assert_eq!(driver.transport.requests.len(), 1);
+    }
+
+    #[test]
+    fn provider_host_crash_after_abort_preserves_aborted_settlement() {
+        let mut driver = ProviderStreamDriver::new(
+            CrashingProviderStreamPort::new("child exited while aborting"),
+            "system prompt",
+        );
+        let mut session = test_session();
+        let mut tool_runtime = ToolRuntime::new();
+        prompt(&mut session, 100);
+        driver
+            .start(&mut session, &tool_runtime, 100)
+            .expect("request should start");
+        session
+            .execute_at(
+                Command::Abort {
+                    session_id: "session-1".to_owned(),
+                },
+                101,
+            )
+            .expect("abort should be accepted");
+        driver.abort().expect("abort should be forwarded");
+
+        driver
+            .poll(&mut session, &mut tool_runtime, 102)
+            .expect("Host crash must use abort settlement");
+
+        assert!(driver.active_request_id.is_none());
+        assert!(!driver.continuation_pending);
+        assert_eq!(session.snapshot().phase, SessionPhase::Idle);
+        assert!(matches!(
+            session.snapshot().transcript.last(),
+            Some(TranscriptItem::Assistant(AssistantTranscriptItem::Aborted { .. }))
+        ));
+        assert!(!session.snapshot().transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Assistant(AssistantTranscriptItem::Error { .. })
+        )));
     }
 
     #[test]

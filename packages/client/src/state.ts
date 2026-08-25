@@ -12,6 +12,7 @@ export class ClientState {
 	readonly #onListenerError: ListenerErrorHandler | undefined;
 	#snapshot: ServerSnapshot | undefined;
 	#lastSeenEventSequence: number | undefined;
+	#eventStreamInvalid = false;
 
 	constructor(onListenerError?: ListenerErrorHandler) {
 		this.#onListenerError = onListenerError;
@@ -21,11 +22,20 @@ export class ClientState {
 		return this.#snapshot;
 	}
 
+	/** 清除由旧 snapshot 派生的视图状态，但保留上个连接的最后事件边界供 reconnect hello 使用。 */
 	reset(): void {
 		this.#snapshot = undefined;
-		this.#lastSeenEventSequence = undefined;
 		this.#sessionSnapshots.clear();
 		this.#attachedSessionIds.clear();
+	}
+
+	/**
+	 * 在收到新连接的权威 hello snapshot 后开始新的事件序列。
+	 * sequence 只在一个 transport connection 内有效，因此新连接必须从 1 重新计数。
+	 */
+	beginConnection(): void {
+		this.#lastSeenEventSequence = undefined;
+		this.#eventStreamInvalid = false;
 	}
 
 	clearAttachments(): void {
@@ -34,6 +44,7 @@ export class ClientState {
 
 	dispose(): void {
 		this.reset();
+		this.beginConnection();
 		this.#snapshotListeners.clear();
 		this.#eventListeners.clear();
 		this.#sessionSnapshotListeners.clear();
@@ -92,8 +103,13 @@ export class ClientState {
 	 * 而是拒绝该增量，等待重连 hello 的权威 snapshot 完成恢复。
 	 */
 	applyEvent(sequence: number, event: ServerEvent): boolean {
-		if (this.#lastSeenEventSequence !== undefined && sequence <= this.#lastSeenEventSequence) return false;
-		if (this.#lastSeenEventSequence !== undefined && sequence !== this.#lastSeenEventSequence + 1) return false;
+		if (this.#eventStreamInvalid) return false;
+		const expected = this.#lastSeenEventSequence === undefined ? 1 : this.#lastSeenEventSequence + 1;
+		if (sequence <= (this.#lastSeenEventSequence ?? 0)) return false;
+		if (sequence !== expected) {
+			this.#eventStreamInvalid = true;
+			return false;
+		}
 		this.#lastSeenEventSequence = sequence;
 		if (event.type === "server_snapshot") this.applyServerSnapshot(event.snapshot);
 		if (event.type === "session_snapshot") this.#applySessionSnapshot(event.snapshot);

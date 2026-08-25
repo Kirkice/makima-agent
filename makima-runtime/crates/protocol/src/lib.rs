@@ -688,14 +688,22 @@ pub struct RequestEnvelope {
 
 /// 客户端消息的封闭联合，解码未知类型会失败。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum ClientMessage {
     Hello {
         version: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
         last_seen_sequence: Option<u64>,
     },
-    Request { id: String, request: Command },
+    Request {
+        id: String,
+        request: Command,
+    },
 }
 
 /// 增量 transcript 事件。快照仍是权威状态，进度仅用于低延迟渲染。
@@ -1078,17 +1086,20 @@ mod tests {
     use super::{
         AssistantContent, AssistantStopReason, ClientMessage, Command, CommandResult,
         ErrorResponse, EventEnvelope, ModelCost, ModelInput, ModelMetadata, ModelRef,
-        ProtocolError, ProtocolErrorCode, ProviderRequest, ProviderStreamEvent, ServerEvent,
-        ServerHelloError, ServerMessage, ServerSnapshot, SessionMetadata, SuccessResponse,
-        TextOrImageContent, ThinkingLevel, ToolCall, ToolDefinition, ToolExecutionMode,
-        TranscriptDeltaKind, TranscriptItem, TranscriptProgress, Usage, UsageCost,
-        PROTOCOL_VERSION,
+        PROTOCOL_VERSION, ProtocolError, ProtocolErrorCode, ProviderRequest, ProviderStreamEvent,
+        ServerEvent, ServerHelloError, ServerMessage, ServerSnapshot, SessionMetadata,
+        SuccessResponse, TextOrImageContent, ThinkingLevel, ToolCall, ToolDefinition,
+        ToolExecutionMode, TranscriptDeltaKind, TranscriptItem, TranscriptProgress, Usage,
+        UsageCost,
     };
     use crate::cbor::decode_cbor;
+    use crate::framing::FrameDecoder;
 
     #[derive(Debug, Deserialize)]
     struct RustTsConformanceFixture {
+        kind: String,
         name: String,
+        direction: String,
         wire: String,
         valid: bool,
     }
@@ -1267,7 +1278,7 @@ mod tests {
             serde_json::to_value(snapshot).expect("snapshot should serialize"),
             json!({
                 "serverId": "server-1",
-                "protocolVersion": 2,
+                "protocolVersion": 3,
                 "revision": 2,
                 "sessions": [{ "id": "session-1", "createdAt": 1 }],
                 "models": [{
@@ -1294,6 +1305,7 @@ mod tests {
 
         let envelope = json!({
             "type": "event",
+            "sequence": 1,
             "event": { "type": "session_removed", "sessionId": "session-1" },
         });
         assert_eq!(
@@ -1325,34 +1337,44 @@ mod tests {
                 "error": { "code": "not_found", "message": "missing" },
             })
         );
-        assert!(serde_json::from_value::<SuccessResponse>(json!({
-            "type": "response", "id": "request-3", "ok": false,
-            "result": { "command": "list", "sessions": [] },
-        }))
-        .is_err());
-        assert!(serde_json::from_value::<ErrorResponse>(json!({
-            "type": "response", "id": "request-3", "ok": true,
-            "error": { "code": "not_found", "message": "missing" },
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<SuccessResponse>(json!({
+                "type": "response", "id": "request-3", "ok": false,
+                "result": { "command": "list", "sessions": [] },
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ErrorResponse>(json!({
+                "type": "response", "id": "request-3", "ok": true,
+                "error": { "code": "not_found", "message": "missing" },
+            }))
+            .is_err()
+        );
     }
 
     #[test]
     fn server_message_rejects_mismatched_envelope_discriminators() {
-        assert!(serde_json::from_value::<ServerMessage>(json!({
-            "type": "response", "id": "request-1", "ok": true,
-            "error": { "code": "not_found", "message": "missing" },
-        }))
-        .is_err());
-        assert!(serde_json::from_value::<ServerMessage>(json!({
-            "type": "hello_error", "error": { "code": "version", "message": "unsupported" },
-            "extra": true,
-        }))
-        .is_err());
-        assert!(serde_json::from_value::<ServerMessage>(json!({
-            "type": "unknown",
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<ServerMessage>(json!({
+                "type": "response", "id": "request-1", "ok": true,
+                "error": { "code": "not_found", "message": "missing" },
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ServerMessage>(json!({
+                "type": "hello_error", "error": { "code": "version", "message": "unsupported" },
+                "extra": true,
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ServerMessage>(json!({
+                "type": "unknown",
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -1429,21 +1451,27 @@ mod tests {
         });
         assert!(serde_json::from_value::<TranscriptItem>(complete_assistant).is_ok());
 
-        assert!(serde_json::from_value::<TranscriptItem>(json!({
-            "id": "message-1", "role": "user", "content": [], "timestamp": 1, "unknown": true,
-        }))
-        .is_err());
-        assert!(serde_json::from_value::<TranscriptItem>(json!({
-            "id": "message-1", "role": "assistant", "content": [],
-            "model": { "provider": "test", "id": "model" }, "timestamp": 1,
-            "status": "streaming", "stopReason": "stop",
-        }))
-        .is_err());
-        assert!(serde_json::from_value::<TranscriptItem>(json!({
-            "id": "tool-1", "role": "tool", "toolCallId": "call-1", "toolName": "read",
-            "input": {}, "content": [], "timestamp": 1, "status": "complete", "isError": true,
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<TranscriptItem>(json!({
+                "id": "message-1", "role": "user", "content": [], "timestamp": 1, "unknown": true,
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<TranscriptItem>(json!({
+                "id": "message-1", "role": "assistant", "content": [],
+                "model": { "provider": "test", "id": "model" }, "timestamp": 1,
+                "status": "streaming", "stopReason": "stop",
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<TranscriptItem>(json!({
+                "id": "tool-1", "role": "tool", "toolCallId": "call-1", "toolName": "read",
+                "input": {}, "content": [], "timestamp": 1, "status": "complete", "isError": true,
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -1453,15 +1481,19 @@ mod tests {
             "model": { "provider": "test", "id": "model" }, "timestamp": 1,
             "status": "streaming",
         });
-        assert!(serde_json::from_value::<TranscriptProgress>(json!({
-            "type": "item_finished", "item": streaming_assistant,
-        }))
-        .is_err());
-        assert!(serde_json::from_value::<TranscriptProgress>(json!({
-            "type": "item_updated",
-            "item": { "id": "message-1", "role": "user", "content": [], "timestamp": 1 },
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<TranscriptProgress>(json!({
+                "type": "item_finished", "item": streaming_assistant,
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<TranscriptProgress>(json!({
+                "type": "item_updated",
+                "item": { "id": "message-1", "role": "user", "content": [], "timestamp": 1 },
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -1491,15 +1523,17 @@ mod tests {
                 "tools": [{ "name": "echo", "description": "Echo text", "inputSchema": { "type": "object" } }],
             })
         );
-        assert!(serde_json::from_value::<ProviderRequest>(json!({
-            "requestId": "provider-request-1",
-            "model": { "provider": "test", "id": "model" },
-            "systemPrompt": "Be concise.",
-            "messages": [],
-            "tools": [],
-            "credential": "secret",
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<ProviderRequest>(json!({
+                "requestId": "provider-request-1",
+                "model": { "provider": "test", "id": "model" },
+                "systemPrompt": "Be concise.",
+                "messages": [],
+                "tools": [],
+                "credential": "secret",
+            }))
+            .is_err()
+        );
 
         let event = ProviderStreamEvent::ToolCallEnd {
             content_index: 1,
@@ -1517,10 +1551,12 @@ mod tests {
                 "toolCall": { "toolCallId": "call-1", "toolName": "echo", "input": { "value": "hello" } },
             })
         );
-        assert!(serde_json::from_value::<ProviderStreamEvent>(json!({
-            "type": "done", "timestamp": 3, "stopReason": "error",
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<ProviderStreamEvent>(json!({
+                "type": "done", "timestamp": 3, "stopReason": "error",
+            }))
+            .is_err()
+        );
 
         let usage = Usage {
             input: 4,
@@ -1580,32 +1616,38 @@ mod tests {
                 .expect("terminal event should round-trip"),
             terminal
         );
-        assert!(serde_json::from_value::<ProviderStreamEvent>(json!({
-            "type": "done",
-            "messageId": "assistant-1",
-            "content": [],
-            "timestamp": 4,
-            "stopReason": "stop"
-        }))
-        .is_err());
-        assert!(serde_json::from_value::<ProviderStreamEvent>(json!({
-            "type": "done",
-            "messageId": "assistant-1",
-            "content": [],
-            "usage": usage,
-            "timestamp": 4,
-            "stopReason": "stop",
-            "extra": true
-        }))
-        .is_err());
-        assert!(serde_json::from_value::<ProviderStreamEvent>(json!({
-            "type": "error",
-            "messageId": "assistant-1",
-            "content": [],
-            "timestamp": 4,
-            "message": "failed"
-        }))
-        .is_ok());
+        assert!(
+            serde_json::from_value::<ProviderStreamEvent>(json!({
+                "type": "done",
+                "messageId": "assistant-1",
+                "content": [],
+                "timestamp": 4,
+                "stopReason": "stop"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ProviderStreamEvent>(json!({
+                "type": "done",
+                "messageId": "assistant-1",
+                "content": [],
+                "usage": usage,
+                "timestamp": 4,
+                "stopReason": "stop",
+                "extra": true
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ProviderStreamEvent>(json!({
+                "type": "error",
+                "messageId": "assistant-1",
+                "content": [],
+                "timestamp": 4,
+                "message": "failed"
+            }))
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1616,20 +1658,63 @@ mod tests {
         .expect("shared TypeScript fixture must be valid JSON");
 
         for fixture in fixtures {
-            let decoded = decode_cbor::<ClientMessage>(&decode_hex(&fixture.wire));
-            if fixture.valid {
-                assert!(
-                    decoded.is_ok(),
-                    "{} should decode as a valid client message",
-                    fixture.name
-                );
-            } else {
-                // TypeScript schema 与 Rust `deny_unknown_fields` 都必须拒绝同一份额外字段负载。
-                assert!(
-                    decoded.is_err(),
-                    "{} should be rejected by the strict client DTO",
-                    fixture.name
-                );
+            let wire = decode_hex(&fixture.wire);
+            match fixture.kind.as_str() {
+                "payload" => {
+                    let decoded = match fixture.direction.as_str() {
+                        "client" => decode_cbor::<ClientMessage>(&wire).map(|_| ()),
+                        "server" => decode_cbor::<ServerMessage>(&wire).map(|_| ()),
+                        direction => {
+                            panic!("{} has unsupported direction {direction}", fixture.name)
+                        }
+                    };
+                    if fixture.valid {
+                        assert!(
+                            decoded.is_ok(),
+                            "{} should decode as a valid {} message",
+                            fixture.name,
+                            fixture.direction
+                        );
+                    } else {
+                        // TypeScript schema 与 Rust `deny_unknown_fields` 都必须拒绝同一份额外字段负载。
+                        assert!(
+                            decoded.is_err(),
+                            "{} should be rejected by the strict {} DTO",
+                            fixture.name,
+                            fixture.direction
+                        );
+                    }
+                }
+                "framing" => {
+                    let mut decoder = FrameDecoder::new();
+                    let decoded = decoder.push(&wire);
+                    if fixture.valid {
+                        assert!(
+                            decoded.is_ok(),
+                            "{} should contain a complete frame",
+                            fixture.name
+                        );
+                        assert_eq!(
+                            decoded.expect("complete frame should decode").len(),
+                            1,
+                            "{} should contain exactly one frame",
+                            fixture.name
+                        );
+                        assert!(decoder.end().is_ok(), "{} should end cleanly", fixture.name);
+                    } else {
+                        assert!(
+                            decoded.is_ok(),
+                            "{} should remain incomplete until EOF",
+                            fixture.name
+                        );
+                        assert!(
+                            decoder.end().is_err(),
+                            "{} should reject truncated EOF",
+                            fixture.name
+                        );
+                    }
+                }
+                kind => panic!("{} has unsupported fixture kind {kind}", fixture.name),
             }
         }
     }

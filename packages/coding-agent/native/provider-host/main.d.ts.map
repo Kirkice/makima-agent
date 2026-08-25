@@ -1,0 +1,1 @@
+{"version":3,"file":"main.d.ts","sourceRoot":"","sources":["../src/main.ts"],"names":[],"mappings":"","sourcesContent":["#!/usr/bin/env node\nimport { startProviderHost } from \"./runtime.ts\";\n\nstartProviderHost();\n"]}

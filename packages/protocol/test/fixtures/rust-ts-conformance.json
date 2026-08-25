@@ -1,12 +1,24 @@
 [
 	{
-		"name": "hello-current-version",
-		"wire": "a264747970656568656c6c6f6776657273696f6e02",
-		"value": { "type": "hello", "version": 2 },
+		"kind": "payload",
+		"name": "client-hello-current-version",
+		"direction": "client",
+		"wire": "a264747970656568656c6c6f6776657273696f6e03",
+		"value": { "type": "hello", "version": 3 },
 		"valid": true
 	},
 	{
-		"name": "request-abort",
+		"kind": "payload",
+		"name": "client-reconnect-hello-boundary",
+		"direction": "client",
+		"wire": "a364747970656568656c6c6f6776657273696f6e03706c6173745365656e53657175656e636501",
+		"value": { "type": "hello", "version": 3, "lastSeenSequence": 1 },
+		"valid": true
+	},
+	{
+		"kind": "payload",
+		"name": "client-request-abort",
+		"direction": "client",
 		"wire": "a36474797065677265717565737462696469726571756573742d316772657175657374a267636f6d6d616e646561626f72746973657373696f6e49646973657373696f6e2d31",
 		"value": {
 			"type": "request",
@@ -16,9 +28,74 @@
 		"valid": true
 	},
 	{
-		"name": "unknown-field-is-rejected",
-		"wire": "a364747970656568656c6c6f6776657273696f6e02656578747261f5",
-		"value": { "type": "hello", "version": 2, "extra": true },
+		"kind": "payload",
+		"name": "server-version-refusal",
+		"direction": "server",
+		"wire": "a264747970656b68656c6c6f5f6572726f72656572726f72a264636f64656776657273696f6e676d657373616765781c556e737570706f727465642070726f746f636f6c2076657273696f6e",
+		"value": {
+			"type": "hello_error",
+			"error": { "code": "version", "message": "Unsupported protocol version" }
+		},
+		"valid": true
+	},
+	{
+		"kind": "payload",
+		"name": "server-error-response",
+		"direction": "server",
+		"wire": "a4647479706568726573706f6e736562696469726571756573742d31626f6bf4656572726f72a264636f6465696e6f745f666f756e64676d6573736167657153657373696f6e206e6f7420666f756e64",
+		"value": {
+			"type": "response",
+			"id": "request-1",
+			"ok": false,
+			"error": { "code": "not_found", "message": "Session not found" }
+		},
+		"valid": true
+	},
+	{
+		"kind": "payload",
+		"name": "server-event-first-connection-sequence",
+		"direction": "server",
+		"wire": "a36474797065656576656e746873657175656e636501656576656e74a264747970656f73657373696f6e5f72656d6f7665646973657373696f6e49646973657373696f6e2d31",
+		"value": {
+			"type": "event",
+			"sequence": 1,
+			"event": { "type": "session_removed", "sessionId": "session-1" }
+		},
+		"valid": true
+	},
+	{
+		"kind": "payload",
+		"name": "client-unknown-field-is-rejected",
+		"direction": "client",
+		"wire": "a364747970656568656c6c6f6776657273696f6e03656578747261f5",
+		"value": { "type": "hello", "version": 3, "extra": true },
+		"valid": false
+	},
+	{
+		"kind": "payload",
+		"name": "server-unknown-field-is-rejected",
+		"direction": "server",
+		"wire": "a46474797065656576656e746873657175656e636501656576656e74a264747970656f73657373696f6e5f72656d6f7665646973657373696f6e49646973657373696f6e2d31656578747261f5",
+		"value": {
+			"type": "event",
+			"sequence": 1,
+			"event": { "type": "session_removed", "sessionId": "session-1" },
+			"extra": true
+		},
+		"valid": false
+	},
+	{
+		"kind": "framing",
+		"name": "client-framed-hello-completes-before-eof",
+		"direction": "client",
+		"wire": "00000015a264747970656568656c6c6f6776657273696f6e03",
+		"valid": true
+	},
+	{
+		"kind": "framing",
+		"name": "server-truncated-frame-is-rejected-at-eof",
+		"direction": "server",
+		"wire": "0000000201",
 		"valid": false
 	}
 ]

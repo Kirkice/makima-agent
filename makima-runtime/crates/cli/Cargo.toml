@@ -6,7 +6,9 @@ license.workspace = true
 description = "Pi Agent Rust CLI 外壳"
 
 [[bin]]
-name = "runtime-cli"
+# 该名称是 npm/Bun 发布物中 `native/pi-runtime[.exe]` 的唯一来源；启动器不依赖 Cargo
+# package 名称，从而避免发布布局与工作区内部 crate 名称耦合。
+name = "pi-runtime"
 path = "src/main.rs"
 
 [dependencies]

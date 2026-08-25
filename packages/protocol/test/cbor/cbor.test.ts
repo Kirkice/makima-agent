@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import {
 	CborError,
+	ClientMessageDecoder,
 	DEFAULT_MAX_CBOR_BYTE_LENGTH,
 	DEFAULT_MAX_CBOR_CONTAINER_LENGTH,
 	DEFAULT_MAX_CBOR_DEPTH,
@@ -10,6 +11,8 @@ import {
 	encodeCbor,
 	ProtocolValidationError,
 	parseClientMessage,
+	parseServerMessage,
+	ServerMessageDecoder,
 } from "../../src/index.ts";
 
 function fromHex(hex: string): Uint8Array {
@@ -24,16 +27,27 @@ function toHex(bytes: Uint8Array): string {
 	return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-interface RustTsConformanceFixture {
+interface RustTsPayloadFixture {
+	readonly kind: "payload";
 	readonly name: string;
+	readonly direction: "client" | "server";
 	readonly wire: string;
 	readonly value: unknown;
 	readonly valid: boolean;
 }
 
-// Rust 与 TypeScript 共用此 fixture。wire 使用 TypeScript 的 definite-length CBOR 规则，
-// Rust 侧同时将它解码为严格的 ClientMessage；这样任一端修改字段命名、映射顺序或严格性时，
-// 两端验证都会在同一份数据上失败，而不是只靠各自的内部单测发现偏差。
+interface RustTsFramingFixture {
+	readonly kind: "framing";
+	readonly name: string;
+	readonly direction: "client" | "server";
+	readonly wire: string;
+	readonly valid: boolean;
+}
+
+type RustTsConformanceFixture = RustTsPayloadFixture | RustTsFramingFixture;
+
+// Rust 与 TypeScript 共用此 fixture。payload 固定 CBOR 映射顺序和严格 DTO 语义；
+// framing 则覆盖 transport EOF。direction 防止测试错误地把 server 数据当 client DTO 解析。
 const rustTsConformanceFixtures = JSON.parse(
 	readFileSync(fileURLToPath(new URL("../fixtures/rust-ts-conformance.json", import.meta.url)), "utf8"),
 ) as RustTsConformanceFixture[];
@@ -94,15 +108,28 @@ describe("CBOR codec", () => {
 
 	test.each(rustTsConformanceFixtures)("matches the shared Rust/TypeScript fixture: $name", (fixture) => {
 		const wire = fromHex(fixture.wire);
+		if (fixture.kind === "framing") {
+			const decoder = fixture.direction === "client" ? new ClientMessageDecoder() : new ServerMessageDecoder();
+			if (fixture.valid) {
+				expect(decoder.push(wire)).toHaveLength(1);
+				expect(() => decoder.end()).not.toThrow();
+			} else {
+				expect(decoder.push(wire)).toEqual([]);
+				expect(() => decoder.end()).toThrow(ProtocolValidationError);
+			}
+			return;
+		}
+
+		const parse = fixture.direction === "client" ? parseClientMessage : parseServerMessage;
 		if (!fixture.valid) {
 			// CBOR 本身可以表示多余字段，但协议 DTO 必须拒绝它，防止一端悄然接受另一端未知语义。
-			expect(() => parseClientMessage(decodeCbor(wire))).toThrow(ProtocolValidationError);
+			expect(() => parse(decodeCbor(wire))).toThrow(ProtocolValidationError);
 			return;
 		}
 
 		expect(decodeCbor(wire)).toEqual(fixture.value);
 		expect(toHex(encodeCbor(fixture.value))).toBe(fixture.wire);
-		expect(parseClientMessage(fixture.value)).toEqual(fixture.value);
+		expect(parse(fixture.value)).toEqual(fixture.value);
 	});
 
 	test("omits undefined object properties without omitting falsey values", () => {

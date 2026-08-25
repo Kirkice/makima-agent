@@ -1,0 +1,15 @@
+{
+  "name": "pi-package-outside-smoke",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "file:../workspace-packs/earendil-works-pi-agent-core-0.84.1.tgz",
+    "@earendil-works/pi-ai": "file:../workspace-packs/earendil-works-pi-ai-0.84.1.tgz",
+    "@earendil-works/pi-client": "file:../workspace-packs/earendil-works-pi-client-0.84.1.tgz",
+    "@earendil-works/pi-coding-agent": "file:../earendil-works-pi-coding-agent-0.84.1.tgz",
+    "@earendil-works/pi-protocol": "file:../workspace-packs/earendil-works-pi-protocol-0.84.1.tgz",
+    "@earendil-works/pi-provider-host": "file:../workspace-packs/earendil-works-pi-provider-host-0.84.1.tgz",
+    "@earendil-works/pi-telemetry": "file:../workspace-packs/earendil-works-pi-telemetry-0.84.1.tgz",
+    "@earendil-works/pi-tui": "file:../workspace-packs/earendil-works-pi-tui-0.84.1.tgz"
+  }
+}

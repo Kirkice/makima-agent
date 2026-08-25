@@ -27,7 +27,9 @@ export interface ProviderHostByteOutput {
  */
 export class ProviderHostStdioServer {
 	private readonly decoder = createProviderHostRequestDecoder();
+	private readonly activeTasks = new Set<Promise<void>>();
 	private writeTail: Promise<void> = Promise.resolve();
+	private closing: Promise<void> | undefined;
 	private ended = false;
 
 	private readonly host: ProviderHost;
@@ -40,8 +42,8 @@ export class ProviderHostStdioServer {
 
 	attach(input: ProviderHostByteInput): void {
 		input.on("data", (chunk) => this.receive(chunk));
-		input.on("end", () => this.end());
-		input.on("error", () => this.end());
+		input.on("end", () => void this.close());
+		input.on("error", () => void this.close());
 	}
 
 	receive(chunk: Uint8Array): void {
@@ -49,10 +51,37 @@ export class ProviderHostStdioServer {
 		for (const message of this.decoder.push(chunk)) this.handle(message);
 	}
 
-	end(): void {
-		if (this.ended) return;
-		this.decoder.end();
+	/**
+	 * 关闭输入并等待已排队的 framed-CBOR 输出完成。
+	 *
+	 * stdin EOF 是 Rust supervisor 的正常关闭信号。必须先 abort 所有 Provider 请求，再等待
+	 * 每个执行任务写完它唯一的 complete；否则子进程退出会让 Core 永久保留 active request。
+	 */
+	close(): Promise<void> {
+		if (this.closing) return this.closing;
 		this.ended = true;
+		this.closing = this.closeInternal();
+		return this.closing;
+	}
+
+	private async closeInternal(): Promise<void> {
+		let decoderError: unknown;
+		try {
+			this.decoder.end();
+		} catch (error) {
+			// 截断输入仍必须触发取消和 complete 收尾，协议错误在收尾后才向 supervisor 报告。
+			decoderError = error;
+		} finally {
+			this.host.abortAll();
+		}
+		await Promise.allSettled(this.activeTasks);
+		await this.writeTail;
+		if (decoderError) throw decoderError;
+	}
+
+	/** 与旧的同步调用点兼容；进程入口应使用 `close` 等待完整关闭。 */
+	end(): void {
+		void this.close();
 	}
 
 	private handle(message: ProviderHostRequest): void {
@@ -60,7 +89,12 @@ export class ProviderHostStdioServer {
 			this.host.abort(message.requestId);
 			return;
 		}
-		void this.execute(message.request);
+		const task = this.execute(message.request);
+		this.activeTasks.add(task);
+		void task.then(
+			() => this.activeTasks.delete(task),
+			() => this.activeTasks.delete(task),
+		);
 	}
 
 	private async execute(request: Extract<ProviderHostRequest, { type: "request" }>["request"]): Promise<void> {

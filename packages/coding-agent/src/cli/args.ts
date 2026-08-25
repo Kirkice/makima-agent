@@ -10,6 +10,9 @@ import type { TuiMode } from "../core/settings-manager.ts";
 
 export type Mode = "text" | "json" | "rpc";
 
+/** 迁移期间选择产品运行时；未指定时由启动器根据环境变量和默认策略决定。 */
+export type RuntimeSelection = "native" | "ts" | "auto";
+
 export interface Args {
 	provider?: string;
 	model?: string;
@@ -22,6 +25,7 @@ export interface Args {
 	help?: boolean;
 	version?: boolean;
 	mode?: Mode;
+	runtime?: RuntimeSelection;
 	name?: string;
 	noSession?: boolean;
 	session?: string;
@@ -81,6 +85,16 @@ export function parseArgs(args: string[]): Args {
 			const mode = args[++i];
 			if (mode === "text" || mode === "json" || mode === "rpc") {
 				result.mode = mode;
+			}
+		} else if (arg === "--runtime" || arg.startsWith("--runtime=")) {
+			const value = arg === "--runtime" ? args[++i] : arg.slice("--runtime=".length);
+			if (value === "native" || value === "ts" || value === "auto") {
+				result.runtime = value;
+			} else {
+				result.diagnostics.push({
+					type: "error",
+					message: `--runtime requires native, ts, or auto; received ${value === undefined ? "no value" : JSON.stringify(value)}`,
+				});
 			}
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
@@ -258,6 +272,7 @@ ${chalk.bold("Options:")}
   --system-prompt <text>         System prompt (default: coding assistant prompt)
   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)
   --mode <mode>                  Output mode: text (default), json, or rpc
+  --runtime <runtime>            Runtime: ts (default), native, or auto (experimental)
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session
   --resume, -r                   Select a session to resume
@@ -402,6 +417,7 @@ ${chalk.bold("Environment Variables:")}
   ${ENV_AGENT_DIR.padEnd(32)} - Config directory (default: ~/${CONFIG_DIR_NAME}/agent)
   ${ENV_SESSION_DIR.padEnd(32)} - Session storage directory (overridden by --session-dir)
   PI_PACKAGE_DIR                   - Override package directory (for Nix/Guix store paths)
+  PI_RUNTIME                       - Runtime default: ts, native, or auto (CLI flag takes precedence)
   PI_OFFLINE                       - Disable startup network operations when set to 1/true/yes
   PI_TELEMETRY                     - Override install telemetry when set to 1/true/yes or 0/false/no
   PI_SHARE_VIEWER_URL              - Base URL for /share command (default: https://pi.dev/session/)

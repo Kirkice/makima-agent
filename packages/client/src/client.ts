@@ -72,7 +72,10 @@ export class PiClient {
 			transportFactory: options.transportFactory,
 			maxFrameLength: options.maxFrameLength,
 			lastSeenSequence: () => this.#state.lastSeenEventSequence,
-			onHandshake: (snapshot) => this.#state.applyServerSnapshot(snapshot),
+			onHandshake: (snapshot) => {
+				this.#state.beginConnection();
+				this.#state.applyServerSnapshot(snapshot);
+			},
 			onMessage: (message) => this.#handleMessage(message),
 			onStateChange: (change) => this.#handleConnectionStateChange(change),
 		});

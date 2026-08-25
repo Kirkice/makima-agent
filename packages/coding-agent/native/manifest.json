@@ -1,0 +1,12 @@
+{
+  "schema": "pi.native_runtime.v1",
+  "platform": "win32",
+  "executable": {
+    "path": "pi-runtime.exe",
+    "sha256": "156eae5fb3bf98b41428d71d44a82004e618eae4b36e6649fbc55e7fbf156a3d"
+  },
+  "providerHost": {
+    "path": "provider-host/main.js",
+    "sha256": "a9fecd12eaa540d01ca5aca4a8bcc4aeab4de158e3dc322f735e5d04e24b68ed"
+  }
+}

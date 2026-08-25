@@ -9,9 +9,9 @@ mod read;
 use std::{
     collections::{BTreeSet, VecDeque},
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender, TryRecvError},
-        Arc,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -593,8 +593,8 @@ fn error_result(call: &ToolCall, timestamp: u64, message: impl Into<String>) -> 
 mod tests {
     use std::{
         sync::{
-            atomic::{AtomicBool, Ordering},
             Arc,
+            atomic::{AtomicBool, Ordering},
         },
         thread,
         time::{Duration, Instant},

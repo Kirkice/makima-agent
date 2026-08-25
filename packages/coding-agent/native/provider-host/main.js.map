@@ -1,0 +1,1 @@
+{"version":3,"file":"main.js","sourceRoot":"","sources":["../src/main.ts"],"names":[],"mappings":";AACA,OAAO,EAAE,iBAAiB,EAAE,MAAM,cAAc,CAAC;AAEjD,iBAAiB,EAAE,CAAC","sourcesContent":["#!/usr/bin/env node\nimport { startProviderHost } from \"./runtime.ts\";\n\nstartProviderHost();\n"]}

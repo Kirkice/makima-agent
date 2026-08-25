@@ -21,6 +21,7 @@ describe("PiClient", () => {
 		const unsubscribeEvents = handle.onEvent((event) => progressTypes.push(event.type));
 		server.send({
 			type: "event",
+			sequence: 1,
 			event: {
 				type: "session_progress",
 				sessionId: "session-1",
@@ -55,9 +56,40 @@ describe("PiClient", () => {
 		unsubscribeEvents();
 		server.send({
 			type: "event",
+			sequence: 2,
 			event: { type: "session_snapshot", snapshot: sessionSnapshot("session-1", { revision: 3 }) },
 		});
 		expect(observed).toEqual([2]);
+	});
+
+	test("ignores duplicate events and stops applying a connection after a sequence gap", async () => {
+		const server = new MemoryByteServer();
+		const client = await connectClient(server);
+		const handle = await attachSession(client, server, sessionSnapshot("session-1", { revision: 1 }));
+
+		server.send({
+			type: "event",
+			sequence: 1,
+			event: { type: "session_snapshot", snapshot: sessionSnapshot("session-1", { revision: 2 }) },
+		});
+		// 同一序号的重放不能覆盖已应用状态；跳过序号后，该连接不能再信任增量。
+		server.send({
+			type: "event",
+			sequence: 1,
+			event: { type: "session_snapshot", snapshot: sessionSnapshot("session-1", { revision: 3 }) },
+		});
+		server.send({
+			type: "event",
+			sequence: 3,
+			event: { type: "session_snapshot", snapshot: sessionSnapshot("session-1", { revision: 4 }) },
+		});
+		server.send({
+			type: "event",
+			sequence: 2,
+			event: { type: "session_snapshot", snapshot: sessionSnapshot("session-1", { revision: 5 }) },
+		});
+
+		expect(handle.snapshot).toMatchObject({ revision: 2 });
 	});
 
 	test("keeps session leases attached across server metadata snapshots", async () => {
@@ -67,6 +99,7 @@ describe("PiClient", () => {
 
 		server.send({
 			type: "event",
+			sequence: 1,
 			event: {
 				type: "server_snapshot",
 				snapshot: {
@@ -91,6 +124,7 @@ describe("PiClient", () => {
 		if (!request) throw new Error("Missing set_thinking request");
 		server.send({
 			type: "event",
+			sequence: 1,
 			event: {
 				type: "session_snapshot",
 				snapshot: sessionSnapshot("session-1", { revision: 3, thinkingLevel: "high" }),
@@ -115,6 +149,7 @@ describe("PiClient", () => {
 		const client = await connectClient(server);
 		server.send({
 			type: "event",
+			sequence: 1,
 			event: {
 				type: "session_snapshot",
 				snapshot: sessionSnapshot("session-1", { revision: 10, attached: false }),
@@ -124,6 +159,7 @@ describe("PiClient", () => {
 			if (message.type !== "request" || message.request.command !== "attach") return;
 			server.send({
 				type: "event",
+				sequence: 2,
 				event: {
 					type: "session_snapshot",
 					snapshot: sessionSnapshot("session-1", { revision: 3, thinkingLevel: "high" }),

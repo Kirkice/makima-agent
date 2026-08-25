@@ -100,6 +100,8 @@ export function sessionSnapshot(id: string, overrides: Partial<SessionSnapshot> 
 		transcript: [],
 		queuedSteer: [],
 		queuedSteerCount: 0,
+		queuedFollowUp: [],
+		queuedFollowUpCount: 0,
 		...overrides,
 	};
 }

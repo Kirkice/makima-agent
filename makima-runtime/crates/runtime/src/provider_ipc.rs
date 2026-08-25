@@ -5,13 +5,18 @@
 //! 投递给 Agent Loop；因此 Agent Loop 保持没有网络或进程 I/O 的纯状态机。
 
 use std::{
-    collections::BTreeSet,
-    ffi::OsStr,
+    collections::{BTreeMap, BTreeSet},
+    ffi::{OsStr, OsString},
     fmt,
     io::{self, Read, Write},
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
-    sync::mpsc::{self, Receiver, TryRecvError},
+    path::PathBuf,
+    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, TryRecvError},
+    },
     thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use protocol::{
@@ -21,6 +26,21 @@ use protocol::{
 };
 
 use crate::provider_runtime::ProviderStreamPort;
+
+/// Provider Host 的可观测生命周期。
+///
+/// 这里不引入额外的 wire handshake：现有协议没有 readiness 消息，而进程成功创建并
+/// 建立三条管道已经是 Rust supervisor 能确认的启动边界。真正收到首批响应前仍保持
+/// `Running`，EOF、协议错误和非零退出统一转为 `Crashed`，避免把“已无能力处理请求”
+/// 误判为可重试的 idle 状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderHostLifecycle {
+    Starting,
+    Running,
+    Closing,
+    Exited,
+    Crashed,
+}
 
 /// Provider Host 进程边界无法继续时的错误。
 #[derive(Debug)]
@@ -44,18 +64,14 @@ impl fmt::Display for ProviderIpcError {
             Self::InvalidMessage(message) => {
                 write!(formatter, "Invalid Provider Host message: {message}")
             }
-            Self::UnknownRequestId(request_id) => {
-                write!(
-                    formatter,
-                    "Provider Host responded for inactive request: {request_id}"
-                )
-            }
-            Self::DuplicateRequestId(request_id) => {
-                write!(
-                    formatter,
-                    "Provider request ID is already active: {request_id}"
-                )
-            }
+            Self::UnknownRequestId(request_id) => write!(
+                formatter,
+                "Provider Host responded for inactive request: {request_id}"
+            ),
+            Self::DuplicateRequestId(request_id) => write!(
+                formatter,
+                "Provider request ID is already active: {request_id}"
+            ),
         }
     }
 }
@@ -192,6 +208,41 @@ where
     }
 }
 
+/// Provider Host 的显式启动约束。
+///
+/// 产品路径不得把当前工作目录和完整父进程环境作为未声明输入传给 Host。调用方应传入已
+/// 过滤的环境白名单；`inherit_environment` 仅保留给兼容旧嵌入调用与测试，不能用于产品 CLI。
+#[derive(Debug, Clone)]
+pub struct ProviderHostLaunchSpec {
+    pub program: OsString,
+    pub args: Vec<OsString>,
+    pub cwd: PathBuf,
+    pub environment: BTreeMap<OsString, OsString>,
+    pub inherit_environment: bool,
+}
+
+impl ProviderHostLaunchSpec {
+    /// 创建一个隔离的产品启动配置。
+    pub fn isolated(
+        program: impl Into<OsString>,
+        args: Vec<OsString>,
+        cwd: impl Into<PathBuf>,
+        environment: BTreeMap<OsString, OsString>,
+    ) -> Self {
+        Self {
+            program: program.into(),
+            args,
+            cwd: cwd.into(),
+            environment,
+            inherit_environment: false,
+        }
+    }
+}
+
+/// stderr 的最大保留字节数。stdout 始终只承载 framed-CBOR，诊断只能从此有界缓冲读取。
+const STDERR_DIAGNOSTIC_LIMIT: usize = 64 * 1024;
+const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// 非阻塞的 Provider stream port。
 ///
 /// stdin 写入保留在调用 SessionManager 的线程；stdout 则由专用 reader 线程阻塞读取，并把
@@ -201,21 +252,61 @@ pub struct ProviderHostStreamPort {
     responses: Receiver<Result<Vec<ProviderHostResponse>, ProviderIpcError>>,
     child: Option<Child>,
     reader_task: Option<JoinHandle<()>>,
+    stderr_task: Option<JoinHandle<()>>,
+    stderr: Arc<Mutex<Vec<u8>>>,
+    lifecycle: ProviderHostLifecycle,
 }
 
 impl ProviderHostStreamPort {
-    /// 启动 Provider Host，并将其 stdout 交给后台 framed-CBOR reader。
+    /// 启动兼容旧嵌入调用的 Provider Host。
+    ///
+    /// 产品 CLI 必须改用 [`Self::spawn_with_spec`]，使 cwd 与环境输入可审计。这里保留父环境
+    /// 仅避免破坏已有库调用；它不是发布路径的安全边界。
     pub fn spawn<I, S>(program: impl AsRef<OsStr>, args: I) -> Result<Self, ProviderIpcError>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let mut command = Command::new(program);
+        let cwd = std::env::current_dir().map_err(|error| {
+            ProviderIpcError::Transport(format!("cannot read current directory: {error}"))
+        })?;
+        Self::spawn_with_spec(ProviderHostLaunchSpec {
+            program: program.as_ref().to_os_string(),
+            args: args
+                .into_iter()
+                .map(|argument| argument.as_ref().to_os_string())
+                .collect(),
+            cwd,
+            environment: BTreeMap::new(),
+            inherit_environment: true,
+        })
+    }
+
+    /// 以显式 cwd、环境白名单和有界 stderr 监督 Provider Host。
+    ///
+    /// stdout 永远是协议管道；stderr 在后台吸收并限制为固定长度，避免子进程大量诊断阻塞或
+    /// 无限占用内存。关闭时先关闭 stdin，给 Host 机会取消活动 request 并写完唯一 `complete`；
+    /// 超过 deadline 才终止进程，且绝不重放正在进行的模型请求。
+    pub fn spawn_with_spec(spec: ProviderHostLaunchSpec) -> Result<Self, ProviderIpcError> {
+        if !spec.cwd.is_dir() {
+            return Err(ProviderIpcError::Transport(format!(
+                "Provider Host cwd is not a directory: {}",
+                spec.cwd.display()
+            )));
+        }
+
+        let mut command = Command::new(&spec.program);
         command
-            .args(args)
+            .args(&spec.args)
+            .current_dir(&spec.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::piped());
+        if !spec.inherit_environment {
+            command.env_clear();
+        }
+        command.envs(&spec.environment);
+
         let mut child = command
             .spawn()
             .map_err(|error| ProviderIpcError::Transport(error.to_string()))?;
@@ -224,6 +315,9 @@ impl ProviderHostStreamPort {
         })?;
         let stdin = child.stdin.take().ok_or_else(|| {
             ProviderIpcError::Transport("Provider Host stdin pipe is unavailable".to_owned())
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            ProviderIpcError::Transport("Provider Host stderr pipe is unavailable".to_owned())
         })?;
         let (sender, responses) = mpsc::channel();
         let reader_task = thread::spawn(move || {
@@ -237,28 +331,155 @@ impl ProviderHostStreamPort {
                 }
             }
         });
+        let stderr_buffer = Arc::new(Mutex::new(Vec::new()));
+        let stderr_task = spawn_bounded_stderr_reader(stderr, Arc::clone(&stderr_buffer));
         Ok(Self {
             writer: Some(ProviderHostConnection::new(io::empty(), stdin)),
             responses,
             child: Some(child),
             reader_task: Some(reader_task),
+            stderr_task: Some(stderr_task),
+            stderr: stderr_buffer,
+            lifecycle: ProviderHostLifecycle::Running,
         })
     }
 
+    /// 返回 supervisor 最近确认的 Host 生命周期。
+    pub fn lifecycle(&self) -> ProviderHostLifecycle {
+        self.lifecycle
+    }
+
+    /// 非阻塞地同步 child 的退出状态。
+    ///
+    /// reader 线程只负责 stdout 协议帧，Provider Host 也可能在没有输出任何帧时异常退出。
+    /// 每次对外操作前检查一次 `try_wait`，才能阻止 supervisor 在“进程已死但本地仍显示
+    /// Running”的窗口内接受新的 request。正常运行期间的任意退出都视为 crash；只有
+    /// `shutdown` 主动进入 `Closing` 后才允许把成功退出标记为 `Exited`。
+    fn refresh_lifecycle(&mut self) -> Result<(), String> {
+        let Some(child) = self.child.as_mut() else {
+            return Ok(());
+        };
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                self.lifecycle =
+                    if self.lifecycle == ProviderHostLifecycle::Closing && status.success() {
+                        ProviderHostLifecycle::Exited
+                    } else {
+                        ProviderHostLifecycle::Crashed
+                    };
+                if self.lifecycle == ProviderHostLifecycle::Crashed {
+                    return Err(self.with_stderr_diagnostics(format!(
+                        "Provider Host exited unexpectedly with status {status}"
+                    )));
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.lifecycle = ProviderHostLifecycle::Crashed;
+                return Err(self.with_stderr_diagnostics(format!(
+                    "cannot inspect Provider Host lifecycle: {error}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// 返回目前捕获到的 Host 诊断，供上层把失败原因写入自己的 stderr。
+    pub fn stderr_diagnostics(&self) -> String {
+        let bytes = self
+            .stderr
+            .lock()
+            .map_or_else(|_| Vec::new(), |buffer| buffer.clone());
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// 将有界 stderr 诊断附加到传输错误。
+    ///
+    /// 只有 Host 确实写出诊断时才改变错误文本，避免无内容时污染稳定的协议错误。诊断留在
+    /// Rust 错误路径而不写入 stdout，确保 RPC 和其他机器可读输出不被子进程日志破坏。
+    fn with_stderr_diagnostics(&self, message: impl Into<String>) -> String {
+        let message = message.into();
+        let diagnostics = self.stderr_diagnostics();
+        match diagnostics.is_empty() {
+            true => message,
+            false => format!("{message}\nProvider Host stderr:\n{diagnostics}"),
+        }
+    }
+
     fn shutdown(&mut self) {
+        if !matches!(
+            self.lifecycle,
+            ProviderHostLifecycle::Exited | ProviderHostLifecycle::Crashed
+        ) {
+            self.lifecycle = ProviderHostLifecycle::Closing;
+        }
+        // 关闭 stdin 触发 TypeScript Host 的 EOF close 路径；保留 stdout reader 直到 child 正常退出。
         drop(self.writer.take());
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            let deadline = Instant::now() + GRACEFUL_SHUTDOWN_TIMEOUT;
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        self.lifecycle = if status.success() {
+                            ProviderHostLifecycle::Exited
+                        } else {
+                            ProviderHostLifecycle::Crashed
+                        };
+                        break;
+                    }
+                    Err(_) => {
+                        self.lifecycle = ProviderHostLifecycle::Crashed;
+                        break;
+                    }
+                    Ok(None) if Instant::now() >= deadline => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        self.lifecycle = ProviderHostLifecycle::Crashed;
+                        break;
+                    }
+                    Ok(None) => thread::sleep(Duration::from_millis(10)),
+                }
+            }
         }
         if let Some(task) = self.reader_task.take() {
+            let _ = task.join();
+        }
+        if let Some(task) = self.stderr_task.take() {
             let _ = task.join();
         }
     }
 }
 
+fn spawn_bounded_stderr_reader(
+    mut stderr: ChildStderr,
+    buffer: Arc<Mutex<Vec<u8>>>,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let mut chunk = [0_u8; 4096];
+        loop {
+            match stderr.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(length) => {
+                    let Ok(mut collected) = buffer.lock() else {
+                        break;
+                    };
+                    let retained = STDERR_DIAGNOSTIC_LIMIT.saturating_sub(collected.len());
+                    collected.extend_from_slice(&chunk[..length.min(retained)]);
+                }
+            }
+        }
+    })
+}
+
 impl ProviderStreamPort for ProviderHostStreamPort {
     fn request(&mut self, request: ProviderRequest) -> Result<(), String> {
+        self.refresh_lifecycle()?;
+        if self.lifecycle != ProviderHostLifecycle::Running {
+            return Err(format!(
+                "Provider Host is not running: {:?}",
+                self.lifecycle
+            ));
+        }
         self.writer
             .as_mut()
             .ok_or_else(|| "Provider Host transport is shut down".to_owned())?
@@ -267,6 +488,13 @@ impl ProviderStreamPort for ProviderHostStreamPort {
     }
 
     fn abort(&mut self, request_id: &str) -> Result<(), String> {
+        self.refresh_lifecycle()?;
+        if self.lifecycle != ProviderHostLifecycle::Running {
+            return Err(format!(
+                "Provider Host is not running: {:?}",
+                self.lifecycle
+            ));
+        }
         self.writer
             .as_mut()
             .ok_or_else(|| "Provider Host transport is shut down".to_owned())?
@@ -276,15 +504,29 @@ impl ProviderStreamPort for ProviderHostStreamPort {
     }
 
     fn try_receive(&mut self) -> Result<Option<Vec<ProviderHostResponse>>, String> {
+        self.refresh_lifecycle()?;
         match self.responses.try_recv() {
             Ok(Ok(batch)) if batch.is_empty() => {
-                Err("Provider Host closed stdout before the active request completed".to_owned())
+                let message = if self.lifecycle == ProviderHostLifecycle::Closing {
+                    self.lifecycle = ProviderHostLifecycle::Exited;
+                    "Provider Host closed stdout during graceful shutdown"
+                } else {
+                    self.lifecycle = ProviderHostLifecycle::Crashed;
+                    "Provider Host closed stdout before the active request completed"
+                };
+                Err(self.with_stderr_diagnostics(message))
             }
             Ok(Ok(batch)) => Ok(Some(batch)),
-            Ok(Err(error)) => Err(error.to_string()),
+            Ok(Err(error)) => {
+                self.lifecycle = ProviderHostLifecycle::Crashed;
+                Err(self.with_stderr_diagnostics(error.to_string()))
+            }
             Err(TryRecvError::Empty) => Ok(None),
             Err(TryRecvError::Disconnected) => {
-                Err("Provider Host reader stopped unexpectedly".to_owned())
+                if self.lifecycle != ProviderHostLifecycle::Closing {
+                    self.lifecycle = ProviderHostLifecycle::Crashed;
+                }
+                Err(self.with_stderr_diagnostics("Provider Host reader stopped unexpectedly"))
             }
         }
     }
@@ -428,7 +670,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::{
+        collections::BTreeMap, ffi::OsString, io::Cursor, path::PathBuf, thread, time::Duration,
+    };
 
     use protocol::{
         AssistantStopReason, ModelRef, ProviderHostResponse, ProviderRequest, ProviderStreamEvent,
@@ -436,7 +680,10 @@ mod tests {
         framing::{DEFAULT_MAX_FRAME_LENGTH, decode_complete_frame, encode_frame},
     };
 
-    use super::{ProviderHostConnection, ProviderIpcError};
+    use super::{
+        ProviderHostConnection, ProviderHostLaunchSpec, ProviderHostStreamPort, ProviderIpcError,
+    };
+    use crate::provider_runtime::ProviderStreamPort;
 
     fn request(request_id: &str) -> ProviderRequest {
         ProviderRequest {
@@ -454,6 +701,51 @@ mod tests {
     fn response_frame(response: ProviderHostResponse) -> Vec<u8> {
         let payload = encode_cbor(&response).expect("response should encode");
         encode_frame(&payload, DEFAULT_MAX_FRAME_LENGTH).expect("response should frame")
+    }
+
+    #[test]
+    fn isolated_launch_rejects_missing_working_directory_before_spawning_a_child() {
+        let result = ProviderHostStreamPort::spawn_with_spec(ProviderHostLaunchSpec::isolated(
+            OsString::from("does-not-run"),
+            Vec::new(),
+            PathBuf::from("missing-provider-host-working-directory"),
+            BTreeMap::new(),
+        ));
+        assert!(
+            matches!(result, Err(ProviderIpcError::Transport(message)) if message.contains("cwd is not a directory"))
+        );
+    }
+
+    #[test]
+    fn rejects_new_requests_after_the_host_exits_without_waiting_for_stdout_eof() {
+        let (program, args) = if cfg!(windows) {
+            (
+                OsString::from("cmd.exe"),
+                vec![OsString::from("/C"), OsString::from("exit 0")],
+            )
+        } else {
+            (
+                OsString::from("sh"),
+                vec![OsString::from("-c"), OsString::from("exit 0")],
+            )
+        };
+        let mut port = ProviderHostStreamPort::spawn_with_spec(ProviderHostLaunchSpec::isolated(
+            program,
+            args,
+            std::env::current_dir().expect("test cwd"),
+            BTreeMap::new(),
+        ))
+        .expect("test host should spawn");
+
+        // 给极短命令留出退出时间，确保本测试验证的是 supervisor 的 `try_wait` 检查，
+        // 而不是依赖写端在操作系统管道层面先返回 broken pipe。
+        thread::sleep(Duration::from_millis(50));
+        let message = ProviderStreamPort::request(&mut port, request("lifecycle-request"))
+            .expect_err("exited Host must reject a new request");
+        assert!(
+            message.contains("Crashed") || message.contains("exited unexpectedly"),
+            "unexpected lifecycle error: {message}"
+        );
     }
 
     #[test]

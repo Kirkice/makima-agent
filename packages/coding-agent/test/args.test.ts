@@ -125,6 +125,24 @@ describe("parseArgs", () => {
 			expect(result.mode).toBe("rpc");
 		});
 
+		test("parses --runtime without forwarding it as an extension flag", () => {
+			const separate = parseArgs(["--runtime", "native"]);
+			const equals = parseArgs(["--runtime=auto"]);
+
+			expect(separate.runtime).toBe("native");
+			expect(separate.unknownFlags.has("runtime")).toBe(false);
+			expect(equals.runtime).toBe("auto");
+		});
+
+		test("reports missing or invalid --runtime values", () => {
+			expect(parseArgs(["--runtime"]).diagnostics).toEqual([
+				{ type: "error", message: "--runtime requires native, ts, or auto; received no value" },
+			]);
+			expect(parseArgs(["--runtime", "other"]).diagnostics).toEqual([
+				{ type: "error", message: '--runtime requires native, ts, or auto; received "other"' },
+			]);
+		});
+
 		test("parses --session", () => {
 			const result = parseArgs(["--session", "/path/to/session.jsonl"]);
 			expect(result.session).toBe("/path/to/session.jsonl");

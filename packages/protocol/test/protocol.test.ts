@@ -45,6 +45,7 @@ const serverHello: ServerHello = {
 function itemMessage(item: unknown, type: "item_updated" | "item_finished" = "item_finished") {
 	return {
 		type: "event",
+		sequence: 1,
 		event: {
 			type: "session_progress",
 			sessionId: "session-1",
@@ -54,11 +55,11 @@ function itemMessage(item: unknown, type: "item_updated" | "item_finished" = "it
 }
 
 describe("protocol validation", () => {
-	test("uses protocol version 2", () => {
-		expect(PROTOCOL_VERSION).toBe(2);
-		expect(isSupportedProtocolVersion(2)).toBe(true);
-		expect(isSupportedProtocolVersion(1)).toBe(false);
-		expect(isSupportedProtocolVersion(2.5)).toBe(false);
+	test("uses protocol version 3", () => {
+		expect(PROTOCOL_VERSION).toBe(3);
+		expect(isSupportedProtocolVersion(3)).toBe(true);
+		expect(isSupportedProtocolVersion(2)).toBe(false);
+		expect(isSupportedProtocolVersion(3.5)).toBe(false);
 	});
 
 	test.each([0, PROTOCOL_VERSION, PROTOCOL_VERSION + 1])(
@@ -72,6 +73,8 @@ describe("protocol validation", () => {
 	test.each([
 		["string version", { type: "hello", version: String(PROTOCOL_VERSION) }],
 		["fractional version", { type: "hello", version: PROTOCOL_VERSION + 0.5 }],
+		["negative last seen sequence", { type: "hello", version: PROTOCOL_VERSION, lastSeenSequence: -1 }],
+		["fractional last seen sequence", { type: "hello", version: PROTOCOL_VERSION, lastSeenSequence: 1.5 }],
 		["credential field", { type: "hello", version: PROTOCOL_VERSION, token: "secret" }],
 		["unknown field", { type: "hello", version: PROTOCOL_VERSION, extra: true }],
 	] as const)("rejects a handshake with %s", (_label, message) => {
@@ -193,7 +196,10 @@ describe("protocol validation", () => {
 		},
 		{ type: "hello_error", error: { code: "auth", message: "Authentication failed" } },
 		{ type: "response", id: "request-1", ok: true, result: { command: "unknown" } },
-		{ type: "event", event: { type: "session_removed", sessionId: 42 } },
+		{ type: "event", event: { type: "session_removed", sessionId: "session-1" } },
+		{ type: "event", sequence: 0, event: { type: "session_removed", sessionId: "session-1" } },
+		{ type: "event", sequence: 1.5, event: { type: "session_removed", sessionId: "session-1" } },
+		{ type: "event", sequence: 1, event: { type: "session_removed", sessionId: 42 } },
 	])("rejects invalid server messages", (wire) => {
 		expect(() => parseServerMessage(wire)).toThrow(ProtocolValidationError);
 	});
@@ -201,6 +207,7 @@ describe("protocol validation", () => {
 	test("validates nested JSON tool details", () => {
 		const message = {
 			type: "event",
+			sequence: 1,
 			event: {
 				type: "session_progress",
 				sessionId: "session-1",

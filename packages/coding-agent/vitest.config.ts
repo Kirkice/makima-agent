@@ -23,6 +23,10 @@ export default mergeConfig(
 		resolve: {
 			alias: [
 				{
+					find: "vitest",
+					replacement: fileURLToPath(new URL("../../node_modules/vitest/dist/index.js", import.meta.url)),
+				},
+				{
 					find: /^@earendil-works\/pi-client$/,
 					replacement: fileURLToPath(new URL("../client/src/index.ts", import.meta.url)),
 				},

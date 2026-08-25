@@ -183,4 +183,42 @@ describe("ProviderHostStdioServer", () => {
 			{ type: "complete", requestId: "request-1" },
 		]);
 	});
+
+	test("stdin EOF 会取消活动 request，并等待 error 与唯一 complete 写入", async () => {
+		let started = false;
+		const factory: ProviderStreamFactory = (_model, _context, options) =>
+			({
+				async *[Symbol.asyncIterator]() {
+					started = true;
+					await new Promise<void>((resolve) =>
+						options.signal?.addEventListener("abort", () => resolve(), { once: true }),
+					);
+					throw new Error("aborted by EOF");
+				},
+			}) as unknown as ReturnType<typeof createAssistantMessageEventStream>;
+		const output = new Output();
+		const server = new ProviderHostStdioServer(
+			new ProviderHost({ modelResolver: { resolve: model }, stream: factory, now: () => 9 }),
+			output,
+		);
+
+		server.receive(encodeProviderHostRequest({ type: "request", request: request() }));
+		await vi.waitFor(() => expect(started).toBe(true));
+		await Promise.all([server.close(), server.close()]);
+
+		expect(output.responses()).toEqual([
+			{
+				type: "event",
+				requestId: "request-1",
+				event: {
+					type: "error",
+					messageId: "provider-9",
+					content: [],
+					timestamp: 9,
+					message: "Operation aborted",
+				},
+			},
+			{ type: "complete", requestId: "request-1" },
+		]);
+	});
 });

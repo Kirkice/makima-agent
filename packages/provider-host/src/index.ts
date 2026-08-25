@@ -23,6 +23,12 @@ import {
 } from "@earendil-works/pi-protocol";
 import Type, { type TSchema } from "typebox";
 
+/**
+ * `pi-ai` 当前公开的 Tool 类型尚未声明 Rust Core 的批次调度提示；保留这个可选字段可让支持
+ * 它的 Provider adapter 接收原始约束，而旧 adapter 仍按既有 Tool 结构工作。
+ */
+type ProviderRuntimeTool = Tool & { executionMode?: "parallel" | "sequential" };
+
 /** 根据 Rust Core 传来的稳定模型引用定位 Host 私有的完整模型配置。 */
 export interface ProviderModelResolver {
 	resolve(model: ModelRef): Model<Api> | Promise<Model<Api>>;
@@ -118,6 +124,16 @@ export class ProviderHost {
 		return true;
 	}
 
+	/**
+	 * 在 stdio EOF 或进程信号到达时取消全部活动请求。
+	 *
+	 * 这是关闭边界而非错误恢复：Provider 流仍由各自的 `execute` finally 清理，并由
+	 * stdio 服务写入唯一的 complete，避免 Rust Core 永远保留活动 request ID。
+	 */
+	abortAll(): void {
+		for (const controller of this.active.values()) controller.abort();
+	}
+
 	get activeRequestCount(): number {
 		return this.active.size;
 	}
@@ -139,15 +155,17 @@ export const defaultProviderContextConverter: ProviderContextConverter = {
 		return {
 			systemPrompt: request.systemPrompt,
 			messages: request.messages.map(toAiMessage),
-			tools: request.tools.map(
-				(tool) =>
-					({
-						name: tool.name,
-						description: tool.description,
-						parameters: toolParameters(tool.inputSchema),
-						...(tool.executionMode === undefined ? {} : { executionMode: tool.executionMode }),
-					}) satisfies Tool,
-			),
+			tools: request.tools.map((tool) => {
+				const toolWithExecutionMode = tool as typeof tool & { executionMode?: "parallel" | "sequential" };
+				return {
+					name: tool.name,
+					description: tool.description,
+					parameters: toolParameters(tool.inputSchema),
+					...(toolWithExecutionMode.executionMode === undefined
+						? {}
+						: { executionMode: toolWithExecutionMode.executionMode }),
+				} satisfies ProviderRuntimeTool;
+			}),
 		};
 	},
 };

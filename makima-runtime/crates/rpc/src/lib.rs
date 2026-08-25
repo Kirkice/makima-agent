@@ -10,12 +10,11 @@ use std::{
 };
 
 use protocol::{
-    cbor::{decode_cbor, encode_cbor, CborError},
-    framing::{encode_frame, FrameDecoder, FrameError, DEFAULT_MAX_FRAME_LENGTH},
     ClientMessage, Command, CommandResult, ErrorResponse, EventEnvelope, EventMessageType,
-    HelloErrorMessageType, HelloMessageType, ProtocolError, ProtocolErrorCode, ServerEvent,
-    ServerHello, ServerHelloError, ServerMessage, ServerSnapshot, SuccessResponse,
-    PROTOCOL_VERSION,
+    HelloErrorMessageType, HelloMessageType, PROTOCOL_VERSION, ProtocolError, ProtocolErrorCode,
+    ServerEvent, ServerHello, ServerHelloError, ServerMessage, ServerSnapshot, SuccessResponse,
+    cbor::{CborError, decode_cbor, encode_cbor},
+    framing::{DEFAULT_MAX_FRAME_LENGTH, FrameDecoder, FrameError, encode_frame},
 };
 
 /// RPC 连接的业务端口。
@@ -285,19 +284,19 @@ mod tests {
     use std::{
         io::Cursor,
         sync::{
-            atomic::{AtomicBool, Ordering},
             Arc,
+            atomic::{AtomicBool, Ordering},
         },
     };
 
     use protocol::{
+        ClientMessage, CommandResult, EventEnvelope, PROTOCOL_VERSION, ProtocolError,
+        ProtocolErrorCode, ServerEvent, ServerMessage, ServerSnapshot,
         cbor::{decode_cbor, encode_cbor},
         framing::{decode_complete_frame, encode_frame},
-        ClientMessage, CommandResult, EventEnvelope, ProtocolError, ProtocolErrorCode, ServerEvent,
-        ServerMessage, ServerSnapshot, PROTOCOL_VERSION,
     };
 
-    use super::{serve_connection, RpcCommandHandler, RpcConnection, RpcError};
+    use super::{RpcCommandHandler, RpcConnection, RpcError, serve_connection};
 
     struct FakeHandler {
         events: Vec<ServerEvent>,
@@ -399,10 +398,12 @@ mod tests {
             last_seen_sequence: None,
         });
 
-        assert!(connection
-            .receive(&frame[..3])
-            .expect("fragment is valid")
-            .is_empty());
+        assert!(
+            connection
+                .receive(&frame[..3])
+                .expect("fragment is valid")
+                .is_empty()
+        );
         let messages = server_messages(
             connection
                 .receive(&frame[3..])
@@ -412,7 +413,7 @@ mod tests {
         assert!(matches!(messages[0], ServerMessage::Hello(_)));
         assert!(matches!(
             messages[1],
-            ServerMessage::Event(EventEnvelope { .. })
+            ServerMessage::Event(EventEnvelope { sequence: 1, .. })
         ));
     }
 
@@ -446,6 +447,37 @@ mod tests {
             [ServerMessage::SuccessResponse(_)]
         ));
         assert_eq!(connection.into_handler().executed, vec!["list"]);
+    }
+
+    #[test]
+    fn fresh_connection_restarts_event_sequence_after_reconnect_snapshot() {
+        let event = ServerEvent::SessionRemoved {
+            session_id: "session-1".to_owned(),
+        };
+        let hello = ClientMessage::Hello {
+            version: PROTOCOL_VERSION,
+            // 旧连接的已应用边界只用于声明客户端状态；新的权威 hello snapshot 后，
+            // 新 transport 的 event sequence 必须从 1 开始。
+            last_seen_sequence: Some(7),
+        };
+        let mut reconnected = RpcConnection::with_max_frame_length(
+            "connection-2",
+            FakeHandler::new(vec![event]),
+            1024,
+        )
+        .expect("connection should initialize");
+
+        let messages = server_messages(
+            reconnected
+                .receive(&client_frame(hello))
+                .expect("reconnect hello should succeed"),
+        );
+
+        assert!(matches!(messages[0], ServerMessage::Hello(_)));
+        assert!(matches!(
+            messages[1],
+            ServerMessage::Event(EventEnvelope { sequence: 1, .. })
+        ));
     }
 
     #[test]

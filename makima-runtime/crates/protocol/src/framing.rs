@@ -239,7 +239,7 @@ fn validate_maximum_length(max_frame_length: usize) -> Result<(), FrameError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_complete_frame, encode_frame, FrameDecoder, FrameError, DEFAULT_MAX_FRAME_LENGTH,
+        DEFAULT_MAX_FRAME_LENGTH, FrameDecoder, FrameError, decode_complete_frame, encode_frame,
     };
 
     #[test]

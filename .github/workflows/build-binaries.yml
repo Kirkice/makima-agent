@@ -49,6 +49,28 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
+      # 二进制 archive 内的 sidecar 必须和 Bun executable 使用相同目标平台/架构。安装全部
+      # target 与 cargo-zigbuild，使脚本无法因误用构建机 runtime 而生成貌似完整的错误发布物。
+      - name: Setup Rust sidecar toolchain
+        uses: dtolnay/rust-toolchain@e97e310fd54c29007a0bd59b6c2cd89da4b45d99 # stable
+        with:
+          toolchain: stable
+          targets: >-
+            aarch64-apple-darwin,
+            x86_64-apple-darwin,
+            x86_64-unknown-linux-gnu,
+            aarch64-unknown-linux-gnu,
+            x86_64-pc-windows-gnu,
+            aarch64-pc-windows-gnullvm
+
+      - name: Install Zig cross-linker
+        uses: mlugg/setup-zig@3e2d5b8c1c386990cb78b9fbaf137c77b4ba5766 # v2.0.5
+        with:
+          version: 0.15.2
+
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --version 0.20.1 --locked
+
       - name: Hydrate release model data
         run: npm run hydrate:model-data
 

@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
 	type ClientHello,
-	type EventEnvelope,
 	type ClientMessage,
 	ClientMessageDecoder,
 	DEFAULT_MAX_FRAME_LENGTH,
+	type EventEnvelope,
 	encodeServerMessage,
 	isSupportedProtocolVersion,
 	PROTOCOL_VERSION,

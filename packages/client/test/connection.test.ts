@@ -195,6 +195,42 @@ describe("PiClient", () => {
 		expect(server.clientCloseCount).toBe(1);
 	});
 
+	test("reports the prior event boundary in reconnect hello and restarts event sequence after snapshot recovery", async () => {
+		const first = new MemoryByteServer();
+		const second = new MemoryByteServer();
+		const hellos: ClientMessage[] = [];
+		let connection = 0;
+		for (const server of [first, second]) {
+			server.onMessage((message) => {
+				if (message.type !== "hello") return;
+				hellos.push(message);
+				server.send({
+					type: "hello",
+					version: PROTOCOL_VERSION,
+					connectionId: `connection-${connection}`,
+					snapshot: { ...baseServerSnapshot, revision: connection++ },
+				});
+			});
+		}
+		const client = new PiClient({
+			transportFactory: (handlers) => (connection === 0 ? first : second).connect(handlers),
+		});
+		const events: string[] = [];
+		client.onEvent((event) => events.push(event.type));
+
+		await client.connect();
+		first.send({ type: "event", sequence: 1, event: { type: "session_removed", sessionId: "session-1" } });
+		first.close();
+		await client.reconnect();
+		second.send({ type: "event", sequence: 1, event: { type: "session_removed", sessionId: "session-2" } });
+
+		expect(hellos).toEqual([
+			{ type: "hello", version: PROTOCOL_VERSION },
+			{ type: "hello", version: PROTOCOL_VERSION, lastSeenSequence: 1 },
+		]);
+		expect(events).toEqual(["session_removed", "session_removed"]);
+	});
+
 	test("rejects pending requests on close and reconnects through a fresh factory result", async () => {
 		const first = new MemoryByteServer();
 		const second = new MemoryByteServer();

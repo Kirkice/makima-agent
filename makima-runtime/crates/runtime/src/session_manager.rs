@@ -7,6 +7,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::OsString,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -23,7 +24,7 @@ use crate::{
         AgentSession, AgentSessionConfig, JsonlSessionPersistence, PersistenceEvent,
         SessionPersistence,
     },
-    provider_ipc::ProviderHostStreamPort,
+    provider_ipc::{ProviderHostLaunchSpec, ProviderHostStreamPort},
     provider_runtime::{ProviderStreamDriver, ProviderStreamPort},
 };
 use agent_loop::AgentLoopEngine;
@@ -129,12 +130,54 @@ impl ManagedSession for SessionRuntime {
 /// 所以 SessionManager 的 poll 边界不会等待模型输出。
 pub struct AgentSessionFactory {
     repository: JsonlSessionRepository,
-    provider_host_program: std::ffi::OsString,
-    provider_host_args: Vec<std::ffi::OsString>,
+    provider_host_program: OsString,
+    provider_host_args: Vec<OsString>,
+    /// `None` 只服务旧嵌入 API；产品入口必须提供明确白名单。
+    provider_host_environment: Option<BTreeMap<OsString, OsString>>,
     system_prompt: String,
 }
 
 impl AgentSessionFactory {
+    /// 使用明确传入的 Host 启动信息创建生产工厂。
+    ///
+    /// 产品 CLI 在解析并验证 payload manifest 后调用该构造器，避免 runtime 层从环境变量
+    /// 隐式猜测 Host 路径。环境变量构造器仍仅服务于嵌入式兼容场景。
+    pub fn new_with_launch_config(
+        sessions_root: impl Into<PathBuf>,
+        program: impl Into<std::ffi::OsString>,
+        args: Vec<std::ffi::OsString>,
+        system_prompt: impl Into<String>,
+    ) -> Result<Self, ProtocolError> {
+        if args.is_empty() {
+            return Err(invalid_request("Provider Host 启动参数不能为空"));
+        }
+        Self::new_with_isolated_launch_config(sessions_root, program, args, None, system_prompt)
+    }
+
+    /// 使用产品启动器已过滤的环境白名单创建工厂。
+    ///
+    /// 该边界让每个 Session 按自身 cwd 启动 Host，同时只继承显式配置的凭据和系统变量。
+    pub fn new_with_isolated_launch_config(
+        sessions_root: impl Into<PathBuf>,
+        program: impl Into<OsString>,
+        args: Vec<OsString>,
+        environment: Option<BTreeMap<OsString, OsString>>,
+        system_prompt: impl Into<String>,
+    ) -> Result<Self, ProtocolError> {
+        if args.is_empty() {
+            return Err(invalid_request("Provider Host 启动参数不能为空"));
+        }
+        JsonlSessionRepository::new(sessions_root)
+            .map(|repository| Self {
+                repository,
+                provider_host_program: program.into(),
+                provider_host_args: args,
+                provider_host_environment: environment,
+                system_prompt: system_prompt.into(),
+            })
+            .map_err(session_store_error)
+    }
+
     /// 使用 JSONL repository 根目录及环境配置的 Provider Host 创建生产工厂。
     ///
     /// `PI_PROVIDER_HOST_PROGRAM` 默认 `node`，`PI_PROVIDER_HOST_ENTRY` 必须指向已构建的
@@ -143,15 +186,12 @@ impl AgentSessionFactory {
         let provider_host_entry = std::env::var_os("PI_PROVIDER_HOST_ENTRY").ok_or_else(|| {
             invalid_request("缺少 PI_PROVIDER_HOST_ENTRY；它必须指向已构建的 Provider Host 入口")
         })?;
-        JsonlSessionRepository::new(sessions_root)
-            .map(|repository| Self {
-                repository,
-                provider_host_program: std::env::var_os("PI_PROVIDER_HOST_PROGRAM")
-                    .unwrap_or_else(|| "node".into()),
-                provider_host_args: vec![provider_host_entry],
-                system_prompt: std::env::var("PI_SYSTEM_PROMPT").unwrap_or_default(),
-            })
-            .map_err(session_store_error)
+        Self::new_with_launch_config(
+            sessions_root,
+            std::env::var_os("PI_PROVIDER_HOST_PROGRAM").unwrap_or_else(|| "node".into()),
+            vec![provider_host_entry],
+            std::env::var("PI_SYSTEM_PROMPT").unwrap_or_default(),
+        )
     }
 
     #[cfg(test)]
@@ -161,14 +201,7 @@ impl AgentSessionFactory {
         args: Vec<std::ffi::OsString>,
         system_prompt: impl Into<String>,
     ) -> Result<Self, ProtocolError> {
-        JsonlSessionRepository::new(sessions_root)
-            .map(|repository| Self {
-                repository,
-                provider_host_program: program.into(),
-                provider_host_args: args,
-                system_prompt: system_prompt.into(),
-            })
-            .map_err(session_store_error)
+        Self::new_with_launch_config(sessions_root, program, args, system_prompt)
     }
 
     fn new_managed_session(
@@ -176,10 +209,20 @@ impl AgentSessionFactory {
         config: AgentSessionConfig,
         persistence: JsonlSessionPersistence,
     ) -> Result<Box<dyn ManagedSession>, ProtocolError> {
-        let transport = ProviderHostStreamPort::spawn(
-            &self.provider_host_program,
-            self.provider_host_args.iter(),
-        )
+        let transport = match &self.provider_host_environment {
+            Some(environment) => {
+                ProviderHostStreamPort::spawn_with_spec(ProviderHostLaunchSpec::isolated(
+                    self.provider_host_program.clone(),
+                    self.provider_host_args.clone(),
+                    PathBuf::from(&config.cwd),
+                    environment.clone(),
+                ))
+            }
+            None => ProviderHostStreamPort::spawn(
+                &self.provider_host_program,
+                self.provider_host_args.iter(),
+            ),
+        }
         .map_err(provider_ipc_error)?;
         Ok(Box::new(AgentManagedSession::new(
             config,
